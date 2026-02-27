@@ -439,6 +439,9 @@ class D2ILiteApp(BaseWindow):
         self._scraper_monitor_last_progress_snapshot: str = ""
         self._scraper_monitor_last_opened_path: str = ""
         self._scraper_monitor_total_hint: int = 0
+        self._scraper_progress_selection_syncing: bool = False
+        self._scraper_row_open_pending: bool = False
+        self._scraper_row_opening: bool = False
 
         self._build_ui()
         self._setup_edit_shortcuts_and_menu()
@@ -724,6 +727,9 @@ class D2ILiteApp(BaseWindow):
         self._scraper_monitor_last_progress_snapshot = ""
         self._scraper_monitor_last_opened_path = ""
         self._scraper_monitor_total_hint = 0
+        self._scraper_progress_selection_syncing = False
+        self._scraper_row_open_pending = False
+        self._scraper_row_opening = False
         if panel is not None:
             try:
                 panel.destroy()
@@ -805,13 +811,13 @@ class D2ILiteApp(BaseWindow):
         line2 = ttk.Frame(panel)
         line2.pack(fill=tk.X, pady=(4, 0))
         self._scraper_monitor_counts_var = tk.StringVar(
-            value="进度: 总目标 0 / 已完成 0 (0.0%) / 详情 0 / 图片 0 / 元数据 0"
+            value="进度: 总目标 0 / 已发现 0 (0.0%) / 已完成 0 / 详情 0 / 图片 0 / 元数据 0"
         )
         ttk.Label(line2, textvariable=self._scraper_monitor_counts_var).pack(side=tk.LEFT)
 
         line3 = ttk.Frame(panel)
         line3.pack(fill=tk.X, pady=(4, 0))
-        self._scraper_monitor_progress_var = tk.StringVar(value="完成进度：0 / 0 (0.0%)")
+        self._scraper_monitor_progress_var = tk.StringVar(value="发现进度：0 / 0 (0.0%)")
         ttk.Label(line3, textvariable=self._scraper_monitor_progress_var, width=22).pack(side=tk.LEFT)
         self._scraper_monitor_progress_bar = ttk.Progressbar(
             line3,
@@ -1299,24 +1305,9 @@ class D2ILiteApp(BaseWindow):
         if not target:
             messagebox.showinfo("提示", "当前选中项还没有可打开的本地图片。", parent=self)
             return
-        if os.path.abspath(str(self.current_path or "")) == os.path.abspath(target):
-            return
-        self._load_target(target)
-        self._scraper_monitor_last_opened_path = target
-        self._set_status(f"已打开：{os.path.basename(target)}")
-        self._focus_main_preview_from_scraper()
+        self._open_scraper_result_path(target)
 
-    def _on_scraper_progress_row_selected(self, _event=None):
-        try:
-            event_widget = getattr(_event, "widget", None)
-            if event_widget is not None:
-                for table in self._iter_scraper_progress_tables():
-                    if table is event_widget:
-                        continue
-                    table.selection_remove(table.selection())
-        except Exception:
-            pass
-        target = self._resolve_scraper_selected_image_path()
+    def _open_scraper_result_path(self, target: str):
         if not target:
             return
         if target == self._scraper_monitor_last_opened_path:
@@ -1324,6 +1315,9 @@ class D2ILiteApp(BaseWindow):
         if os.path.abspath(str(self.current_path or "")) == os.path.abspath(target):
             self._scraper_monitor_last_opened_path = target
             return
+        if self._scraper_row_opening:
+            return
+        self._scraper_row_opening = True
         try:
             self._load_target(target)
             self._scraper_monitor_last_opened_path = target
@@ -1331,6 +1325,43 @@ class D2ILiteApp(BaseWindow):
             self._focus_main_preview_from_scraper()
         except Exception:
             pass
+        finally:
+            self._scraper_row_opening = False
+
+    def _queue_open_selected_scraper_result(self):
+        if self._scraper_row_open_pending:
+            return
+        self._scraper_row_open_pending = True
+
+        def _run():
+            self._scraper_row_open_pending = False
+            target = self._resolve_scraper_selected_image_path()
+            if not target:
+                return
+            self._open_scraper_result_path(target)
+
+        try:
+            self.after_idle(_run)
+        except Exception:
+            self._scraper_row_open_pending = False
+
+    def _on_scraper_progress_row_selected(self, _event=None):
+        if self._scraper_progress_selection_syncing:
+            return
+        try:
+            event_widget = getattr(_event, "widget", None)
+            if event_widget is not None:
+                self._scraper_progress_selection_syncing = True
+                for table in self._iter_scraper_progress_tables():
+                    if table is event_widget:
+                        continue
+                    table.selection_remove(table.selection())
+        except Exception:
+            pass
+        try:
+            self._queue_open_selected_scraper_result()
+        finally:
+            self._scraper_progress_selection_syncing = False
 
     def _focus_main_preview_from_scraper(self):
         try:
@@ -1418,11 +1449,11 @@ class D2ILiteApp(BaseWindow):
         if output_root:
             rows = self._collect_scraper_progress_rows(output_root)
             completed_rows = sum(1 for row in rows if self._is_scraper_row_completed(row))
-            known_rows = len(rows)
+            discovered_rows = len(rows)
             estimated_total = self._estimate_scraper_total_target(output_root)
-            total_target = max(known_rows, estimated_total, self._scraper_monitor_total_hint)
+            total_target = max(discovered_rows, estimated_total, self._scraper_monitor_total_hint)
             self._scraper_monitor_total_hint = total_target
-            progress_pct = (completed_rows / total_target * 100.0) if total_target > 0 else 0.0
+            progress_pct = (discovered_rows / total_target * 100.0) if total_target > 0 else 0.0
 
             list_rows = self._count_jsonl_rows(os.path.join(output_root, "raw", "list_records.jsonl"))
             profile_rows = self._count_jsonl_rows(os.path.join(output_root, "raw", "profiles.jsonl"))
@@ -1431,12 +1462,12 @@ class D2ILiteApp(BaseWindow):
             if self._scraper_monitor_counts_var is not None:
                 self._scraper_monitor_counts_var.set(
                     "进度: "
-                    f"总目标 {total_target} / 已完成 {completed_rows} ({progress_pct:.1f}%) / "
+                    f"总目标 {total_target} / 已发现 {discovered_rows} ({progress_pct:.1f}%) / 已完成 {completed_rows} / "
                     f"列表 {list_rows} / 详情 {profile_rows} / 图片 {image_rows} / 元数据 {metadata_rows}"
                 )
             if self._scraper_monitor_progress_var is not None:
                 self._scraper_monitor_progress_var.set(
-                    f"完成进度：{completed_rows} / {total_target} ({progress_pct:.1f}%)"
+                    f"发现进度：{discovered_rows} / {total_target} ({progress_pct:.1f}%)"
                 )
             if self._scraper_monitor_progress_bar is not None:
                 try:
@@ -1448,9 +1479,11 @@ class D2ILiteApp(BaseWindow):
             self._refresh_scraper_progress_table(output_root, rows=rows)
         else:
             if self._scraper_monitor_counts_var is not None:
-                self._scraper_monitor_counts_var.set("进度: 总目标 0 / 已完成 0 (0.0%) / 详情 0 / 图片 0 / 元数据 0")
+                self._scraper_monitor_counts_var.set(
+                    "进度: 总目标 0 / 已发现 0 (0.0%) / 已完成 0 / 详情 0 / 图片 0 / 元数据 0"
+                )
             if self._scraper_monitor_progress_var is not None:
-                self._scraper_monitor_progress_var.set("完成进度：0 / 0 (0.0%)")
+                self._scraper_monitor_progress_var.set("发现进度：0 / 0 (0.0%)")
             if self._scraper_monitor_progress_bar is not None:
                 try:
                     self._scraper_monitor_progress_bar["value"] = 0.0
@@ -2357,16 +2390,18 @@ class D2ILiteApp(BaseWindow):
             return
         rows = self._collect_scraper_progress_rows(output_root)
         completed_rows = sum(1 for row in rows if self._is_scraper_row_completed(row))
+        discovered_rows = len(rows)
         total_target = max(len(rows), self._estimate_scraper_total_target(output_root), self._scraper_monitor_total_hint)
         self._scraper_monitor_total_hint = total_target
-        progress_pct = (completed_rows / total_target * 100.0) if total_target > 0 else 0.0
+        progress_pct = (discovered_rows / total_target * 100.0) if total_target > 0 else 0.0
         list_rows = self._count_jsonl_rows(os.path.join(output_root, "raw", "list_records.jsonl"))
         profile_rows = self._count_jsonl_rows(os.path.join(output_root, "raw", "profiles.jsonl"))
         image_rows = self._count_jsonl_rows(os.path.join(output_root, "downloads", "image_downloads.jsonl"))
         metadata_rows = self._count_jsonl_rows(os.path.join(output_root, "raw", "metadata_write_results.jsonl"))
         text = (
             "抓取中 "
-            f"完成:{completed_rows}/{total_target}({progress_pct:.1f}%) "
+            f"发现:{discovered_rows}/{total_target}({progress_pct:.1f}%) "
+            f"完成:{completed_rows} "
             f"列表:{list_rows} "
             f"详情:{profile_rows} "
             f"图片:{image_rows} "

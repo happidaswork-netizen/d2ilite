@@ -72,6 +72,10 @@ The setup dialog now supports:
 - `中止任务`
 - `继续任务` (resume by existing `state/runtime_config.json`)
 - live monitor with counts and row-level progress.
+- monitor progress format now emphasizes reconciliation:
+  - `总数 / 已发现 / 已完成`
+  - dedicated progress bar is driven by `已发现 / 总数`
+  - detail/image/metadata counters remain as supporting dimensions
 
 The row monitor labels are now explicit:
 
@@ -158,6 +162,7 @@ Full text remains preserved; structured extraction is additive.
 - pause and resume supported
 - browser mode option for sensitive targets
 - fallback to browser mode (optional, now default true in template config)
+- incremental download-index checkpointing during run to reduce duplicate downloads after forced stop/resume
 
 ## 8. Key Files Changed in This Iteration
 
@@ -200,3 +205,26 @@ Before each new iteration:
 3. Validate one fast-mode site and one browser-mode site.
 4. Check `crawl_record.json` completeness and field quality.
 5. Ensure cleanup policy matches need for resume/debug evidence.
+
+## 11. Post-Baseline Hotfixes (after initial doc draft)
+
+The following fixes were added after the first baseline draft and are part of current behavior:
+
+1. Log-open freeze mitigation
+   - `打开日志` now launches a separate process (`notepad.exe`) first, with directory fallback, to avoid blocking Tk main loop.
+
+2. Window z-order behavior for preview
+   - Public scraper panel no longer forces foreground dominance.
+   - Clicking/opening a progress-row image explicitly brings main preview window to front and pushes scraper panel behind it.
+
+3. Progress semantics for reconciliation
+   - Main progress display now uses `总数 / 已发现 / 已完成`.
+   - Progress bar follows discovery progress (`已发现 / 总数`) for completeness checks.
+
+4. Resume duplicate-download reduction
+   - Image URL/SHA indexes are checkpointed incrementally during download stage (not only at stage end).
+   - This lowers repeated requests when tasks are interrupted and resumed.
+
+5. Progress-row click freeze mitigation
+   - Added selection sync guard + queued open (`after_idle`) + open re-entry lock.
+   - Goal: prevent event storms when clicking names in pending/done tables.

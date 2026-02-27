@@ -1200,6 +1200,18 @@ def run_crawl_browser_mode(config: Dict[str, Any], output_root: Path) -> None:
     sha_index = load_json(sha_index_path, {})
     if not isinstance(sha_index, dict):
         sha_index = {}
+    index_dirty_count = 0
+
+    def _checkpoint_indexes(force: bool = False) -> None:
+        nonlocal index_dirty_count
+        if not inline_download_enabled:
+            return
+        if not force:
+            if index_dirty_count <= 0:
+                return
+        save_json(url_index_path, url_index)
+        save_json(sha_index_path, sha_index)
+        index_dirty_count = 0
 
     metrics: Dict[str, int] = {
         "list_rows_seen": 0,
@@ -1565,6 +1577,8 @@ def run_crawl_browser_mode(config: Dict[str, Any], output_root: Path) -> None:
                         if sha in sha_index:
                             metrics["inline_image_reused_by_sha"] += 1
                             url_index[image_url] = sha
+                            index_dirty_count += 1
+                            _checkpoint_indexes()
                         else:
                             ext = _guess_extension(image_url, content_type_img)
                             target = image_root / sha[:2] / f"{sha}{ext}"
@@ -1572,6 +1586,8 @@ def run_crawl_browser_mode(config: Dict[str, Any], output_root: Path) -> None:
                             target.write_bytes(payload_img)
                             sha_index[sha] = str(target.resolve())
                             url_index[image_url] = sha
+                            index_dirty_count += 1
+                            _checkpoint_indexes()
                             metrics["inline_image_downloaded_new"] += 1
                             append_jsonl(
                                 download_manifest,
@@ -1605,8 +1621,7 @@ def run_crawl_browser_mode(config: Dict[str, Any], output_root: Path) -> None:
             pass
 
     if inline_download_enabled:
-        save_json(url_index_path, url_index)
-        save_json(sha_index_path, sha_index)
+        _checkpoint_indexes(force=True)
         save_json(
             reports_dir / "image_download_report.json",
             {
@@ -1840,6 +1855,16 @@ def download_images(config: Dict[str, Any], output_root: Path) -> Dict[str, Any]
 
     url_index: Dict[str, str] = load_json(url_index_path, {})
     sha_index: Dict[str, str] = load_json(sha_index_path, {})
+    index_dirty_count = 0
+
+    def _checkpoint_indexes(force: bool = False) -> None:
+        nonlocal index_dirty_count
+        if not force:
+            if index_dirty_count <= 0:
+                return
+        save_json(url_index_path, url_index)
+        save_json(sha_index_path, sha_index)
+        index_dirty_count = 0
 
     blocked_statuses = {
         int(s)
@@ -2174,6 +2199,8 @@ def download_images(config: Dict[str, Any], output_root: Path) -> Dict[str, Any]
             if sha in sha_index:
                 totals["reused_by_sha"] += 1
                 url_index[image_url] = sha
+                index_dirty_count += 1
+                _checkpoint_indexes()
                 if inline_metadata_enabled:
                     source_cached = norm_abs_path(str(sha_index.get(sha, "")))
                     _inline_write_for_profile(profile, sha, source_cached)
@@ -2186,6 +2213,8 @@ def download_images(config: Dict[str, Any], output_root: Path) -> Dict[str, Any]
 
             sha_index[sha] = str(target.resolve())
             url_index[image_url] = sha
+            index_dirty_count += 1
+            _checkpoint_indexes()
             totals["downloaded_new"] += 1
             if route_used == "browser":
                 totals["downloaded_via_browser"] += 1
@@ -2215,8 +2244,7 @@ def download_images(config: Dict[str, Any], output_root: Path) -> Dict[str, Any]
             except Exception:
                 pass
 
-    save_json(url_index_path, url_index)
-    save_json(sha_index_path, sha_index)
+    _checkpoint_indexes(force=True)
     if inline_metadata_enabled:
         save_json(
             metadata_report_path,
