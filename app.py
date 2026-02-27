@@ -741,7 +741,6 @@ class D2ILiteApp(BaseWindow):
         panel.title("公共抓取")
         panel.geometry("1100x640")
         panel.minsize(960, 560)
-        panel.transient(self)
         self._public_scraper_panel = panel
 
         top = ttk.Frame(panel, padding=(10, 10, 10, 6))
@@ -1226,11 +1225,7 @@ class D2ILiteApp(BaseWindow):
         self._load_target(target)
         self._scraper_monitor_last_opened_path = target
         self._set_status(f"已打开：{os.path.basename(target)}")
-        try:
-            self.lift()
-            self.focus_force()
-        except Exception:
-            pass
+        self._focus_main_preview_from_scraper()
 
     def _on_scraper_progress_row_selected(self, _event=None):
         try:
@@ -1254,6 +1249,24 @@ class D2ILiteApp(BaseWindow):
             self._load_target(target)
             self._scraper_monitor_last_opened_path = target
             self._set_status(f"已打开：{os.path.basename(target)}")
+            self._focus_main_preview_from_scraper()
+        except Exception:
+            pass
+
+    def _focus_main_preview_from_scraper(self):
+        try:
+            self.deiconify()
+            self.lift()
+            self.focus_force()
+        except Exception:
+            pass
+        panel = self._public_scraper_panel
+        if panel is None:
+            return
+        try:
+            if panel.winfo_exists():
+                panel.attributes("-topmost", False)
+                panel.lower(self)
         except Exception:
             pass
 
@@ -1267,8 +1280,18 @@ class D2ILiteApp(BaseWindow):
     def _open_scraper_log_path(self):
         target = self._public_scraper_log_path
         if target and os.path.exists(target):
-            os.startfile(target)
-            return
+            try:
+                # Use a separate process to avoid blocking the GUI thread.
+                subprocess.Popen(["notepad.exe", target], close_fds=True)
+                return
+            except Exception:
+                pass
+            try:
+                os.startfile(os.path.dirname(target))
+                return
+            except Exception as e:
+                messagebox.showerror("打开失败", f"无法打开日志：\n{e}", parent=self)
+                return
         messagebox.showinfo("提示", "当前暂无可打开的日志文件。", parent=self)
 
     @staticmethod
