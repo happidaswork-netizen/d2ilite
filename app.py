@@ -429,6 +429,8 @@ class D2ILiteApp(BaseWindow):
         self._scraper_monitor_pid_var: Optional[tk.StringVar] = None
         self._scraper_monitor_elapsed_var: Optional[tk.StringVar] = None
         self._scraper_monitor_counts_var: Optional[tk.StringVar] = None
+        self._scraper_monitor_progress_var: Optional[tk.StringVar] = None
+        self._scraper_monitor_progress_bar: Optional[ttk.Progressbar] = None
         self._scraper_monitor_paths_var: Optional[tk.StringVar] = None
         self._scraper_monitor_log_text: Optional[tk.Text] = None
         self._scraper_monitor_progress_table: Optional[ttk.Treeview] = None
@@ -436,6 +438,7 @@ class D2ILiteApp(BaseWindow):
         self._scraper_monitor_last_log_snapshot: str = ""
         self._scraper_monitor_last_progress_snapshot: str = ""
         self._scraper_monitor_last_opened_path: str = ""
+        self._scraper_monitor_total_hint: int = 0
 
         self._build_ui()
         self._setup_edit_shortcuts_and_menu()
@@ -711,6 +714,8 @@ class D2ILiteApp(BaseWindow):
         self._scraper_monitor_pid_var = None
         self._scraper_monitor_elapsed_var = None
         self._scraper_monitor_counts_var = None
+        self._scraper_monitor_progress_var = None
+        self._scraper_monitor_progress_bar = None
         self._scraper_monitor_paths_var = None
         self._scraper_monitor_log_text = None
         self._scraper_monitor_progress_table = None
@@ -718,6 +723,7 @@ class D2ILiteApp(BaseWindow):
         self._scraper_monitor_last_log_snapshot = ""
         self._scraper_monitor_last_progress_snapshot = ""
         self._scraper_monitor_last_opened_path = ""
+        self._scraper_monitor_total_hint = 0
         if panel is not None:
             try:
                 panel.destroy()
@@ -798,15 +804,29 @@ class D2ILiteApp(BaseWindow):
 
         line2 = ttk.Frame(panel)
         line2.pack(fill=tk.X, pady=(4, 0))
-        self._scraper_monitor_counts_var = tk.StringVar(value="进度: 总名单 0 / 已抓详情 0 / 图片 0 / 元数据 0")
+        self._scraper_monitor_counts_var = tk.StringVar(
+            value="进度: 总目标 0 / 已完成 0 (0.0%) / 详情 0 / 图片 0 / 元数据 0"
+        )
         ttk.Label(line2, textvariable=self._scraper_monitor_counts_var).pack(side=tk.LEFT)
 
         line3 = ttk.Frame(panel)
         line3.pack(fill=tk.X, pady=(4, 0))
+        self._scraper_monitor_progress_var = tk.StringVar(value="完成进度：0 / 0 (0.0%)")
+        ttk.Label(line3, textvariable=self._scraper_monitor_progress_var, width=22).pack(side=tk.LEFT)
+        self._scraper_monitor_progress_bar = ttk.Progressbar(
+            line3,
+            orient=tk.HORIZONTAL,
+            mode="determinate",
+            maximum=100.0,
+        )
+        self._scraper_monitor_progress_bar.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(8, 0))
+
+        line4 = ttk.Frame(panel)
+        line4.pack(fill=tk.X, pady=(4, 0))
         self._scraper_monitor_paths_var = tk.StringVar(value="输出: -")
-        ttk.Label(line3, textvariable=self._scraper_monitor_paths_var).pack(side=tk.LEFT, fill=tk.X, expand=True)
-        ttk.Button(line3, text="打开图片目录", command=self._open_scraper_named_dir, width=12).pack(side=tk.RIGHT)
-        ttk.Button(line3, text="打开日志", command=self._open_scraper_log_path, width=10).pack(side=tk.RIGHT, padx=(0, 6))
+        ttk.Label(line4, textvariable=self._scraper_monitor_paths_var).pack(side=tk.LEFT, fill=tk.X, expand=True)
+        ttk.Button(line4, text="打开图片目录", command=self._open_scraper_named_dir, width=12).pack(side=tk.RIGHT)
+        ttk.Button(line4, text="打开日志", command=self._open_scraper_log_path, width=10).pack(side=tk.RIGHT, padx=(0, 6))
 
         split = ttk.Panedwindow(panel, orient=tk.VERTICAL)
         split.pack(fill=tk.BOTH, expand=True, pady=(6, 0))
@@ -928,6 +948,64 @@ class D2ILiteApp(BaseWindow):
         except Exception:
             normalized = path
         return normalized if os.path.isfile(normalized) else ""
+
+    @staticmethod
+    def _read_json_file(path: str) -> Dict[str, Any]:
+        if (not path) or (not os.path.exists(path)):
+            return {}
+        try:
+            with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                payload = json.load(f)
+            return payload if isinstance(payload, dict) else {}
+        except Exception:
+            return {}
+
+    @staticmethod
+    def _safe_int(value: Any) -> int:
+        try:
+            num = int(value)
+            return num if num > 0 else 0
+        except Exception:
+            return 0
+
+    def _estimate_scraper_total_target(self, output_root: str) -> int:
+        if not output_root:
+            return 0
+        candidates: List[int] = []
+
+        crawl_report = self._read_json_file(os.path.join(output_root, "reports", "crawl_report.json"))
+        if crawl_report:
+            metrics = crawl_report.get("metrics_this_run")
+            if isinstance(metrics, dict):
+                candidates.append(self._safe_int(metrics.get("detail_requests_enqueued")))
+            totals = crawl_report.get("totals_on_disk")
+            if isinstance(totals, dict):
+                candidates.append(self._safe_int(totals.get("profiles")))
+
+        seen_detail_urls: set[str] = set()
+        list_path = os.path.join(output_root, "raw", "list_records.jsonl")
+        if os.path.exists(list_path):
+            try:
+                with open(list_path, "r", encoding="utf-8", errors="ignore") as f:
+                    for line in f:
+                        raw = line.strip()
+                        if not raw:
+                            continue
+                        try:
+                            obj = json.loads(raw)
+                        except Exception:
+                            continue
+                        if not isinstance(obj, dict):
+                            continue
+                        detail_url = str(obj.get("detail_url", "")).strip()
+                        if detail_url:
+                            seen_detail_urls.add(detail_url)
+            except Exception:
+                pass
+        candidates.append(len(seen_detail_urls))
+        candidates.append(self._count_jsonl_rows(os.path.join(output_root, "raw", "profiles.jsonl")))
+        candidates.append(self._count_jsonl_rows(os.path.join(output_root, "downloads", "image_downloads.jsonl")))
+        return max(candidates) if candidates else 0
 
     def _collect_scraper_progress_rows(self, output_root: str, max_rows: int = 3000) -> List[Dict[str, str]]:
         list_path = os.path.join(output_root, "raw", "list_records.jsonl")
@@ -1110,12 +1188,13 @@ class D2ILiteApp(BaseWindow):
         meta_ok = str(row.get("meta", "")).strip() in ok_tokens
         return detail_ok and image_ok and meta_ok
 
-    def _refresh_scraper_progress_table(self, output_root: str):
+    def _refresh_scraper_progress_table(self, output_root: str, rows: Optional[List[Dict[str, Any]]] = None):
         pending_table = self._scraper_monitor_progress_table
         done_table = self._scraper_monitor_progress_done_table
         if (pending_table is None) and (done_table is None):
             return
-        rows = self._collect_scraper_progress_rows(output_root)
+        if rows is None:
+            rows = self._collect_scraper_progress_rows(output_root)
         pending_rows: List[Dict[str, Any]] = []
         done_rows: List[Dict[str, Any]] = []
         for row in rows:
@@ -1337,20 +1416,46 @@ class D2ILiteApp(BaseWindow):
 
         output_root = self._public_scraper_output_root
         if output_root:
+            rows = self._collect_scraper_progress_rows(output_root)
+            completed_rows = sum(1 for row in rows if self._is_scraper_row_completed(row))
+            known_rows = len(rows)
+            estimated_total = self._estimate_scraper_total_target(output_root)
+            total_target = max(known_rows, estimated_total, self._scraper_monitor_total_hint)
+            self._scraper_monitor_total_hint = total_target
+            progress_pct = (completed_rows / total_target * 100.0) if total_target > 0 else 0.0
+
             list_rows = self._count_jsonl_rows(os.path.join(output_root, "raw", "list_records.jsonl"))
             profile_rows = self._count_jsonl_rows(os.path.join(output_root, "raw", "profiles.jsonl"))
             image_rows = self._count_jsonl_rows(os.path.join(output_root, "downloads", "image_downloads.jsonl"))
             metadata_rows = self._count_jsonl_rows(os.path.join(output_root, "raw", "metadata_write_results.jsonl"))
             if self._scraper_monitor_counts_var is not None:
                 self._scraper_monitor_counts_var.set(
-                    f"进度: 列表 {list_rows} / 详情 {profile_rows} / 图片 {image_rows} / 元数据 {metadata_rows}"
+                    "进度: "
+                    f"总目标 {total_target} / 已完成 {completed_rows} ({progress_pct:.1f}%) / "
+                    f"列表 {list_rows} / 详情 {profile_rows} / 图片 {image_rows} / 元数据 {metadata_rows}"
                 )
+            if self._scraper_monitor_progress_var is not None:
+                self._scraper_monitor_progress_var.set(
+                    f"完成进度：{completed_rows} / {total_target} ({progress_pct:.1f}%)"
+                )
+            if self._scraper_monitor_progress_bar is not None:
+                try:
+                    self._scraper_monitor_progress_bar["value"] = progress_pct
+                except Exception:
+                    pass
             if self._scraper_monitor_paths_var is not None:
                 self._scraper_monitor_paths_var.set(f"输出: {self._public_scraper_named_dir or output_root}")
-            self._refresh_scraper_progress_table(output_root)
+            self._refresh_scraper_progress_table(output_root, rows=rows)
         else:
             if self._scraper_monitor_counts_var is not None:
-                self._scraper_monitor_counts_var.set("进度: 列表 0 / 详情 0 / 图片 0 / 元数据 0")
+                self._scraper_monitor_counts_var.set("进度: 总目标 0 / 已完成 0 (0.0%) / 详情 0 / 图片 0 / 元数据 0")
+            if self._scraper_monitor_progress_var is not None:
+                self._scraper_monitor_progress_var.set("完成进度：0 / 0 (0.0%)")
+            if self._scraper_monitor_progress_bar is not None:
+                try:
+                    self._scraper_monitor_progress_bar["value"] = 0.0
+                except Exception:
+                    pass
             if self._scraper_monitor_paths_var is not None:
                 self._scraper_monitor_paths_var.set("输出: -")
             for table in self._iter_scraper_progress_tables():
@@ -1360,6 +1465,7 @@ class D2ILiteApp(BaseWindow):
                     pass
             self._scraper_monitor_last_progress_snapshot = ""
             self._scraper_monitor_last_opened_path = ""
+            self._scraper_monitor_total_hint = 0
 
         tail = self._read_text_tail(self._public_scraper_log_path, max_lines=30)
         if tail != self._scraper_monitor_last_log_snapshot:
@@ -2249,12 +2355,18 @@ class D2ILiteApp(BaseWindow):
         if not output_root:
             self._refresh_scraper_monitor_panel()
             return
+        rows = self._collect_scraper_progress_rows(output_root)
+        completed_rows = sum(1 for row in rows if self._is_scraper_row_completed(row))
+        total_target = max(len(rows), self._estimate_scraper_total_target(output_root), self._scraper_monitor_total_hint)
+        self._scraper_monitor_total_hint = total_target
+        progress_pct = (completed_rows / total_target * 100.0) if total_target > 0 else 0.0
         list_rows = self._count_jsonl_rows(os.path.join(output_root, "raw", "list_records.jsonl"))
         profile_rows = self._count_jsonl_rows(os.path.join(output_root, "raw", "profiles.jsonl"))
         image_rows = self._count_jsonl_rows(os.path.join(output_root, "downloads", "image_downloads.jsonl"))
         metadata_rows = self._count_jsonl_rows(os.path.join(output_root, "raw", "metadata_write_results.jsonl"))
         text = (
             "抓取中 "
+            f"完成:{completed_rows}/{total_target}({progress_pct:.1f}%) "
             f"列表:{list_rows} "
             f"详情:{profile_rows} "
             f"图片:{image_rows} "
