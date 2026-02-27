@@ -1,0 +1,77 @@
+{
+  "site_name": "tiantonglaw_team",
+  "start_urls": [
+    "https://www.tiantonglaw.com/TemResolve/?TemPresolveId=92&classid=5&ObjI=0&publicvar=0&charset=UTF-8&Page=1"
+  ],
+  "allowed_domains": [
+    "www.tiantonglaw.com",
+    "tiantonglaw.com"
+  ],
+  "user_agent": "D2ILiteArchiveBot/1.0 (+local archival use)",
+  "default_headers": {
+    "Referer": "https://www.tiantonglaw.com/Team/?Page=1",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+  },
+  "image_headers": {
+    "Referer": "https://www.tiantonglaw.com/Team/?Page=1"
+  },
+  "output_root": "data/public_archive/tiantonglaw_team",
+  "selectors": {
+    "list_response_transform": "document_write_html",
+    "list_item": "ul.cf li",
+    "name": [
+      "div.txt a::text"
+    ],
+    "detail_link": "div.txt a::attr(href)",
+    "next_page": [
+      "a.Pnext::attr(onclick)"
+    ],
+    "detail_name": [
+      ".lvshi_cont1 .box .txt h2::text",
+      "h2::text"
+    ],
+    "detail_image": ".lvshi_cont1 .box dt img::attr(src)",
+    "detail_gender": [],
+    "detail_summary": [
+      ".lvshi_cont3 dd p::text",
+      ".lvshi_cont3 dd div::text",
+      ".lvshi_cont3 dd li::text"
+    ],
+    "detail_fields": {
+      "english_name": ".lvshi_cont1 .box .tct::text",
+      "title": ".lvshi_cont1 .box .txt i::text",
+      "email_text": "xpath:string(//div[contains(@class,'lvshi_cont1')]//div[contains(@class,'tit')]//span[contains(normalize-space(),'邮箱')])",
+      "location_text": "xpath:string((//div[contains(@class,'lvshi_cont1')]//div[contains(@class,'tit')]//span)[2])"
+    }
+  },
+  "rules": {
+    "obey_robots_txt": true,
+    "snapshot_html": true,
+    "extract_images": true,
+    "write_metadata": true,
+    "named_images_dir": "downloads/named",
+    "image_referer_from_detail_url": true,
+    "required_fields": [
+      "name",
+      "detail_url",
+      "image_url"
+    ],
+    "default_gender": "unknown",
+    "gender_map": {}
+  },
+  "crawl": {
+    "concurrent_requests": 1,
+    "download_delay": 10,
+    "autothrottle_start_delay": 10,
+    "autothrottle_max_delay": 25,
+    "retry_times": 3,
+    "timeout_seconds": 30,
+    "blocked_statuses": [
+      403,
+      429
+    ],
+    "blocked_backoff_hours": 8,
+    "image_interval_min_seconds": 10,
+    "image_interval_max_seconds": 25
+  }
+}

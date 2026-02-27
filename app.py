@@ -8,6 +8,7 @@ import os
 import random
 import re
 import shutil
+import subprocess
 import sys
 import tempfile
 import time
@@ -429,6 +430,7 @@ class D2ILiteApp(BaseWindow):
         ttk.Button(top, text="上一张", command=self._goto_prev).pack(side=tk.LEFT, padx=(10, 0))
         ttk.Button(top, text="下一张", command=self._goto_next).pack(side=tk.LEFT, padx=6)
         ttk.Button(top, text="刷新", command=self._refresh_current).pack(side=tk.LEFT, padx=6)
+        ttk.Button(top, text="批量下载器(旧版)", command=self._open_batch_downloader).pack(side=tk.LEFT, padx=(6, 0))
 
         info_bar = ttk.Frame(self, padding=(10, 0, 10, 8))
         info_bar.pack(fill=tk.X)
@@ -1090,6 +1092,20 @@ class D2ILiteApp(BaseWindow):
     def _open_current_folder(self):
         if self.current_path and os.path.isfile(self.current_path):
             os.startfile(os.path.dirname(self.current_path))
+
+    def _open_batch_downloader(self):
+        script_path = os.path.join(os.path.dirname(__file__), "legacy_downloader_gui.py")
+        if not os.path.exists(script_path):
+            messagebox.showerror("启动失败", f"未找到批量下载器脚本:\n{script_path}")
+            return
+        try:
+            subprocess.Popen(
+                [sys.executable, script_path],
+                cwd=os.path.dirname(script_path) or ".",
+            )
+            self._set_status("已启动批量下载器（旧版）")
+        except Exception as e:
+            messagebox.showerror("启动失败", f"无法启动批量下载器：\n{e}")
 
     def _open_source_url(self):
         raw = (self.edit_vars.get("source").get() if self.edit_vars.get("source") else "").strip()
