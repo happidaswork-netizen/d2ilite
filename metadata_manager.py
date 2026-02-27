@@ -29,6 +29,23 @@ except ImportError:
 
 from text_parser import extract_person_info, extract_name_from_text, build_metadata_from_item
 
+KEYWORD_MAX_COUNT = 6
+KEYWORD_MAX_LENGTH = 10
+KEYWORD_ALLOWED_SINGLE = {"男", "女"}
+KEYWORD_UNKNOWN_TOKENS = {
+    "unknown",
+    "unkonw",
+    "n/a",
+    "na",
+    "none",
+    "null",
+    "未知",
+    "不详",
+    "未详",
+    "待补充",
+    "-",
+}
+
 
 class MetadataStatus(Enum):
     """元数据状态"""
@@ -55,6 +72,7 @@ class ImageMetadataInfo:
     person: str = ""
     gender: str = ""
     position: str = ""  # 职务/职称
+    police_id: str = ""  # 警号/证号（可留空）
     
     # B层：TITI 身份字段
     titi_asset_id: str = ""
@@ -97,6 +115,88 @@ def _looks_garbled_question_marks(text: str) -> bool:
     if q_like < 6:
         return False
     return (q_like / max(len(chars), 1)) >= 0.45
+
+
+def _normalize_gender_value(value: Any) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    lowered = raw.lower()
+    unknown_tokens = {
+        "unknown",
+        "unkonw",
+        "n/a",
+        "na",
+        "none",
+        "null",
+        "未知",
+        "未详",
+        "不详",
+        "待补充",
+        "-",
+    }
+    if lowered in unknown_tokens or raw in unknown_tokens:
+        return ""
+    if lowered in {"male", "m", "man", "男性"} or raw == "男":
+        return "男"
+    if lowered in {"female", "f", "woman", "女性"} or raw == "女":
+        return "女"
+    return raw
+
+
+def _normalize_police_id_value(value: Any) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    lowered = raw.lower()
+    unknown_tokens = {
+        "unknown",
+        "unkonw",
+        "n/a",
+        "na",
+        "none",
+        "null",
+        "未知",
+        "未详",
+        "不详",
+        "待补充",
+        "-",
+    }
+    if lowered in unknown_tokens or raw in unknown_tokens:
+        return ""
+    return raw
+
+
+def _extract_police_id_from_profile(profile: Any) -> str:
+    if not isinstance(profile, dict):
+        return ""
+    candidate_keys = (
+        "police_id",
+        "police_no",
+        "police_number",
+        "badge_no",
+        "badge_id",
+        "badge_number",
+        "officer_id",
+        "警号",
+    )
+    for key in candidate_keys:
+        value = _normalize_police_id_value(profile.get(key))
+        if value:
+            return value
+    extra_fields = profile.get("extra_fields")
+    if isinstance(extra_fields, dict):
+        for key in candidate_keys:
+            value = _normalize_police_id_value(extra_fields.get(key))
+            if value:
+                return value
+    return ""
+
+
+def _extract_police_id_from_titi_json(titi_json: Any) -> str:
+    if not isinstance(titi_json, dict):
+        return ""
+    return _extract_police_id_from_profile(titi_json.get("d2i_profile"))
 
 
 def _sanitize_human_description(text: str) -> str:
@@ -224,8 +324,8 @@ def _suggest_fill_from_description(info: ImageMetadataInfo) -> Dict[str, Any]:
     if (not info.title) and person_candidate:
         suggestion["title"] = person_candidate
 
-    if (not info.gender) and isinstance(extracted.get("gender"), str):
-        g = str(extracted.get("gender") or "").strip()
+    if not info.gender:
+        g = _normalize_gender_value(extracted.get("gender"))
         if g:
             suggestion["gender"] = g
 
@@ -240,19 +340,9 @@ def _suggest_fill_from_description(info: ImageMetadataInfo) -> Dict[str, Any]:
             suggestion["city"] = c
 
     if (not info.keywords) and isinstance(extracted.get("keywords"), list):
-        kws = []
-        seen = set()
-        for kw in extracted.get("keywords") or []:
-            s = str(kw or "").strip()
-            if not s:
-                continue
-            key = s.casefold()
-            if key in seen:
-                continue
-            seen.add(key)
-            kws.append(s)
+        kws = clean_keywords(extracted.get("keywords") or [])
         if kws:
-            suggestion["keywords"] = kws[:20]
+            suggestion["keywords"] = kws
     return suggestion
 
 
@@ -589,8 +679,9 @@ def read_image_metadata(filepath: str) -> ImageMetadataInfo:
                             info.titi_world_id = parsed.get("titi_world_id", "")
                             info.image_url = _extract_image_url_from_titi_json(parsed)
                             gender = (parsed.get("d2i_profile") or {}).get("gender")
-                            if isinstance(gender, str) and gender.strip():
-                                info.gender = gender.strip()
+                            g = _normalize_gender_value(gender)
+                            if g:
+                                info.gender = g
                             if not info.person:
                                 name = (parsed.get("d2i_profile") or {}).get("name")
                                 if isinstance(name, str) and name.strip():
@@ -599,6 +690,7 @@ def read_image_metadata(filepath: str) -> ImageMetadataInfo:
             pass
 
     # 性别兜底：优先使用 titi:meta(d2i_profile.gender)，其次从关键词中提取
+    info.gender = _normalize_gender_value(info.gender)
     if not info.gender and info.keywords:
         kw_set = set([str(k).strip() for k in info.keywords if k is not None])
         male_hits = {"男", "男性", "male", "m", "man"} & {k.lower() if isinstance(k, str) else str(k) for k in kw_set}
@@ -611,6 +703,10 @@ def read_image_metadata(filepath: str) -> ImageMetadataInfo:
     # 原图链接兜底：从 titi_json/source_inputs/source_images 提取
     if (not info.image_url) and info.titi_json:
         info.image_url = _extract_image_url_from_titi_json(info.titi_json)
+
+    # 警号兜底：从 titi_json.d2i_profile 及其 extra_fields 提取
+    if (not info.police_id) and info.titi_json:
+        info.police_id = _extract_police_id_from_titi_json(info.titi_json)
 
     # 判断状态
     info.status = _determine_status(info)
@@ -738,8 +834,9 @@ def _read_with_pyexiv2(filepath: str, info: ImageMetadataInfo):
                 if not info.image_url:
                     info.image_url = _extract_image_url_from_titi_json(titi_json)
                 gender = (titi_json.get("d2i_profile") or {}).get("gender")
-                if isinstance(gender, str) and gender.strip():
-                    info.gender = gender.strip()
+                g = _normalize_gender_value(gender)
+                if g:
+                    info.gender = g
             except Exception:
                 pass
 
@@ -775,8 +872,9 @@ def _read_with_pyexiv2(filepath: str, info: ImageMetadataInfo):
                     if not info.image_url:
                         info.image_url = _extract_image_url_from_titi_json(parsed)
                     gender = (parsed.get("d2i_profile") or {}).get("gender")
-                    if isinstance(gender, str) and gender.strip():
-                        info.gender = gender.strip()
+                    g = _normalize_gender_value(gender)
+                    if g:
+                        info.gender = g
                     if not info.person:
                         name = (parsed.get("d2i_profile") or {}).get("name")
                         if isinstance(name, str) and name.strip():
@@ -959,8 +1057,9 @@ def _read_with_piexif(filepath: str, info: ImageMetadataInfo):
                             if not info.image_url:
                                 info.image_url = _extract_image_url_from_titi_json(parsed)
                             gender = (parsed.get("d2i_profile") or {}).get("gender")
-                            if isinstance(gender, str) and gender.strip():
-                                info.gender = gender.strip()
+                            g = _normalize_gender_value(gender)
+                            if g:
+                                info.gender = g
                             if not info.person:
                                 name = (parsed.get("d2i_profile") or {}).get("name")
                                 if isinstance(name, str) and name.strip():
@@ -1032,17 +1131,48 @@ def clean_text(text: str) -> str:
     return text
 
 
-def clean_keywords(keywords: List[str]) -> List[str]:
-    """清洗关键词列表"""
+def _normalize_keyword_token(value: Any) -> str:
+    raw = clean_text(str(value or "")).strip().strip(",，、;；|/\\")
+    if not raw:
+        return ""
+    lowered = raw.lower()
+    if lowered in KEYWORD_UNKNOWN_TOKENS or raw in KEYWORD_UNKNOWN_TOKENS:
+        return ""
+    if re.match(r"^https?://", raw, flags=re.IGNORECASE):
+        return ""
+    if re.search(r"[，。；;！？!?：:\n\r\t]", raw):
+        return ""
+    if re.search(r"\s", raw):
+        return ""
+    if len(raw) == 1 and raw not in KEYWORD_ALLOWED_SINGLE:
+        return ""
+    if len(raw) > KEYWORD_MAX_LENGTH:
+        return ""
+    if re.fullmatch(r"\d+", raw):
+        return ""
+    if re.fullmatch(r"\d{4}(?:[年/-]\d{1,2}(?:[月/-]\d{1,2})?)?", raw):
+        return ""
+    if re.fullmatch(r"\d{1,3}岁", raw):
+        return ""
+    return raw
+
+
+def clean_keywords(keywords: List[str], max_count: int = KEYWORD_MAX_COUNT) -> List[str]:
+    """清洗关键词列表（少而精，默认最多 6 个）"""
+    if not isinstance(keywords, list):
+        return []
     cleaned = []
     seen = set()
-    
+
     for kw in keywords:
-        kw = clean_text(kw)
-        if kw and kw not in seen:
-            seen.add(kw)
+        kw = _normalize_keyword_token(kw)
+        key = kw.casefold() if kw else ""
+        if kw and key not in seen:
+            seen.add(key)
             cleaned.append(kw)
-    
+            if len(cleaned) >= max(1, int(max_count or KEYWORD_MAX_COUNT)):
+                break
+
     return cleaned
 
 
@@ -1076,6 +1206,7 @@ def update_metadata_preserve_others(
         person = new_metadata.get('person', '')
         gender = new_metadata.get('gender', '')
         position = new_metadata.get('position', '') # 新增：职务
+        police_id = new_metadata.get('police_id', '')  # 新增：警号
         
         # 额外字段
         titi_asset_id = new_metadata.get('titi_asset_id', '')
@@ -1091,6 +1222,10 @@ def update_metadata_preserve_others(
             person = clean_text(person)
             gender = clean_text(gender)
             position = clean_text(position)
+            police_id = clean_text(police_id)
+
+        gender = _normalize_gender_value(gender)
+        police_id = _normalize_police_id_value(police_id)
         
         # 3. 更新字段
         if title:
@@ -1178,14 +1313,25 @@ def update_metadata_preserve_others(
         if city:
             profile["city"] = city
         if gender:
-            g = str(gender).strip()
-            if g:
-                g_lower = g.lower()
-                if g_lower in ("male", "m", "man", "男性"):
-                    g = "男"
-                elif g_lower in ("female", "f", "woman", "女性"):
-                    g = "女"
-                profile["gender"] = g
+            profile["gender"] = gender
+        elif "gender" in profile:
+            existing_gender = _normalize_gender_value(profile.get("gender"))
+            if existing_gender:
+                profile["gender"] = existing_gender
+            else:
+                profile.pop("gender", None)
+
+        if (not police_id) and isinstance(new_metadata.get("d2i_profile"), dict):
+            police_id = _extract_police_id_from_profile(new_metadata.get("d2i_profile"))
+        police_id = _normalize_police_id_value(police_id)
+        if police_id:
+            profile["police_id"] = police_id
+        elif "police_id" in profile:
+            existing_police_id = _normalize_police_id_value(profile.get("police_id"))
+            if existing_police_id:
+                profile["police_id"] = existing_police_id
+            else:
+                profile.pop("police_id", None)
         if profile:
             profile["extracted_at"] = datetime.utcnow().isoformat() + "Z"
             old_titi["d2i_profile"] = profile
@@ -1314,7 +1460,7 @@ def export_report(
                 # 表头
                 writer.writerow([
                     '文件名', '标题', '描述', '关键词', '关键词数',
-                    '来源页面', '原图链接', '城市', '人物', '状态', '修改时间'
+                    '来源页面', '原图链接', '城市', '人物', '警号', '状态', '修改时间'
                 ])
                 # 数据
                 for img in images:
@@ -1328,6 +1474,7 @@ def export_report(
                         img.image_url,
                         img.city,
                         img.person,
+                        img.police_id,
                         img.status_text,
                         img.modified_time.strftime('%Y-%m-%d %H:%M')
                     ])
@@ -1341,7 +1488,7 @@ def export_report(
             
             # 表头
             headers = ['文件名', '标题', '描述', '关键词', '关键词数',
-                      '来源页面', '原图链接', '城市', '人物', '状态', '修改时间']
+                      '来源页面', '原图链接', '城市', '人物', '警号', '状态', '修改时间']
             ws.append(headers)
             
             # 数据
@@ -1356,6 +1503,7 @@ def export_report(
                     img.image_url,
                     img.city,
                     img.person,
+                    img.police_id,
                     img.status_text,
                     img.modified_time.strftime('%Y-%m-%d %H:%M')
                 ])

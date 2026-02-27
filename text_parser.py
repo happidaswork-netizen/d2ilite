@@ -29,10 +29,70 @@ _ORG_SPLIT_TOKENS = (
     "司法局", "法院", "检察院", "政府", "公司", "集团", "学校", "医院", "委员会", "办公室",
 )
 
+_KEYWORD_MAX_COUNT = 6
+_KEYWORD_MAX_LENGTH = 10
+_KEYWORD_ALLOWED_SINGLE = {"男", "女"}
+_KEYWORD_UNKNOWN_TOKENS = {
+    "unknown",
+    "unkonw",
+    "n/a",
+    "na",
+    "none",
+    "null",
+    "未知",
+    "不详",
+    "未详",
+    "待补充",
+    "-",
+}
+
 
 def _normalize_text(text):
     s = str(text or "").replace("\u3000", " ").replace("\r", " ").replace("\n", " ")
     return re.sub(r"\s+", " ", s).strip()
+
+
+def _sanitize_keyword_token(value):
+    raw = _normalize_text(value).strip().strip(",，、;；|/\\")
+    if not raw:
+        return ""
+    lowered = raw.lower()
+    if lowered in _KEYWORD_UNKNOWN_TOKENS or raw in _KEYWORD_UNKNOWN_TOKENS:
+        return ""
+    if re.match(r"^https?://", raw, flags=re.IGNORECASE):
+        return ""
+    if re.search(r"[，。；;！？!?：:\n\r\t]", raw):
+        return ""
+    if re.search(r"\s", raw):
+        return ""
+    if len(raw) == 1 and raw not in _KEYWORD_ALLOWED_SINGLE:
+        return ""
+    if len(raw) > _KEYWORD_MAX_LENGTH:
+        return ""
+    if re.fullmatch(r"\d+", raw):
+        return ""
+    if re.fullmatch(r"\d{4}(?:[年/-]\d{1,2}(?:[月/-]\d{1,2})?)?", raw):
+        return ""
+    if re.fullmatch(r"\d{1,3}岁", raw):
+        return ""
+    return raw
+
+
+def _compact_keywords(values, max_count=_KEYWORD_MAX_COUNT):
+    cleaned = []
+    seen = set()
+    for kw in values or []:
+        token = _sanitize_keyword_token(kw)
+        if not token:
+            continue
+        key = token.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        cleaned.append(token)
+        if len(cleaned) >= max(1, int(max_count or _KEYWORD_MAX_COUNT)):
+            break
+    return cleaned
 
 
 def _compact_location(candidate):
@@ -282,9 +342,6 @@ def extract_person_info(text):
             year = match.group(1)
             if 1900 <= int(year) <= 2025:
                 info['birth_year'] = year
-                # 计算年代关键词
-                decade = (int(year) // 10) * 10
-                keywords.append(f"{decade}s")
                 break
     
     # ===== 年龄 =====
@@ -389,15 +446,8 @@ def extract_person_info(text):
             if match and len(match) >= 3:
                 keywords.append(match)
     
-    # 去重并限制关键词数量
-    seen = set()
-    unique_keywords = []
-    for kw in keywords:
-        if kw not in seen and (len(kw) >= 2 or kw in ('男', '女')):
-            seen.add(kw)
-            unique_keywords.append(kw)
-    
-    info['keywords'] = unique_keywords[:10]  # 最多10个关键词
+    # 去重并限制关键词数量（少而精）
+    info['keywords'] = _compact_keywords(keywords, max_count=_KEYWORD_MAX_COUNT)
     
     return info
 
@@ -458,6 +508,7 @@ def build_metadata_from_item(item):
         keywords.insert(0, extracted['profession'])
     if extracted.get('gender') and extracted['gender'] not in keywords:
         keywords.insert(0, extracted['gender'])
+    keywords = _compact_keywords(keywords, max_count=_KEYWORD_MAX_COUNT)
     
     return {
         # 将简介追加到标题，以便在 Windows 悬停时显示完整信息

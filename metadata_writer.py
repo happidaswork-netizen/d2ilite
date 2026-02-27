@@ -128,6 +128,55 @@ def _extract_image_url_from_titi_json(titi_json):
     return ""
 
 
+def _normalize_police_id_value(value):
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    lowered = raw.lower()
+    unknown_tokens = {
+        "unknown",
+        "unkonw",
+        "n/a",
+        "na",
+        "none",
+        "null",
+        "未知",
+        "未详",
+        "不详",
+        "待补充",
+        "-",
+    }
+    if lowered in unknown_tokens or raw in unknown_tokens:
+        return ""
+    return raw
+
+
+def _extract_police_id_from_profile(profile):
+    if not isinstance(profile, dict):
+        return ""
+    keys = (
+        "police_id",
+        "police_no",
+        "police_number",
+        "badge_no",
+        "badge_id",
+        "badge_number",
+        "officer_id",
+        "警号",
+    )
+    for key in keys:
+        value = _normalize_police_id_value(profile.get(key))
+        if value:
+            return value
+    extra_fields = profile.get("extra_fields")
+    if isinstance(extra_fields, dict):
+        for key in keys:
+            value = _normalize_police_id_value(extra_fields.get(key))
+            if value:
+                return value
+    return ""
+
+
 def build_titi_json(metadata, existing_json=None, existing_asset_id=None):
     """
     构建 titi:meta JSON（支持 merge，尽量保留未知字段）
@@ -235,6 +284,13 @@ def build_titi_json(metadata, existing_json=None, existing_asset_id=None):
     gender = _normalize_gender(gender)
     if gender:
         profile["gender"] = gender
+
+    police_id = metadata.get("police_id")
+    if police_id is None and isinstance(metadata.get("d2i_profile"), dict):
+        police_id = _extract_police_id_from_profile(metadata.get("d2i_profile"))
+    police_id = _normalize_police_id_value(police_id)
+    if police_id:
+        profile["police_id"] = police_id
 
     if profile:
         profile["extracted_at"] = now
@@ -538,6 +594,9 @@ def read_xmp_metadata(image_path):
                         gender = (titi_json.get("d2i_profile") or {}).get("gender")
                         if isinstance(gender, str) and gender.strip():
                             result["gender"] = gender.strip()
+                        police_id = _extract_police_id_from_profile(titi_json.get("d2i_profile"))
+                        if police_id:
+                            result["police_id"] = police_id
                 except Exception:
                     pass
 
@@ -558,6 +617,9 @@ def read_xmp_metadata(image_path):
                             gender = (parsed.get("d2i_profile") or {}).get("gender")
                             if isinstance(gender, str) and gender.strip():
                                 result["gender"] = gender.strip()
+                            police_id = _extract_police_id_from_profile(parsed.get("d2i_profile"))
+                            if police_id:
+                                result["police_id"] = police_id
                 except Exception:
                     pass
 
@@ -575,6 +637,9 @@ def read_xmp_metadata(image_path):
                         gender = (parsed.get("d2i_profile") or {}).get("gender")
                         if isinstance(gender, str) and gender.strip():
                             result["gender"] = gender.strip()
+                        police_id = _extract_police_id_from_profile(parsed.get("d2i_profile"))
+                        if police_id:
+                            result["police_id"] = police_id
                 except Exception:
                     pass
             

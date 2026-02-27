@@ -1,0 +1,90 @@
+{
+  "site_name": "mps_qingming_2021",
+  "start_urls": [
+    "https://www.mps.gov.cn/n2255079/n7634837/n7797754/index.html"
+  ],
+  "allowed_domains": [
+    "www.mps.gov.cn",
+    "mps.gov.cn"
+  ],
+  "user_agent": "D2ILiteArchiveBot/1.0 (+local archival use)",
+  "default_headers": {
+    "Referer": "https://www.mps.gov.cn/",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+  },
+  "image_headers": {
+    "Referer": "https://www.mps.gov.cn/"
+  },
+  "output_root": "data/public_archive",
+  "selectors": {
+    "list_item": "div.main1 dl dd a[href*='/content.html']",
+    "name": [
+      "::text"
+    ],
+    "detail_link": "::attr(href)",
+    "next_page": [],
+    "detail_name": [
+      ".con_title::text"
+    ],
+    "detail_image": ".touxiang img::attr(src)",
+    "detail_gender": [],
+    "detail_summary": [
+      ".content_con p::text"
+    ],
+    "detail_full_text": [],
+    "detail_fields": {
+      "region": "xpath:normalize-space((//div[contains(@class,'nav3_small')]//a[@href])[last()])"
+    },
+    "detail_field_labels": {
+      "region": "地区"
+    }
+  },
+  "rules": {
+    "obey_robots_txt": false,
+    "snapshot_html": true,
+    "extract_images": true,
+    "write_metadata": true,
+    "named_images_dir": "",
+    "image_referer_from_detail_url": true,
+    "required_fields": [
+      "name",
+      "detail_url",
+      "image_url"
+    ],
+    "default_gender": "",
+    "gender_map": {},
+    "field_map": {},
+    "auto_unit_subdir": true,
+    "unit_name": "公安部英烈",
+    "output_subdir_pattern": "{unit}_{year}",
+    "year_hint": "2021",
+    "detail_field_labels": {
+      "region": "地区"
+    },
+    "jsl_clearance_enabled": true,
+    "jsl_max_retries": 4,
+    "image_download_mode": "browser",
+    "browser_engine": "edge"
+  },
+  "crawl": {
+    "concurrent_requests": 1,
+    "download_delay": 5,
+    "autothrottle_start_delay": 5,
+    "autothrottle_max_delay": 8,
+    "retry_times": 3,
+    "timeout_seconds": 30,
+    "blocked_statuses": [
+      403,
+      429
+    ],
+    "blocked_backoff_hours": 6,
+    "suspect_block_consecutive_failures": 3,
+    "interval_min_seconds": 5,
+    "interval_max_seconds": 8,
+    "image_interval_min_seconds": 5,
+    "image_interval_max_seconds": 8
+  }
+}
+
+
+

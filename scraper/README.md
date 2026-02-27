@@ -14,11 +14,24 @@ This module adds a slow, resumable, review-first public profile scraper:
 
 ## 1) Prepare config
 
-Copy `config.example.json` to your own file and update:
+Copy `config.example.json` (or `config.template.generic.json`) to your own file and update:
 
 - `start_urls`
 - `allowed_domains`
 - CSS/XPath selectors under `selectors`
+- optional `selectors.list_fields` can extract list-card fields (merged with detail fields later)
+- put profession-specific fields in `selectors.detail_fields` (saved to metadata `d2i_profile.extra_fields`)
+- optional field display names can be set in `selectors.detail_field_labels` or `rules.detail_field_labels`
+- optional `selectors.detail_full_text` can specify full-text selectors; if empty, crawler falls back to whole body text
+- optional `rules.field_map` (or `selectors.field_map`) maps extracted fields to fixed metadata keys during parse stage
+- optional unit-folder auto create: `rules.auto_unit_subdir` + `rules.unit_name` + `rules.output_subdir_pattern` + `rules.year_hint`
+  - supported placeholders in `output_subdir_pattern`: `{unit}`, `{year}`, `{year_suffix}`, `{site_name}`, `{host}`
+- if target uses `__jsl_clearance_s` challenge, enable `rules.jsl_clearance_enabled`
+- optional fast-mode fallback: set `rules.auto_fallback_to_browser=true` to auto-switch to browser mode when request mode is blocked/failed
+
+GUI mode (`app.py` -> "公共抓取(通用)") will auto-generate runtime config from
+`config.template.generic.json` and only asks you for one start URL.
+Template list in GUI is grouped by run status (`未完成` / `已完成`), tracked in `scraper/state/template_run_state.json` (runtime state file).
 
 ## 2) Run once
 
@@ -52,7 +65,7 @@ Preconfigured template for `tiantonglaw.com/Team`:
 - `raw/review_queue.jsonl`
 - `raw/metadata_queue.jsonl`
 - `downloads/image_downloads.jsonl`
-- `downloads/named/*.jpg` (default final folder, one file per person name)
+- `*.jpg` in `output_root` (default final output, one file per person name)
 - `reports/crawl_report.json`
 - `reports/image_download_report.json`
 - `reports/reconcile_report.json`

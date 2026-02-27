@@ -53,7 +53,7 @@ SENSITIVE_DOMAINS = [
 class ImageDownloader:
     """图片下载器 - 支持普通模式和浏览器模式，模拟自然浏览行为"""
     
-    def __init__(self, save_dir, interval_min=20, interval_max=45, timeout=30, max_retries=3, use_browser=False, downloaded_urls=None, turbo_mode=False):
+    def __init__(self, save_dir, interval_min=20, interval_max=45, timeout=30, max_retries=3, use_browser=False, downloaded_urls=None, turbo_mode=False, browser_engine="auto", disable_page_images=False):
         """
         初始化下载器
         
@@ -66,6 +66,8 @@ class ImageDownloader:
             use_browser: 是否使用浏览器模式（用于绕过JS防护）
             downloaded_urls: 已下载URL集合（由GUI管理）
             turbo_mode: 极速模式（无间隔快速下载，适合小批量）
+            browser_engine: 浏览器引擎，支持 auto/edge/chrome（默认 auto，优先 edge）
+            disable_page_images: 是否禁止页面图片自动加载（用于抓取列表/详情时降低重复流量）
         """
         self.save_dir = save_dir
         self.interval_min = interval_min
@@ -74,6 +76,8 @@ class ImageDownloader:
         self.max_retries = max_retries
         self.use_browser = use_browser
         self.turbo_mode = turbo_mode
+        self.browser_engine = str(browser_engine or "auto").strip().lower()
+        self.disable_page_images = bool(disable_page_images)
         
         # 使用传入的已下载集合，如果没有则创建空集合
         self.downloaded = downloaded_urls if downloaded_urls is not None else set()
@@ -93,6 +97,7 @@ class ImageDownloader:
         
         # 浏览器实例
         self.driver = None
+        self._browser_engine_runtime = ""
         
         # requests Session
         self.session = requests.Session()
@@ -115,74 +120,113 @@ class ImageDownloader:
         # 忽略SSL证书验证（某些政府网站证书可能有问题）
         self.session.verify = False
     
+    @staticmethod
+    def _existing_binary(paths):
+        for p in paths:
+            candidate = str(p or "").strip()
+            if candidate and os.path.exists(candidate):
+                return candidate
+        return ""
+
+    @staticmethod
+    def _apply_common_browser_flags(options):
+        options.add_argument('--disable-gpu')
+        options.add_argument('--no-sandbox')
+        options.add_argument('--disable-dev-shm-usage')
+        options.add_argument('--window-size=1920,1080')
+        options.add_argument('--ignore-certificate-errors')
+        options.add_argument('--ignore-ssl-errors')
+        options.add_argument('--disable-blink-features=AutomationControlled')
+
+    def _create_edge_driver(self, webdriver):
+        from selenium.webdriver.edge.options import Options as EdgeOptions
+
+        options = EdgeOptions()
+        self._apply_common_browser_flags(options)
+        if self.disable_page_images:
+            options.add_experimental_option("prefs", {"profile.managed_default_content_settings.images": 2})
+        options.add_experimental_option('excludeSwitches', ['enable-automation', 'enable-logging'])
+        options.add_experimental_option('useAutomationExtension', False)
+
+        edge_binary = self._existing_binary([
+            os.environ.get("D2I_EDGE_BINARY", ""),
+            r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+            r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+        ])
+        if edge_binary:
+            options.binary_location = edge_binary
+
+        return webdriver.Edge(options=options)
+
+    def _create_chrome_driver(self, webdriver):
+        from selenium.webdriver.chrome.options import Options as ChromeOptions
+
+        options = ChromeOptions()
+        self._apply_common_browser_flags(options)
+        if self.disable_page_images:
+            options.add_experimental_option("prefs", {"profile.managed_default_content_settings.images": 2})
+        options.add_experimental_option('excludeSwitches', ['enable-automation', 'enable-logging'])
+        options.add_experimental_option('useAutomationExtension', False)
+
+        chrome_binary = self._existing_binary([
+            os.environ.get("D2I_CHROME_BINARY", ""),
+            r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+            r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+        ])
+        if chrome_binary:
+            options.binary_location = chrome_binary
+
+        return webdriver.Chrome(options=options)
+
     def _init_browser(self):
-        """初始化浏览器 - 使用 undetected-chromedriver 绕过反爬虫检测"""
+        """初始化浏览器 - 使用 Selenium（优先 Edge，其次 Chrome）"""
         if self.driver is not None:
             return
         
         try:
-            # 优先使用 undetected-chromedriver（更好的反检测能力）
-            uc_error = None
-            try:
-                import undetected_chromedriver as uc
-                
-                options = uc.ChromeOptions()
-                # 不使用无头模式，因为很多网站会检测
-                # options.add_argument('--headless=new')  # 禁用无头模式！
-                options.add_argument('--disable-gpu')
-                options.add_argument('--no-sandbox')
-                options.add_argument('--disable-dev-shm-usage')
-                options.add_argument('--window-size=1920,1080')
-                options.add_argument('--ignore-certificate-errors')
-                options.add_argument('--ignore-ssl-errors')
-                # 禁用自动化标志
-                options.add_argument('--disable-blink-features=AutomationControlled')
-                
-                # 创建 undetected Chrome
-                self.driver = uc.Chrome(options=options, use_subprocess=True)
-                self.driver.set_page_load_timeout(self.timeout)
-                self._is_undetected = True
-                return
-                
-            except Exception as e:
-                # ImportError 或版本不匹配等运行时错误，统一回退到普通 Selenium。
-                uc_error = e
-                print(f"[警告] undetected-chromedriver 不可用，回退 Selenium: {e}")
-            
-            # 回退到普通 Selenium（但添加更多反检测措施）
             from selenium import webdriver
-            from selenium.webdriver.chrome.service import Service
-            from selenium.webdriver.chrome.options import Options
-            from webdriver_manager.chrome import ChromeDriverManager
-            
-            options = Options()
-            # 不使用无头模式（容易被检测）
-            # options.add_argument('--headless=new')
-            options.add_argument('--disable-gpu')
-            options.add_argument('--no-sandbox')
-            options.add_argument('--disable-dev-shm-usage')
-            options.add_argument('--window-size=1920,1080')
-            options.add_argument('--ignore-certificate-errors')
-            options.add_argument('--ignore-ssl-errors')
-            # 反自动化检测
-            options.add_argument('--disable-blink-features=AutomationControlled')
-            options.add_experimental_option('excludeSwitches', ['enable-automation', 'enable-logging'])
-            options.add_experimental_option('useAutomationExtension', False)
-            
-            service = Service(ChromeDriverManager().install())
-            self.driver = webdriver.Chrome(service=service, options=options)
-            self.driver.set_page_load_timeout(self.timeout)
-            
-            # 移除 webdriver 标志
-            self.driver.execute_cdp_cmd('Page.addScriptToEvaluateOnNewDocument', {
-                'source': '''
-                    Object.defineProperty(navigator, 'webdriver', {
-                        get: () => undefined
-                    })
-                '''
-            })
-            self._is_undetected = False
-            
+            pref = self.browser_engine
+            if pref not in {"auto", "edge", "chrome"}:
+                pref = "auto"
+            if pref == "edge":
+                engine_order = ["edge", "chrome"]
+            elif pref == "chrome":
+                engine_order = ["chrome", "edge"]
+            else:
+                engine_order = ["edge", "chrome"]
+
+            errors = []
+            for engine in engine_order:
+                try:
+                    if engine == "edge":
+                        self.driver = self._create_edge_driver(webdriver)
+                    else:
+                        self.driver = self._create_chrome_driver(webdriver)
+
+                    self.driver.set_page_load_timeout(self.timeout)
+                    try:
+                        self.driver.execute_cdp_cmd('Page.addScriptToEvaluateOnNewDocument', {
+                            'source': '''
+                                Object.defineProperty(navigator, 'webdriver', {
+                                    get: () => undefined
+                                })
+                            '''
+                        })
+                    except Exception:
+                        pass
+                    self._browser_engine_runtime = engine
+                    print(f"[INFO] 浏览器模式使用: {engine}")
+                    return
+                except Exception as e:
+                    errors.append(f"{engine}: {e}")
+                    try:
+                        if self.driver:
+                            self.driver.quit()
+                    except Exception:
+                        pass
+                    self.driver = None
+
+            raise Exception("; ".join(errors) if errors else "no_browser_engine_available")
         except Exception as e:
             raise Exception(f"初始化浏览器失败: {str(e)}")
     

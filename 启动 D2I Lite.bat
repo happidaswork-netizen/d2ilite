@@ -1,5 +1,6 @@
 @echo off
 setlocal EnableExtensions DisableDelayedExpansion
+chcp 65001 >nul
 cd /d "%~dp0"
 
 set "RC=1"
@@ -29,7 +30,7 @@ if exist "%VENV_PYW%" (
     if "%RC%"=="0" goto :done
     echo [ERROR] GUI start failed, code %RC%.
     echo [HINT] Run with console mode for details:
-    echo [HINT]    启动 D2I Lite.bat --console
+    echo [HINT]    .venv\Scripts\python.exe app.py
     goto :failed
 )
 

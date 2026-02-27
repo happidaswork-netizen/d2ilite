@@ -1,0 +1,143 @@
+{
+  "site_name": "haiwen_law_professionals",
+  "start_urls": [
+    "http://www.haiwen-law.com/26/"
+  ],
+  "allowed_domains": [
+    "www.haiwen-law.com",
+    "haiwen-law.com"
+  ],
+  "user_agent": "D2ILiteArchiveBot/1.0 (+local archival use)",
+  "default_headers": {
+    "Referer": "http://www.haiwen-law.com/26/",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+  },
+  "image_headers": {
+    "Referer": "http://www.haiwen-law.com/26/"
+  },
+  "output_root": "data/public_archive",
+  "selectors": {
+    "list_item": "div.zytd_section ul li",
+    "name": [
+      ".zwname::text"
+    ],
+    "detail_link": "a::attr(href)",
+    "list_fields": {
+      "english_name": ".ywname::text",
+      "title": ".zhiw::text",
+      "location_text": ".wz::text",
+      "expertise_text": ".info::text"
+    },
+    "next_page": [
+      "xpath://a[contains(@href,'/26/pn')]/@href"
+    ],
+    "detail_name": [
+      ".wordsbox .tit1::text"
+    ],
+    "detail_image": [
+      "xpath:concat('/', substring-before(substring-after(string(//div[contains(@class,'wordsbox')]//div[contains(@class,'pic')][1]/@style), \"url('/\"), \"')\"))"
+    ],
+    "detail_gender": [],
+    "detail_summary": [
+      ".wordsbox .tit3::text",
+      "xpath://div[contains(@class,'lsjj_section')]//div[contains(@class,'right')]//ul/li[1]//div[contains(@class,'text')]//text()"
+    ],
+    "detail_full_text": [
+      "xpath://div[contains(@class,'lsjj_section')]//div[contains(@class,'right')]//ul/li//div[contains(@class,'tit1')]//text()",
+      "xpath://div[contains(@class,'lsjj_section')]//div[contains(@class,'right')]//ul/li//div[contains(@class,'text')]//text()"
+    ],
+    "detail_fields": {
+      "english_name": ".wordsbox .tit2::text",
+      "title": "xpath:normalize-space(substring-after(string(//div[contains(@class,'wordsbox')]//div[contains(@class,'tit1')]/span[1]), '|'))",
+      "expertise_text": ".wordsbox .tit3::text",
+      "phone_text": "xpath:normalize-space((//div[contains(@class,'wordsbox')]//div[contains(@class,'boxs')]//div[contains(@class,'wors')][1]//text())[1])",
+      "email_text": "xpath:normalize-space((//div[contains(@class,'wordsbox')]//div[contains(@class,'boxs')]//div[contains(@class,'wors')][contains(normalize-space(),'@')])[1])",
+      "location_text": "xpath:normalize-space((//div[contains(@class,'wordsbox')]//div[contains(@class,'boxs')]//div[contains(@class,'wors')][3])[1])",
+      "resume_pdf": "xpath://div[contains(@class,'wordsbox')]//div[contains(@class,'boxs')]//a[contains(normalize-space(),'下载简历')]/@href"
+    },
+    "detail_field_labels": {
+      "english_name": "英文名",
+      "title": "职位",
+      "expertise_text": "专业领域",
+      "phone_text": "电话",
+      "email_text": "邮箱",
+      "location_text": "工作地点",
+      "resume_pdf": "简历链接"
+    }
+  },
+  "rules": {
+    "obey_robots_txt": true,
+    "snapshot_html": true,
+    "extract_images": true,
+    "write_metadata": true,
+    "write_metadata_inline_per_item": true,
+    "named_images_dir": "",
+    "image_referer_from_detail_url": true,
+    "required_fields": [
+      "name",
+      "detail_url",
+      "image_url"
+    ],
+    "default_gender": "",
+    "gender_map": {},
+    "field_map": {
+      "person": [
+        "name"
+      ],
+      "position": [
+        "field.title"
+      ],
+      "english_name": [
+        "field.english_name"
+      ],
+      "email": [
+        "field.email_text"
+      ],
+      "city": [
+        "field.location_text"
+      ],
+      "summary": [
+        "summary"
+      ],
+      "full_content": [
+        "full_content"
+      ]
+    },
+    "auto_unit_subdir": true,
+    "unit_name": "海问律师事务所",
+    "output_subdir_pattern": "{unit}_专业人员",
+    "year_hint": "",
+    "detail_field_labels": {
+      "english_name": "英文名",
+      "title": "职位",
+      "expertise_text": "专业领域",
+      "phone_text": "电话",
+      "email_text": "邮箱",
+      "location_text": "工作地点",
+      "resume_pdf": "简历链接"
+    },
+    "image_download_mode": "requests_jsl",
+    "auto_fallback_to_browser": true,
+    "browser_engine": "edge",
+    "output_mode": "images_only_with_record",
+    "keep_record_file": true
+  },
+  "crawl": {
+    "concurrent_requests": 1,
+    "download_delay": 5,
+    "autothrottle_start_delay": 5,
+    "autothrottle_max_delay": 8,
+    "retry_times": 3,
+    "timeout_seconds": 30,
+    "blocked_statuses": [
+      403,
+      429
+    ],
+    "blocked_backoff_hours": 6,
+    "suspect_block_consecutive_failures": 3,
+    "interval_min_seconds": 5,
+    "interval_max_seconds": 8,
+    "image_interval_min_seconds": 5,
+    "image_interval_max_seconds": 8
+  }
+}

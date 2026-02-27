@@ -8,3 +8,4 @@ data/public_archive/
 scraper/config.local.json
 tmp_tiantong_*
 scraper/config.*.test*.json
+scraper/state/

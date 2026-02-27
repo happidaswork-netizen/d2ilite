@@ -1,6 +1,7 @@
 import hashlib
 import json
 import re
+import subprocess
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
@@ -20,7 +21,60 @@ def _utc_now_iso() -> str:
 def _normalize_text(value: Optional[str]) -> str:
     if not value:
         return ""
-    return " ".join(value.split()).strip()
+    text = " ".join(str(value).split()).strip()
+    if not text:
+        return ""
+    if re.search(r"[\u4e00-\u9fff]", text):
+        return text
+    latin1_like = sum(1 for ch in text if 0x80 <= ord(ch) <= 0xFF)
+    if latin1_like < 2:
+        return text
+    try:
+        repaired = text.encode("latin1").decode("utf-8")
+    except Exception:
+        return text
+    if re.search(r"[\u4e00-\u9fff]", repaired):
+        return repaired
+    return text
+
+
+def _normalize_multiline_text(value: Optional[str]) -> str:
+    text = str(value or "").replace("\r\n", "\n").replace("\r", "\n")
+    if not text:
+        return ""
+    lines: List[str] = []
+    for raw_line in text.split("\n"):
+        line = _normalize_text(raw_line)
+        if line:
+            lines.append(line)
+    return "\n".join(lines)
+
+
+def _normalize_gender(value: Any) -> str:
+    raw = _normalize_text(str(value or ""))
+    if not raw:
+        return ""
+    lowered = raw.lower()
+    unknown_tokens = {
+        "unknown",
+        "unkonw",
+        "n/a",
+        "na",
+        "none",
+        "null",
+        "未知",
+        "未详",
+        "不详",
+        "待补充",
+        "-",
+    }
+    if lowered in unknown_tokens or raw in unknown_tokens:
+        return ""
+    if lowered in {"male", "m", "man", "男性"} or raw == "男":
+        return "男"
+    if lowered in {"female", "f", "woman", "女性"} or raw == "女":
+        return "女"
+    return raw
 
 
 def _ensure_list(value: Any) -> List[str]:
@@ -74,13 +128,26 @@ class PublicProfileSpider(scrapy.Spider):
             for s in self.crawl_cfg.get("blocked_statuses", [403, 429])
             if str(s).strip().isdigit()
         }
-        self.handle_httpstatus_list = sorted(self.blocked_statuses.union({404}))
+        self.jsl_clearance_enabled = bool(self.rules.get("jsl_clearance_enabled", False))
+        self.jsl_max_retries = max(1, int(self.rules.get("jsl_max_retries", 3)))
+        http_statuses = set(self.blocked_statuses).union({404})
+        if self.jsl_clearance_enabled:
+            http_statuses.update({412, 521})
+        self.handle_httpstatus_list = sorted(http_statuses)
 
         self.required_fields = _ensure_list(
             self.rules.get("required_fields", ["name", "detail_url", "image_url"])
         )
-        self.default_gender = str(self.rules.get("default_gender", "unknown"))
-        self.gender_map = {str(k): str(v) for k, v in self.rules.get("gender_map", {}).items()}
+        self.default_gender = _normalize_gender(self.rules.get("default_gender", ""))
+        self.field_map = self._resolve_field_map()
+        self.gender_map: Dict[str, str] = {}
+        for k, v in dict(self.rules.get("gender_map", {})).items():
+            key_raw = str(k)
+            key_norm = _normalize_text(key_raw)
+            value_norm = _normalize_gender(v)
+            self.gender_map[key_raw] = value_norm
+            if key_norm:
+                self.gender_map[key_norm] = value_norm
 
         self.blocked_until: Optional[str] = None
         self.blocked_reason: Optional[str] = None
@@ -95,6 +162,7 @@ class PublicProfileSpider(scrapy.Spider):
 
         self._known_detail_urls = self._load_existing_detail_urls()
         self._seen_list_urls: set = set()
+        self._clearance_cookie_header: str = ""
 
         self.raw_dir.mkdir(parents=True, exist_ok=True)
         self.state_dir.mkdir(parents=True, exist_ok=True)
@@ -104,6 +172,17 @@ class PublicProfileSpider(scrapy.Spider):
 
     def parse(self, response: Response, **kwargs: Any) -> Iterable[Request]:
         del kwargs
+        self._remember_set_cookies(response)
+        retry_req = self._retry_jsl_clearance(
+            response,
+            callback=self.parse,
+            errback=self.errback_list,
+            phase="list",
+        )
+        if retry_req is not None:
+            yield retry_req
+            return
+
         self._seen_list_urls.add(response.url)
         if self._check_blocked(response):
             return
@@ -128,12 +207,21 @@ class PublicProfileSpider(scrapy.Spider):
             name = self._extract_first(node, self.selectors.get("name"))
             detail_link = self._extract_first(node, self.selectors.get("detail_link"))
             detail_url = response.urljoin(detail_link) if detail_link else ""
+            list_fields: Dict[str, str] = {}
+            for key, selector in dict(self.selectors.get("list_fields", {})).items():
+                field_key = str(key).strip()
+                if not field_key:
+                    continue
+                field_value = self._normalize_optional_field(self._extract_first(node, selector))
+                if field_value:
+                    list_fields[field_key] = field_value
 
             list_record = {
                 "scraped_at": _utc_now_iso(),
                 "list_url": response.url,
                 "name": name,
                 "detail_url": detail_url,
+                "fields": list_fields,
             }
             self._append_jsonl(self.list_path, list_record)
 
@@ -155,28 +243,42 @@ class PublicProfileSpider(scrapy.Spider):
 
             self._known_detail_urls.add(detail_url)
             self.metrics["detail_requests_enqueued"] += 1
-            yield response.follow(
+            req = response.follow(
                 detail_url,
                 callback=self.parse_detail,
                 errback=self.errback_detail,
                 meta={
                     "seed_name": name,
                     "list_url": response.url,
+                    "seed_fields": list_fields,
                 },
             )
+            yield self._apply_clearance_cookie_to_request(req)
 
         for next_url in self._iter_next_pages(response, list_source):
             full_next_url = response.urljoin(next_url)
             if full_next_url in self._seen_list_urls:
                 continue
             self._seen_list_urls.add(full_next_url)
-            yield response.follow(
+            req = response.follow(
                 full_next_url,
                 callback=self.parse,
                 errback=self.errback_list,
             )
+            yield self._apply_clearance_cookie_to_request(req)
 
-    def parse_detail(self, response: Response) -> None:
+    def parse_detail(self, response: Response) -> Iterable[Request]:
+        self._remember_set_cookies(response)
+        retry_req = self._retry_jsl_clearance(
+            response,
+            callback=self.parse_detail,
+            errback=self.errback_detail,
+            phase="detail",
+        )
+        if retry_req is not None:
+            yield retry_req
+            return
+
         if self._check_blocked(response):
             return
         if response.status != 200:
@@ -197,12 +299,49 @@ class PublicProfileSpider(scrapy.Spider):
         image_url_raw = self._extract_first(detail_source, self.selectors.get("detail_image"))
         image_url = response.urljoin(image_url_raw) if image_url_raw else ""
         gender_text = self._extract_first(detail_source, self.selectors.get("detail_gender"))
-        gender = self.gender_map.get(gender_text, self.default_gender)
+        gender_lookup = _normalize_text(gender_text)
+        mapped_gender = self.gender_map.get(gender_text)
+        if mapped_gender is None and gender_lookup:
+            mapped_gender = self.gender_map.get(gender_lookup)
+        gender = _normalize_gender(mapped_gender if mapped_gender is not None else gender_text)
+        if not gender:
+            gender = self.default_gender
         summary = self._extract_joined_text(detail_source, self.selectors.get("detail_summary"))
+        full_content = self._extract_full_content_text(detail_source)
+
+        seed_fields = response.meta.get("seed_fields", {})
+        base_fields: Dict[str, str] = {}
+        if isinstance(seed_fields, dict):
+            for key, value in seed_fields.items():
+                field_key = str(key).strip()
+                field_value = self._normalize_optional_field(value)
+                if field_key and field_value:
+                    base_fields[field_key] = field_value
 
         extra_fields: Dict[str, str] = {}
         for key, selector in dict(self.selectors.get("detail_fields", {})).items():
-            extra_fields[str(key)] = self._extract_first(detail_source, selector)
+            field_key = str(key).strip()
+            if not field_key:
+                continue
+            field_value = self._normalize_optional_field(self._extract_first(detail_source, selector))
+            if field_value:
+                extra_fields[field_key] = field_value
+
+        merged_fields: Dict[str, str] = dict(base_fields)
+        for key, value in extra_fields.items():
+            if value:
+                merged_fields[key] = value
+
+        mapped_fields = self._apply_field_map(
+            name=name,
+            gender=gender,
+            summary=summary,
+            full_content=full_content,
+            detail_url=response.url,
+            list_url=str(response.meta.get("list_url", "")),
+            image_url=image_url,
+            fields=merged_fields,
+        )
 
         record = {
             "scraped_at": _utc_now_iso(),
@@ -213,7 +352,9 @@ class PublicProfileSpider(scrapy.Spider):
             "gender": gender,
             "gender_raw": gender_text,
             "summary": summary,
-            "fields": extra_fields,
+            "full_content": full_content,
+            "fields": merged_fields,
+            "mapped": mapped_fields,
         }
         self._append_jsonl(self.profile_path, record)
         self.metrics["detail_pages_saved"] += 1
@@ -230,6 +371,148 @@ class PublicProfileSpider(scrapy.Spider):
                     "record": record,
                 },
             )
+
+    def _retry_jsl_clearance(
+        self,
+        response: Response,
+        *,
+        callback: Any,
+        errback: Any,
+        phase: str,
+    ) -> Optional[Request]:
+        if not self.jsl_clearance_enabled:
+            return None
+        if response.status not in {412, 521}:
+            return None
+        body = response.text or ""
+        if "<script" not in body.lower():
+            return None
+
+        retry_count = int(response.meta.get("jsl_retry_count", 0))
+        if retry_count >= self.jsl_max_retries:
+            self._record_failure(
+                url=response.url,
+                reason="jsl_retry_exhausted",
+                context={"phase": phase, "status": response.status},
+            )
+            return None
+
+        cookie_pair = self._solve_jsl_cookie(response.url, body)
+        if not cookie_pair:
+            self._record_failure(
+                url=response.url,
+                reason="jsl_solve_failed",
+                context={"phase": phase, "status": response.status},
+            )
+            return None
+
+        new_request = response.request.replace(
+            callback=callback,
+            errback=errback,
+            dont_filter=True,
+        )
+        request_cookie_header = response.request.headers.get("Cookie", b"").decode(
+            "utf-8", errors="ignore"
+        ).strip()
+        existing_cookie_header = self._merge_cookie_header(
+            self._clearance_cookie_header,
+            request_cookie_header,
+        )
+        merged_cookie_header = existing_cookie_header
+        for raw_set_cookie in response.headers.getlist("Set-Cookie"):
+            set_cookie_text = raw_set_cookie.decode("utf-8", errors="ignore")
+            merged_cookie_header = self._merge_cookie_header(merged_cookie_header, set_cookie_text)
+        merged_cookie_header = self._merge_cookie_header(merged_cookie_header, cookie_pair)
+        if merged_cookie_header:
+            self._clearance_cookie_header = self._merge_cookie_header(
+                self._clearance_cookie_header,
+                merged_cookie_header,
+            )
+            new_request.headers["Cookie"] = self._clearance_cookie_header.encode("utf-8")
+        new_request.meta["jsl_retry_count"] = retry_count + 1
+        self.logger.info(
+            "Solved jsl clearance (%s), retry %s (attempt %s)",
+            response.status,
+            response.url,
+            retry_count + 1,
+        )
+        return new_request
+
+    def _solve_jsl_cookie(self, url: str, payload: str) -> str:
+        script_match = re.search(r"<script[^>]*>(.*?)</script>", payload, flags=re.S | re.I)
+        if not script_match:
+            return ""
+        script = script_match.group(1)
+
+        parsed = urlparse(url)
+        path = parsed.path or "/"
+        search = f"?{parsed.query}" if parsed.query else ""
+
+        node_code = (
+            "let assigned='';\n"
+            "const document={_cookie:'',set cookie(v){assigned=v;this._cookie=v;},get cookie(){return this._cookie;}};\n"
+            f"const location={{pathname:{json.dumps(path)},search:{json.dumps(search)},href:''}};\n"
+            "const window={location,navigator:{userAgent:'Mozilla/5.0'},outerHeight:1000,innerHeight:1000,"
+            "outerWidth:1200,innerWidth:1200,Firebug:false,_phantom:false,__phantomas:false,chrome:{runtime:{}}};\n"
+            "global.window=window;global.document=document;global.location=location;\n"
+            "global.alert=function(){};global.setTimeout=function(fn,ms){fn();return 0;};\n"
+            f"{script}\n"
+            "console.log((assigned||document._cookie||'').split(';')[0]);\n"
+        )
+
+        try:
+            proc = subprocess.run(
+                ["node", "-"],
+                input=node_code.encode("utf-8"),
+                capture_output=True,
+                timeout=20,
+            )
+        except Exception:
+            self.logger.exception("failed to execute node for jsl cookie: %s", url)
+            return ""
+        if proc.returncode != 0:
+            stderr = proc.stderr.decode("utf-8", errors="ignore").strip()
+            self.logger.warning("jsl node solver failed (%s): %s", url, stderr[:280])
+            return ""
+
+        output_lines = proc.stdout.decode("utf-8", errors="ignore").strip().splitlines()
+        if not output_lines:
+            return ""
+        first = output_lines[0].strip()
+        if "=" not in first:
+            return ""
+        return first
+
+    @staticmethod
+    def _merge_cookie_header(existing_header: str, cookie_pair: str) -> str:
+        merged: Dict[str, str] = {}
+
+        for chunk in str(existing_header or "").split(";"):
+            part = chunk.strip()
+            if not part or "=" not in part:
+                continue
+            key, value = part.split("=", 1)
+            merged[key.strip()] = value.strip()
+
+        pair = str(cookie_pair or "").split(";", 1)[0].strip()
+        if pair and ("=" in pair):
+            key, value = pair.split("=", 1)
+            merged[key.strip()] = value.strip()
+
+        return "; ".join([f"{k}={v}" for k, v in merged.items()])
+
+    def _remember_set_cookies(self, response: Response) -> None:
+        for raw_set_cookie in response.headers.getlist("Set-Cookie"):
+            set_cookie_text = raw_set_cookie.decode("utf-8", errors="ignore")
+            self._clearance_cookie_header = self._merge_cookie_header(
+                self._clearance_cookie_header,
+                set_cookie_text,
+            )
+
+    def _apply_clearance_cookie_to_request(self, request: Request) -> Request:
+        if self._clearance_cookie_header:
+            request.headers["Cookie"] = self._clearance_cookie_header.encode("utf-8")
+        return request
 
     def errback_list(self, failure: Failure) -> None:
         self.metrics["failures"] += 1
@@ -288,7 +571,170 @@ class PublicProfileSpider(scrapy.Spider):
                 normalized = _normalize_text(value)
                 if normalized:
                     values.append(normalized)
-        return "\n".join(values)
+        return _normalize_multiline_text("\n".join(values))
+
+    def _extract_full_content_text(self, selector_source: Any) -> str:
+        configured = self.selectors.get("detail_full_text")
+        if configured:
+            extracted = self._extract_joined_text(selector_source, configured)
+            if extracted:
+                return extracted
+
+        fallback_xpath = (
+            "xpath://body//text()[normalize-space() and not(ancestor::script) and "
+            "not(ancestor::style) and not(ancestor::noscript)]"
+        )
+        chunks = self._select_values(selector_source, fallback_xpath)
+        merged: List[str] = []
+        last_line = ""
+        for chunk in chunks:
+            line = _normalize_text(chunk)
+            if not line:
+                continue
+            if line == last_line:
+                continue
+            merged.append(line)
+            last_line = line
+        return _normalize_multiline_text("\n".join(merged))
+
+    @staticmethod
+    def _normalize_optional_field(value: Any) -> str:
+        raw = _normalize_text(str(value or ""))
+        if not raw:
+            return ""
+        lowered = raw.lower()
+        unknown_tokens = {
+            "unknown",
+            "unkonw",
+            "n/a",
+            "na",
+            "none",
+            "null",
+            "未知",
+            "未详",
+            "不详",
+            "待补充",
+            "-",
+        }
+        if lowered in unknown_tokens or raw in unknown_tokens:
+            return ""
+        return raw
+
+    @staticmethod
+    def _strip_prefixed_label(value: str, labels: List[str]) -> str:
+        text = str(value or "").strip()
+        if not text:
+            return ""
+        for label in labels:
+            for sep in ("：", ":"):
+                prefix = f"{label}{sep}"
+                if text.startswith(prefix):
+                    return text[len(prefix) :].strip()
+        return text
+
+    def _resolve_field_map(self) -> Dict[str, List[str]]:
+        merged: Dict[str, Any] = {}
+        if isinstance(self.selectors.get("field_map"), dict):
+            merged.update(dict(self.selectors.get("field_map", {})))
+        if isinstance(self.rules.get("field_map"), dict):
+            merged.update(dict(self.rules.get("field_map", {})))
+        normalized: Dict[str, List[str]] = {}
+        for target_key, source_spec in merged.items():
+            target = str(target_key or "").strip()
+            if not target:
+                continue
+            sources = [str(x).strip() for x in _ensure_list(source_spec) if str(x).strip()]
+            if sources:
+                normalized[target] = sources
+        return normalized
+
+    def _resolve_field_value_from_source(
+        self,
+        source_key: str,
+        *,
+        name: str,
+        gender: str,
+        summary: str,
+        full_content: str,
+        detail_url: str,
+        list_url: str,
+        image_url: str,
+        fields: Dict[str, str],
+    ) -> str:
+        token = str(source_key or "").strip()
+        if not token:
+            return ""
+        lowered = token.lower()
+
+        if lowered.startswith("field.") or lowered.startswith("fields."):
+            field_key = token.split(".", 1)[1].strip()
+            return self._normalize_optional_field(fields.get(field_key, ""))
+
+        builtins: Dict[str, str] = {
+            "name": _normalize_text(name),
+            "person": _normalize_text(name),
+            "gender": _normalize_gender(gender),
+            "summary": _normalize_multiline_text(summary),
+            "full_content": _normalize_multiline_text(full_content),
+            "detail_url": _normalize_text(detail_url),
+            "source_url": _normalize_text(list_url),
+            "list_url": _normalize_text(list_url),
+            "image_url": _normalize_text(image_url),
+        }
+        if lowered in builtins:
+            return builtins[lowered]
+
+        from_fields = self._normalize_optional_field(fields.get(token, ""))
+        if from_fields:
+            return from_fields
+        return builtins.get(lowered, "")
+
+    def _apply_field_map(
+        self,
+        *,
+        name: str,
+        gender: str,
+        summary: str,
+        full_content: str,
+        detail_url: str,
+        list_url: str,
+        image_url: str,
+        fields: Dict[str, str],
+    ) -> Dict[str, str]:
+        mapped: Dict[str, str] = {}
+        for target, source_tokens in self.field_map.items():
+            value = ""
+            for token in source_tokens:
+                candidate = self._resolve_field_value_from_source(
+                    token,
+                    name=name,
+                    gender=gender,
+                    summary=summary,
+                    full_content=full_content,
+                    detail_url=detail_url,
+                    list_url=list_url,
+                    image_url=image_url,
+                    fields=fields,
+                )
+                if candidate:
+                    value = candidate
+                    break
+            if not value:
+                continue
+            target_lower = target.lower()
+            if target_lower == "gender":
+                value = _normalize_gender(value)
+            elif target_lower in {"description", "summary", "full_content"}:
+                value = _normalize_multiline_text(value)
+            elif target_lower in {"email", "email_text"}:
+                value = self._strip_prefixed_label(value, ["邮箱", "Email", "email"])
+            elif target_lower in {"city", "location", "location_text"}:
+                value = self._strip_prefixed_label(value, ["工作地点", "地点", "城市", "City", "city"])
+            else:
+                value = self._normalize_optional_field(value)
+            if value:
+                mapped[target] = value
+        return mapped
 
     def _select_values(self, selector_source: Any, selector: str) -> List[str]:
         try:
