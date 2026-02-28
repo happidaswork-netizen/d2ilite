@@ -24,6 +24,12 @@ try:
         pyexiv2.registerNs('urn:titi:ns:1.0', 'titi')
     except Exception:
         pass
+    try:
+        # Suppress noisy EXIV2 warnings that would otherwise flood GUI logs.
+        # Keep errors visible via exceptions and error-level logs.
+        pyexiv2.set_log_level(3)  # 0=debug,1=info,2=warn,3=error,4=mute
+    except Exception:
+        pass
 except ImportError:
     HAS_PYEXIV2 = False
 
@@ -1194,7 +1200,13 @@ def update_metadata_preserve_others(
         
     def _apply_update(img):
         # 1. 读取现有 XMP
-        xmp_data = img.read_xmp() or {}
+        try:
+            xmp_data = img.read_xmp() or {}
+            if not isinstance(xmp_data, dict):
+                xmp_data = {}
+        except Exception as e:
+            print(f"[警告] 读取现有XMP失败，改用空XMP继续写入 ({path}): {e}")
+            xmp_data = {}
         
         # 2. 清洗新数据
         title = new_metadata.get('title', '')
@@ -1344,18 +1356,62 @@ def update_metadata_preserve_others(
         xmp_data['Xmp.titi.meta'] = titi_json_str
 
         # 5. 写入 XMP
-        img.modify_xmp(xmp_data)
+        try:
+            img.modify_xmp(xmp_data)
+        except Exception as e:
+            print(f"[警告] 合并写入XMP失败，改用最小XMP写入 ({path}): {e}")
+            minimal_xmp: Dict[str, Any] = {}
+            if title:
+                minimal_xmp['Xmp.dc.title'] = {'lang="x-default"': title}
+            if desc:
+                minimal_xmp['Xmp.dc.description'] = {'lang="x-default"': desc}
+            if keywords:
+                minimal_xmp['Xmp.dc.subject'] = keywords
+            if source:
+                minimal_xmp['Xmp.dc.source'] = source
+            if image_url:
+                minimal_xmp['Xmp.titi.sourceImage'] = image_url
+            if city:
+                minimal_xmp['Xmp.photoshop.City'] = city
+            if person:
+                minimal_xmp['Xmp.iptcExt.PersonInImage'] = [person]
+            if position:
+                minimal_xmp['Xmp.photoshop.AuthorsPosition'] = position
+                minimal_xmp['Xmp.iptc.CreatorJobTitle'] = position
+            minimal_xmp['Xmp.titi.meta'] = titi_json_str
+            img.modify_xmp(minimal_xmp)
 
-        # 6. Windows 兼容：写入 EXIF（XPComment/UserComment）
-        new_exif = {
-            "Exif.Image.Software": "PWI Forge",
-            # 0x010E (ImageDescription) 统一保持空，避免第三方软件把它当主描述并显示乱码问号。
-            "Exif.Image.ImageDescription": "",
-            "Exif.Photo.UserComment": titi_json_str,
-        }
+        # 6. Windows 兼容：仅补充必要 EXIF，尽量不覆盖原图已有字段。
+        # - 不再强制覆盖 Software / ImageDescription
+        # - UserComment 仅在为空或已是本项目 JSON 时更新
+        try:
+            existing_exif = img.read_exif() or {}
+            if not isinstance(existing_exif, dict):
+                existing_exif = {}
+        except Exception as e:
+            print(f"[警告] 读取现有EXIF失败，按空EXIF继续 ({path}): {e}")
+            existing_exif = {}
+        new_exif: Dict[str, Any] = {}
+
         if desc:
             new_exif["Exif.Image.XPComment"] = desc
-        img.modify_exif(new_exif)
+
+        user_comment_existing = str(existing_exif.get("Exif.Photo.UserComment", "") or "").strip()
+        user_comment_l = user_comment_existing.lower()
+        can_update_user_comment = (
+            (not user_comment_existing)
+            or ("titi_asset_id" in user_comment_l)
+            or ("schema" in user_comment_l and "titi-meta" in user_comment_l)
+        )
+        if can_update_user_comment:
+            new_exif["Exif.Photo.UserComment"] = titi_json_str
+
+        if new_exif:
+            try:
+                img.modify_exif(new_exif)
+            except Exception as e:
+                # EXIF 兼容字段失败不阻断主流程（XMP 主体已写入）
+                print(f"[警告] EXIF兼容字段写入失败，已跳过 ({path}): {e}")
 
     # 安全写入：始终在临时副本上操作，写入成功且像素校验通过后再覆盖原图。
     original_fp = _pixel_fingerprint(path)
@@ -1363,8 +1419,32 @@ def update_metadata_preserve_others(
     os.close(fd)
     try:
         shutil.copy2(path, tmp_path)
-        with pyexiv2.Image(tmp_path) as img:
-            _apply_update(img)
+
+        def _looks_like_jpeg(fp: str) -> bool:
+            try:
+                with open(fp, "rb") as f:
+                    return f.read(2) == b"\xFF\xD8"
+            except Exception:
+                return False
+
+        try:
+            with pyexiv2.Image(tmp_path) as img:
+                _apply_update(img)
+        except Exception as e:
+            # 部分公开图库图片带有损坏/不兼容的 EXIF (MakerNotes)，会导致 exiv2 直接拒绝打开文件：
+            # 例如 "Directory Canon with XXXX entries considered invalid; not read."
+            # 该场景下无法“保留原 EXIF”，但为了让元数据写入继续进行，采用像素安全的兜底：
+            # 在临时副本上剥离 EXIF 后再重试写入（不重编码，不改像素）。
+            if _looks_like_jpeg(tmp_path):
+                try:
+                    print(f"[警告] 检测到损坏/不兼容EXIF，尝试剥离EXIF后重试 ({path}): {e}")
+                    piexif.remove(tmp_path)  # in-place
+                    with pyexiv2.Image(tmp_path) as img:
+                        _apply_update(img)
+                except Exception:
+                    raise
+            else:
+                raise
         return _safe_replace_with_pixel_guard(
             path,
             tmp_path,

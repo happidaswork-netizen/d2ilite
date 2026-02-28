@@ -10,7 +10,15 @@ This module adds a slow, resumable, review-first public profile scraper:
 - image download with sha256 dedupe
 - metadata queue output for later D2I import
 - auto-write metadata into downloaded images (can disable with `--skip-metadata`)
+- browser inline mode can write metadata per item while crawling (no need to wait full run end)
+- GUI monitor supports per-row manual retry (right-click row -> retry, then click `继续任务`)
 - final images are exported into one folder with person-name filenames (`rules.named_images_dir`)
+
+Monitor status semantics:
+- `√` done
+- `×` explicit failure (review/failure records)
+- `⌛` waiting for later stage
+- `…` unknown/in-progress (may become `√` when index-based dedupe state is reconciled)
 
 ## 1) Prepare config
 
@@ -28,6 +36,17 @@ Copy `config.example.json` (or `config.template.generic.json`) to your own file 
   - supported placeholders in `output_subdir_pattern`: `{unit}`, `{year}`, `{year_suffix}`, `{site_name}`, `{host}`
 - if target uses `__jsl_clearance_s` challenge, enable `rules.jsl_clearance_enabled`
 - optional fast-mode fallback: set `rules.auto_fallback_to_browser=true` to auto-switch to browser mode when request mode is blocked/failed
+- optional browser crawl page-image toggle: `rules.disable_page_images_during_crawl`
+  - default `true` (save traffic / lower anti-bot risk; browser page preview may show broken/empty images)
+  - set `false` if you need visual page-image rendering during crawl debugging
+  - in GUI setup dialog, this can be toggled directly (no manual template editing needed)
+- optional LLM enrichment (semantic fill + short biography):
+  - enable `rules.llm_enrich_enabled=true`
+  - set `rules.llm_model` and `rules.llm_api_base` (OpenAI-compatible endpoint)
+    - online API example: `https://api.openai.com/v1`
+    - local API example: `http://127.0.0.1:11434/v1` (Ollama)
+  - optional API key via `rules.llm_api_key` or env `D2I_LLM_API_KEY`
+  - default behavior: only call LLM when key fields are missing, cache to `state/llm_enrichment_cache.json`
 
 GUI mode (`app.py` -> "公共抓取(通用)") will auto-generate runtime config from
 `config.template.generic.json` and only asks you for one start URL.
@@ -70,5 +89,6 @@ Preconfigured template for `tiantonglaw.com/Team`:
 - `reports/image_download_report.json`
 - `reports/reconcile_report.json`
 - `reports/metadata_write_report.json`
+- `reports/llm_enrichment_report.json` (when LLM enhancement is enabled)
 
 All paths are created under `output_root` in config.

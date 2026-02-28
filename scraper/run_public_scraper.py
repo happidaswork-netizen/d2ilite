@@ -20,6 +20,13 @@ from scrapy import Selector
 from scrapy.crawler import CrawlerProcess
 from scrapy.settings import Settings
 
+try:
+    from PIL import Image  # type: ignore
+    HAS_PIL_IMAGE = True
+except Exception:
+    Image = None  # type: ignore
+    HAS_PIL_IMAGE = False
+
 from public_profile_spider import PublicProfileSpider, default_output_from_url
 
 # Ensure parent project modules (e.g. metadata_writer.py) are importable
@@ -44,6 +51,27 @@ except Exception as exc:  # pragma: no cover
     HAS_D2I_DOWNLOADER = False
     D2I_DOWNLOADER_ERROR = str(exc)
 
+try:
+    from metadata_manager import read_image_metadata as _read_image_metadata  # type: ignore
+    HAS_METADATA_MANAGER = True
+except Exception:
+    _read_image_metadata = None  # type: ignore
+    HAS_METADATA_MANAGER = False
+
+try:
+    from llm_enricher import LLMEnricher  # type: ignore
+    HAS_LLM_ENRICHER = True
+except Exception:
+    LLMEnricher = None  # type: ignore
+    HAS_LLM_ENRICHER = False
+
+try:
+    from text_parser import extract_person_info as _extract_person_info  # type: ignore
+    HAS_TEXT_PARSER = True
+except Exception:
+    _extract_person_info = None  # type: ignore
+    HAS_TEXT_PARSER = False
+
 
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
@@ -61,6 +89,277 @@ def load_json(path: Path, default: Any) -> Any:
 def save_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _compact_url_for_log(value: Any, *, max_len: int = 96) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    parsed = urlparse(raw)
+    if not parsed.scheme or not parsed.netloc:
+        return raw[:max_len] if len(raw) > max_len else raw
+    host = parsed.netloc
+    path = parsed.path or ""
+    parts = [p for p in path.split("/") if p]
+    if len(parts) >= 2:
+        short_path = f".../{parts[-2]}/{parts[-1]}"
+    elif parts:
+        short_path = f".../{parts[-1]}"
+    else:
+        short_path = "/"
+    compact = f"{host}{short_path}"
+    if parsed.query:
+        compact += "?..."
+    if len(compact) > max_len:
+        compact = compact[: max_len - 3] + "..."
+    return compact
+
+
+def _format_runtime_log_value(value: Any, field_key: str = "") -> str:
+    text = str(value or "").replace("\r", " ").replace("\n", " ").strip()
+    field = str(field_key or "").strip().lower()
+    if field in {"url", "detail", "image"} and text.startswith(("http://", "https://")):
+        return _compact_url_for_log(text)
+    text = re.sub(r"\s+", " ", text)
+    if len(text) > 240:
+        text = text[:237] + "..."
+    return text
+
+
+_RUNTIME_LOG_LEVEL_ZH: Dict[str, str] = {
+    "RUN": "运行",
+    "CONF": "配置",
+    "STAGE": "阶段",
+    "STEP": "步骤",
+    "STAT": "统计",
+    "INFO": "信息",
+    "WARN": "警告",
+    "FAIL": "失败",
+    "STOP": "停止",
+    "DONE": "完成",
+    "HINT": "提示",
+    "RETRY": "重试",
+}
+
+_RUNTIME_LOG_MESSAGE_ZH: Dict[str, str] = {
+    "public scraper started": "公共抓取任务启动",
+    "runtime summary": "运行参数摘要",
+    "counts on disk before run": "运行前磁盘计数",
+    "counts on disk after run": "运行后磁盘计数",
+    "backoff active, skip this run": "退避生效，跳过本次运行",
+    "metadata pre-retry start (retry failed first)": "元数据预重试开始（失败优先）",
+    "metadata pre-retry queue built": "元数据预重试队列已构建",
+    "metadata pre-retry end": "元数据预重试结束",
+    "crawl stage start": "抓取阶段开始",
+    "quick crawl failed, fallback to browser mode": "快速抓取失败，回退到浏览器模式",
+    "crawl stage end": "抓取阶段结束",
+    "quick crawl triggered backoff, fallback to browser mode and retry crawl": "快速抓取触发退避，回退浏览器模式并重试抓取",
+    "blocked detected after crawl, pause current run": "抓取后检测到阻断，暂停本次运行",
+    "crawl stage skipped by flag": "抓取阶段按参数跳过",
+    "crawl skipped snapshot": "抓取阶段跳过快照",
+    "image retry scan": "图片重试扫描",
+    "image stage forced: auto retry unresolved image items": "图片阶段强制执行：自动重试未完成项",
+    "image stage skipped: browser crawl already downloaded images inline": "图片阶段已跳过：浏览器抓取已内联下载",
+    "image stage skipped snapshot": "图片阶段跳过快照",
+    "image stage start": "图片阶段开始",
+    "quick image download failed, fallback to browser mode": "快速下载失败，回退到浏览器模式",
+    "image stage end": "图片阶段结束",
+    "image stage end snapshot": "图片阶段结束快照",
+    "quick image download triggered backoff, fallback to browser mode and retry image stage": "快速下载触发退避，回退浏览器模式并重试图片阶段",
+    "blocked detected during image download, pause current run": "图片下载检测到阻断，暂停本次运行",
+    "image stage skipped by flag": "图片阶段按参数跳过",
+    "image skipped snapshot": "图片阶段跳过快照",
+    "image stage skipped because run is paused by backoff": "图片阶段跳过：任务处于退避暂停",
+    "image skipped due backoff snapshot": "图片阶段因退避跳过快照",
+    "metadata stage skipped: inline metadata already applied": "元数据阶段已跳过：已完成内联写入",
+    "metadata skipped snapshot": "元数据阶段跳过快照",
+    "metadata stage start": "元数据阶段开始",
+    "metadata queue built": "元数据队列已构建",
+    "metadata stage end": "元数据阶段结束",
+    "metadata audit start": "元数据质检开始",
+    "metadata audit end": "元数据质检结束",
+    "metadata audit skipped by config": "元数据质检已按配置跳过",
+    "metadata audit review items queued": "元数据质检缺失项已加入复核队列",
+    "public scraper finished": "公共抓取任务结束",
+    "run paused by backoff, retry later with continue": "任务因退避暂停，请稍后点继续任务",
+    "some items need manual review or retry": "存在需要人工复核或重试的条目",
+    "metadata row retry policy active": "元数据行启用重试策略",
+    "metadata retry succeeded": "元数据重试成功",
+    "metadata write failed, scheduling retry": "元数据写入失败，计划延迟重试",
+    "metadata write failed, retry immediately": "元数据写入失败，立即重试",
+    "metadata write failed after retries": "元数据写入重试后仍失败",
+    "inline metadata skipped: local image missing": "内联元数据跳过：本地图片不存在",
+    "inline metadata write failed": "内联元数据写入失败",
+    "crawl page failed": "页面抓取失败",
+    "backoff activated during crawl": "抓取阶段触发退避",
+    "crawl list page": "抓取列表页",
+    "crawl detail page": "抓取详情页",
+    "inline image download failed": "内联图片下载失败",
+    "inline image response is not image": "内联响应不是图片",
+    "inline image downloaded": "内联图片下载成功",
+    "image download stage scanning started": "图片下载阶段扫描开始",
+    "backoff activated during image download": "图片下载阶段触发退避",
+    "image download candidate": "图片下载候选",
+    "image download failed (browser)": "图片下载失败（浏览器模式）",
+    "image download request exception": "图片下载请求异常",
+    "image download http error": "图片下载 HTTP 错误",
+    "image download payload is not image": "图片下载结果不是图片",
+    "image downloaded": "图片下载成功",
+    "metadata write stage scanning queue": "元数据写入阶段扫描队列",
+    "metadata row": "处理元数据条目",
+    "metadata skipped: source image missing": "元数据跳过：源图片缺失",
+    "metadata written": "元数据写入成功",
+    "metadata write failed": "元数据写入失败",
+}
+
+_RUNTIME_LOG_FIELD_ZH: Dict[str, str] = {
+    "output_root": "输出目录",
+    "mode": "模式",
+    "skip_crawl": "跳过抓取",
+    "skip_images": "跳过图片",
+    "skip_metadata": "跳过元数据",
+    "blocked_until": "阻断到期",
+    "reason": "原因",
+    "phase": "阶段",
+    "url": "URL",
+    "detail": "详情页",
+    "image": "图片URL",
+    "name": "姓名",
+    "person": "人物",
+    "idx": "序号",
+    "queued": "队列剩余",
+    "saved": "已保存",
+    "discovered": "已发现",
+    "error": "错误",
+    "status": "状态码",
+    "status_code": "状态码",
+    "content_type": "类型",
+    "size": "大小",
+    "route": "通道",
+    "sha": "哈希",
+    "retry_failed": "失败重试",
+    "retry_previous_fail": "历史失败重试",
+    "attempt": "尝试次数",
+    "attempts": "总尝试",
+    "max_attempts": "最大尝试",
+    "next_delay": "下次延迟",
+    "queue": "队列总数",
+    "added": "新增",
+    "profiles_with_image": "有图档案数",
+    "pending_images": "待重试图片",
+    "missing_url_index": "缺失URL索引",
+    "stale_cache": "失效缓存",
+    "review_image_failures": "复核中的图片失败项",
+    "pending_meta": "待写元数据",
+    "list": "列表数",
+    "profiles": "详情数",
+    "images": "图片数",
+    "metadata": "元数据数",
+    "review": "复核数",
+    "failures": "失败数",
+    "delta_profiles": "详情增量",
+    "delta_images": "图片增量",
+    "delta_metadata": "元数据增量",
+    "delta_review": "复核增量",
+    "delta_failures": "失败增量",
+    "fallback": "自动回退",
+    "obey_robots": "遵守robots",
+    "interval": "间隔秒",
+    "timeout": "超时秒",
+    "retry": "重试次数",
+    "run_state": "运行状态",
+    "candidates": "候选数",
+    "downloaded_new": "新下载",
+    "reused_url": "URL复用",
+    "reused_sha": "SHA复用",
+    "failed": "失败",
+    "failed_retry_candidates": "失败重试候选",
+    "failed_first": "失败优先数",
+    "pending": "待处理",
+    "ok_deferred": "已成功延后",
+    "skip_write": "仅建队列不写入",
+    "retry_failed_first": "失败优先重试",
+    "browser_challenge": "挑战页",
+    "checked": "已检查",
+    "missing_items": "缺失条目",
+    "missing_ratio": "缺失占比",
+    "missing_fields": "缺失字段",
+    "review_added": "新增复核",
+    "review_pruned": "清理已解决",
+    "review_updated": "更新复核",
+    "field": "字段",
+}
+
+
+def _localize_runtime_level(level: str) -> str:
+    raw = str(level or "").strip().upper()
+    return _RUNTIME_LOG_LEVEL_ZH.get(raw, raw or "日志")
+
+
+def _localize_runtime_message(message: str) -> str:
+    raw = str(message or "").strip()
+    return _RUNTIME_LOG_MESSAGE_ZH.get(raw, raw)
+
+
+def _localize_runtime_field(key: str) -> str:
+    raw = str(key or "").strip()
+    return _RUNTIME_LOG_FIELD_ZH.get(raw, raw)
+
+
+def _display_person_name(name: Any, detail_url: str = "") -> str:
+    raw = str(name or "").strip()
+    lowered = raw.lower()
+    unknown_tokens = {"unknown", "unkonw", "n/a", "na", "none", "null", "-", "未知", "不详", "未详"}
+    if raw and lowered not in unknown_tokens:
+        return raw
+    detail = str(detail_url or "").strip()
+    if detail:
+        parsed = urlparse(detail)
+        token = str(parsed.path or "").strip("/").split("/")[-1].strip()
+        if token:
+            token = re.sub(r"\.(html?|php|aspx?)$", "", token, flags=re.IGNORECASE)
+            token = token.strip()
+            if token:
+                return f"未命名({token})"
+    return "未命名人物"
+
+
+def runtime_log(level: str, message: str, **fields: Any) -> None:
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    suffix_parts: List[str] = []
+    for key, value in fields.items():
+        if value is None:
+            continue
+        text = _format_runtime_log_value(value, key)
+        if text == "":
+            continue
+        suffix_parts.append(f"{_localize_runtime_field(key)}: {text}")
+    suffix = (" | " + " | ".join(suffix_parts)) if suffix_parts else ""
+    print(
+        f"{ts} [{_localize_runtime_level(level)}] {_localize_runtime_message(message)}{suffix}",
+        flush=True,
+    )
+
+
+def append_llm_report(report_path: Path, phase: str, stats: Dict[str, Any]) -> None:
+    payload = load_json(report_path, {})
+    if not isinstance(payload, dict):
+        payload = {}
+    history = payload.get("history", [])
+    if not isinstance(history, list):
+        history = []
+    history.append(
+        {
+            "generated_at": utc_now_iso(),
+            "phase": str(phase or "").strip() or "unknown",
+            "stats": dict(stats or {}),
+        }
+    )
+    payload["generated_at"] = utc_now_iso()
+    payload["latest_phase"] = str(phase or "").strip() or "unknown"
+    payload["latest_stats"] = dict(stats or {})
+    payload["history"] = history[-20:]
+    save_json(report_path, payload)
 
 
 def append_jsonl(path: Path, payload: Dict[str, Any]) -> None:
@@ -102,6 +401,84 @@ def norm_abs_path(path_value: str) -> str:
         return str(Path(raw).resolve())
     except Exception:
         return raw
+
+
+def scoped_temp_dir(base_name: str, scope_hint: str = "") -> Path:
+    base = SCRIPT_DIR / str(base_name or "_tmp")
+    hint = norm_abs_path(scope_hint)
+    if not hint:
+        base.mkdir(parents=True, exist_ok=True)
+        return base
+    token = hashlib.sha1(hint.encode("utf-8")).hexdigest()[:16]
+    scoped = base / token
+    scoped.mkdir(parents=True, exist_ok=True)
+    return scoped
+
+
+def _is_usable_cached_image(path_value: str) -> bool:
+    path_text = norm_abs_path(path_value)
+    if not path_text:
+        return False
+    p = Path(path_text)
+    if (not p.exists()) or (not p.is_file()):
+        return False
+    try:
+        if p.stat().st_size <= 0:
+            return False
+    except Exception:
+        return False
+    if HAS_PIL_IMAGE:
+        try:
+            with Image.open(p) as img:
+                img.verify()
+        except Exception:
+            return False
+    return True
+
+
+def _resolve_cached_source_by_image_url(
+    image_url: str,
+    url_index: Dict[str, str],
+    sha_index: Dict[str, str],
+) -> Tuple[str, str]:
+    image_url_norm = str(image_url or "").strip()
+    if not image_url_norm:
+        return "", ""
+    sha_cached = str(url_index.get(image_url_norm, "")).strip()
+    if not sha_cached:
+        return "", ""
+    source_cached = norm_abs_path(str(sha_index.get(sha_cached, "")))
+    if _is_usable_cached_image(source_cached):
+        return sha_cached, source_cached
+    return sha_cached, ""
+
+
+def _drop_stale_cache_index_entries(
+    image_url: str,
+    sha_value: str,
+    url_index: Dict[str, str],
+    sha_index: Dict[str, str],
+) -> int:
+    removed = 0
+    image_url_norm = str(image_url or "").strip()
+    sha_norm = str(sha_value or "").strip()
+
+    if image_url_norm and image_url_norm in url_index:
+        try:
+            del url_index[image_url_norm]
+            removed += 1
+        except Exception:
+            pass
+
+    if sha_norm and sha_norm in sha_index:
+        cached = norm_abs_path(str(sha_index.get(sha_norm, "")))
+        if not _is_usable_cached_image(cached):
+            try:
+                del sha_index[sha_norm]
+                removed += 1
+            except Exception:
+                pass
+    return removed
 
 
 def sanitize_filename(name: str, fallback: str = "unnamed") -> str:
@@ -200,6 +577,332 @@ def extract_police_id_from_fields(fields: Dict[str, str]) -> str:
     return ""
 
 
+def _normalize_field_lookup_key(value: str) -> str:
+    text = str(value or "").strip().lower()
+    if not text:
+        return ""
+    text = text.replace("：", ":")
+    text = re.sub(r"[\s_\-.:]+", "", text)
+    return text
+
+
+def extract_field_by_aliases(
+    fields: Dict[str, str],
+    aliases: List[str],
+    *,
+    strip_labels: Optional[List[str]] = None,
+) -> str:
+    if not isinstance(fields, dict) or (not fields):
+        return ""
+    alias_set = {_normalize_field_lookup_key(x) for x in aliases if str(x or "").strip()}
+    if not alias_set:
+        return ""
+    for raw_key, raw_value in fields.items():
+        key_norm = _normalize_field_lookup_key(str(raw_key or ""))
+        if (not key_norm) or (key_norm not in alias_set):
+            continue
+        value = normalize_optional_field(raw_value)
+        if not value:
+            continue
+        if strip_labels:
+            value = strip_prefixed_label(value, strip_labels)
+        return normalize_optional_field(value)
+    return ""
+
+
+_PROFESSION_KEYWORD_RULES: List[Tuple[str, List[str]]] = [
+    ("警察", ["民警", "辅警", "警长", "警员", "刑警", "交警", "特警", "网警", "法警", "狱警", "公安", "派出所"]),
+    ("律师", ["律师", "律所", "律师事务所"]),
+    ("法官", ["法官", "审判员", "法院"]),
+    ("检察官", ["检察官", "检察院"]),
+    ("医生", ["医生", "医师", "主任医师", "副主任医师", "主治医师", "住院医师", "医院"]),
+    ("护士", ["护士", "护师", "护士长"]),
+    ("教师", ["教师", "老师", "教授", "讲师", "副教授", "大学", "学院"]),
+    ("工程师", ["工程师", "技术员", "程序员", "架构师"]),
+    ("军人", ["军人", "武警", "解放军", "部队"]),
+]
+
+
+def infer_profession_keywords(*texts: Any) -> List[str]:
+    merged = " ".join(str(x or "") for x in texts).strip()
+    if not merged:
+        return []
+    tags: List[str] = []
+    lowered = merged.lower()
+    for label, hints in _PROFESSION_KEYWORD_RULES:
+        for hint in hints:
+            hint_text = str(hint or "").strip()
+            if not hint_text:
+                continue
+            # CJK use substring directly; latin hints compare by lower().
+            if re.search(r"[\u4e00-\u9fff]", hint_text):
+                matched = hint_text in merged
+            else:
+                matched = hint_text.lower() in lowered
+            if not matched:
+                continue
+            if label not in tags:
+                tags.append(label)
+            # Specific police aliases are also useful retrieval tags.
+            if label == "警察" and hint_text in {"民警", "辅警", "刑警", "交警", "特警", "网警", "法警", "狱警"}:
+                if hint_text not in tags:
+                    tags.append(hint_text)
+            break
+    return tags
+
+
+_GENDER_EXPLICIT_PATTERN = re.compile(r"性别\s*[：:]\s*(男|女)")
+_GENDER_MALE_HINT_PATTERNS: List[str] = [
+    r"男性",
+    r"男子",
+    r"先生",
+    r"其父",
+    r"丈夫",
+    r"(?:^|[，,。；;、\s（(【\[])(?:男)(?:[，,。；;、\s）)】\]]|$)",
+    r"(?:^|[，,。；;、\s（(【\[])(?:他|他们)(?:[，,。；;、\s）)】\]]|$|的|是|在|于|曾|将|已|被|为|与|和|生于|出生|牺牲|任职|工作)",
+]
+_GENDER_FEMALE_HINT_PATTERNS: List[str] = [
+    r"女性",
+    r"女子",
+    r"女士",
+    r"其母",
+    r"妻子",
+    r"(?:^|[，,。；;、\s（(【\[])(?:女)(?:[，,。；;、\s）)】\]]|$)",
+    r"(?:^|[，,。；;、\s（(【\[])(?:她|她们)(?:[，,。；;、\s）)】\]]|$|的|是|在|于|曾|将|已|被|为|与|和|生于|出生|牺牲|任职|工作)",
+]
+
+
+def infer_gender_from_texts(*texts: Any) -> str:
+    samples: List[str] = []
+    for raw in texts:
+        text = _normalize_multiline_text(raw)
+        if text:
+            samples.append(text)
+    if not samples:
+        return ""
+
+    merged = "\n".join(samples)
+    explicit_match = _GENDER_EXPLICIT_PATTERN.search(merged)
+    if explicit_match:
+        return normalize_gender(explicit_match.group(1))
+
+    male_hits = 0
+    female_hits = 0
+    for pattern in _GENDER_MALE_HINT_PATTERNS:
+        male_hits += len(re.findall(pattern, merged))
+    for pattern in _GENDER_FEMALE_HINT_PATTERNS:
+        female_hits += len(re.findall(pattern, merged))
+
+    if male_hits > female_hits:
+        return "男"
+    if female_hits > male_hits:
+        return "女"
+
+    if HAS_TEXT_PARSER and (_extract_person_info is not None):
+        male_votes = 0
+        female_votes = 0
+        for text in samples:
+            try:
+                info = _extract_person_info(text) or {}
+            except Exception:
+                info = {}
+            parsed = normalize_gender(info.get("gender", ""))
+            if parsed == "男":
+                male_votes += 1
+            elif parsed == "女":
+                female_votes += 1
+        if male_votes > female_votes:
+            return "男"
+        if female_votes > male_votes:
+            return "女"
+    return ""
+
+
+def build_position_keyword(position_text: str) -> str:
+    text = normalize_optional_field(position_text)
+    if not text:
+        return ""
+    parts = [x.strip() for x in re.split(r"[，,;；/、\|]+", text) if x.strip()]
+    if not parts:
+        return text
+    first = parts[0]
+    # Prefer concise role token, e.g. "合伙人，管理委员会委员" -> "合伙人"
+    if len(first) <= 10:
+        return first
+    return text
+
+
+def build_source_host_keyword(*urls: str) -> str:
+    for raw in urls:
+        url_text = str(raw or "").strip()
+        if not url_text:
+            continue
+        host = urlparse(url_text).netloc.lower().strip()
+        if not host:
+            continue
+        if host.startswith("www."):
+            host = host[4:]
+        if not host:
+            continue
+        # Keep only first label for concise retrieval token.
+        token = host.split(".", 1)[0].strip()
+        token = re.sub(r"[^a-z0-9\-]", "", token)
+        if 1 <= len(token) <= 10:
+            return token
+    return ""
+
+
+def _parse_date_token(raw_value: Any) -> Tuple[str, Optional[datetime]]:
+    text = str(raw_value or "").strip()
+    if not text:
+        return "", None
+    text = re.sub(r"\s+", " ", text)
+
+    # Full date, optionally followed by time (e.g. 2021:04:02 10:20:30 / 2021年4月2日)
+    full_match = re.search(
+        r"([12]\d{3})\s*[年:/\-.]\s*([01]?\d)\s*[月:/\-.]\s*([0-3]?\d)\s*日?"
+        r"(?:\s+([0-2]?\d):([0-5]?\d)(?::([0-5]?\d))?)?",
+        text,
+    )
+    if full_match:
+        year = int(full_match.group(1))
+        month = int(full_match.group(2))
+        day = int(full_match.group(3))
+        if 1800 <= year <= 2100:
+            try:
+                dt = datetime(year, month, day)
+                return f"{year:04d}-{month:02d}-{day:02d}", dt
+            except Exception:
+                pass
+
+    # Year-month
+    ym_match = re.search(r"([12]\d{3})\s*[年:/\-.]\s*([01]?\d)\s*月?", text)
+    if ym_match:
+        year = int(ym_match.group(1))
+        month = int(ym_match.group(2))
+        if 1800 <= year <= 2100 and 1 <= month <= 12:
+            return f"{year:04d}-{month:02d}", None
+
+    # Year only
+    y_match = re.search(r"([12]\d{3})\s*年?", text)
+    if y_match:
+        year = int(y_match.group(1))
+        if 1800 <= year <= 2100:
+            return f"{year:04d}", None
+    return "", None
+
+
+def extract_birth_date_from_texts(*texts: Any) -> Tuple[str, Optional[datetime]]:
+    patterns = [
+        r"(?:出生日期|出生时间|出生年月|生日|出生于|生于|出生)\s*[：: ]\s*([12]\d{3}[^\n，,。；;]{0,20})",
+        r"(?:出生于|生于)\s*([12]\d{3}(?:\s*[年:/\-.]\s*[01]?\d(?:\s*[月:/\-.]\s*[0-3]?\d\s*日?)?)?)",
+        r"([12]\d{3}\s*[年:/\-.]\s*[01]?\d\s*[月:/\-.]\s*[0-3]?\d\s*日?)\s*(?:出生|生于|生)",
+        r"([12]\d{3}\s*[年:/\-.]\s*[01]?\d\s*月?)\s*(?:出生|生于|生)",
+        r"([12]\d{3}\s*年)\s*(?:出生|生于|生)",
+    ]
+    for raw in texts:
+        text = str(raw or "").strip()
+        if not text:
+            continue
+        for pattern in patterns:
+            for match in re.finditer(pattern, text):
+                value = str(match.group(1) or "").strip()
+                normalized, dt = _parse_date_token(value)
+                if normalized:
+                    return normalized, dt
+        compact = re.sub(r"\s+", "", text)
+        if len(compact) <= 24:
+            normalized, dt = _parse_date_token(text)
+            if normalized:
+                return normalized, dt
+
+    # Fallback: leverage existing text parser birth_year extraction.
+    if HAS_TEXT_PARSER and (_extract_person_info is not None):
+        for raw in texts:
+            text = str(raw or "").strip()
+            if not text:
+                continue
+            try:
+                info = _extract_person_info(text) or {}
+            except Exception:
+                info = {}
+            year_text = str(info.get("birth_year", "")).strip()
+            if re.fullmatch(r"[12]\d{3}", year_text):
+                year = int(year_text)
+                if 1800 <= year <= 2100:
+                    return f"{year:04d}", None
+    return "", None
+
+
+def extract_photo_taken_date_from_image(image_path: str) -> Tuple[str, Optional[datetime]]:
+    if not HAS_PIL_IMAGE:
+        return "", None
+    source = norm_abs_path(image_path)
+    if (not source) or (not Path(source).exists()):
+        return "", None
+    try:
+        with Image.open(source) as img:  # type: ignore[attr-defined]
+            exif = img.getexif()
+            if exif:
+                for tag in (36867, 36868, 306):  # DateTimeOriginal, DateTimeDigitized, DateTime
+                    value = exif.get(tag)
+                    normalized, dt = _parse_date_token(value)
+                    if normalized:
+                        return normalized, dt
+
+            info_map = getattr(img, "info", {}) if isinstance(getattr(img, "info", {}), dict) else {}
+            for key in ("date:create", "date:modify", "creation_time", "Creation Time", "DateTimeOriginal", "DateTime"):
+                if key in info_map:
+                    normalized, dt = _parse_date_token(info_map.get(key))
+                    if normalized:
+                        return normalized, dt
+
+            # Some formats expose XMP payload as bytes/string in info.
+            for xmp_key in ("xmp", "XML:com.adobe.xmp", "Raw profile type xmp"):
+                if xmp_key not in info_map:
+                    continue
+                payload = info_map.get(xmp_key)
+                if isinstance(payload, bytes):
+                    payload = payload.decode("utf-8", errors="ignore")
+                payload_text = str(payload or "").strip()
+                if not payload_text:
+                    continue
+                normalized, dt = _parse_date_token(payload_text)
+                if normalized:
+                    return normalized, dt
+    except Exception:
+        return "", None
+    return "", None
+
+
+def compute_age_at_photo(
+    birth_dt: Optional[datetime],
+    photo_dt: Optional[datetime],
+    *,
+    birth_token: str = "",
+) -> str:
+    if photo_dt is None:
+        return ""
+
+    if birth_dt is not None:
+        if photo_dt < birth_dt:
+            return ""
+        age = photo_dt.year - birth_dt.year
+        if (photo_dt.month, photo_dt.day) < (birth_dt.month, birth_dt.day):
+            age -= 1
+        if 0 <= age <= 130:
+            return str(age)
+
+    # Birth date may only have year/year-month precision.
+    year_match = re.search(r"([12]\d{3})", str(birth_token or ""))
+    if year_match:
+        birth_year = int(year_match.group(1))
+        age_by_year = photo_dt.year - birth_year
+        if 0 <= age_by_year <= 130:
+            return str(age_by_year)
+    return ""
+
+
 def collect_detail_field_labels(config: Dict[str, Any], rules: Dict[str, Any]) -> Dict[str, str]:
     selectors_cfg = dict(config.get("selectors", {}))
     labels: Dict[str, str] = {}
@@ -229,6 +932,106 @@ def build_metadata_queue_row_from_profile(profile: Dict[str, Any], image_sha: st
     }
 
 
+def _path_exists(path_value: str) -> bool:
+    path_text = norm_abs_path(path_value)
+    if not path_text:
+        return False
+    try:
+        return Path(path_text).exists()
+    except Exception:
+        return False
+
+
+def _pick_existing_or_first(paths: List[str]) -> str:
+    normalized: List[str] = []
+    for raw in paths:
+        path_text = norm_abs_path(raw)
+        if path_text and (path_text not in normalized):
+            normalized.append(path_text)
+    for candidate in normalized:
+        if _path_exists(candidate):
+            return candidate
+    return normalized[0] if normalized else ""
+
+
+def _load_download_manifest_lookups(manifest_path: Path) -> Tuple[Dict[str, Dict[str, str]], Dict[str, Dict[str, str]]]:
+    by_detail: Dict[str, Dict[str, str]] = {}
+    by_image: Dict[str, Dict[str, str]] = {}
+    for row in iter_jsonl(manifest_path):
+        if not isinstance(row, dict):
+            continue
+        detail_url = str(row.get("detail_url", "")).strip()
+        image_url = str(row.get("image_url", "")).strip()
+        sha = str(row.get("sha256", "") or row.get("image_sha256", "")).strip()
+        named_path = norm_abs_path(str(row.get("named_path", "")))
+        saved_path = norm_abs_path(str(row.get("saved_path", "")))
+        chosen_path = _pick_existing_or_first([named_path, saved_path])
+        payload = {"sha": sha, "path": chosen_path}
+
+        if detail_url:
+            previous = by_detail.get(detail_url, {})
+            previous_path = norm_abs_path(str(previous.get("path", "")))
+            if (not previous) or ((not _path_exists(previous_path)) and _path_exists(chosen_path)):
+                by_detail[detail_url] = payload
+        if image_url:
+            previous = by_image.get(image_url, {})
+            previous_path = norm_abs_path(str(previous.get("path", "")))
+            if (not previous) or ((not _path_exists(previous_path)) and _path_exists(chosen_path)):
+                by_image[image_url] = payload
+    return by_detail, by_image
+
+
+def _resolve_metadata_source_path(
+    *,
+    detail_url: str,
+    image_url: str,
+    image_sha: str,
+    row_local_path: str,
+    url_index: Dict[str, str],
+    sha_index: Dict[str, str],
+    manifest_by_detail: Dict[str, Dict[str, str]],
+    manifest_by_image: Dict[str, Dict[str, str]],
+) -> Tuple[str, str, List[str]]:
+    detail_key = str(detail_url or "").strip()
+    image_key = str(image_url or "").strip()
+    sha_resolved = str(image_sha or "").strip()
+    row_local = norm_abs_path(row_local_path)
+
+    manifest_detail = manifest_by_detail.get(detail_key, {}) if detail_key else {}
+    manifest_image = manifest_by_image.get(image_key, {}) if image_key else {}
+    manifest_detail_sha = str(manifest_detail.get("sha", "")).strip()
+    manifest_image_sha = str(manifest_image.get("sha", "")).strip()
+    manifest_detail_path = norm_abs_path(str(manifest_detail.get("path", "")))
+    manifest_image_path = norm_abs_path(str(manifest_image.get("path", "")))
+
+    url_sha = str(url_index.get(image_key, "")).strip() if image_key else ""
+    if not sha_resolved:
+        for sha_candidate in (url_sha, manifest_detail_sha, manifest_image_sha):
+            if sha_candidate:
+                sha_resolved = sha_candidate
+                break
+
+    candidates: List[str] = []
+    for candidate in (
+        row_local,
+        norm_abs_path(str(sha_index.get(sha_resolved, ""))) if sha_resolved else "",
+        norm_abs_path(str(sha_index.get(url_sha, ""))) if url_sha else "",
+        norm_abs_path(str(sha_index.get(manifest_detail_sha, ""))) if manifest_detail_sha else "",
+        norm_abs_path(str(sha_index.get(manifest_image_sha, ""))) if manifest_image_sha else "",
+        manifest_detail_path,
+        manifest_image_path,
+    ):
+        if candidate and (candidate not in candidates):
+            candidates.append(candidate)
+
+    source_path = ""
+    for candidate in candidates:
+        if _path_exists(candidate):
+            source_path = candidate
+            break
+    return sha_resolved, source_path, candidates
+
+
 def write_metadata_for_queue_row(
     *,
     row: Dict[str, Any],
@@ -240,6 +1043,8 @@ def write_metadata_for_queue_row(
     results_path: Path,
     detail_to_final_path: Optional[Dict[str, str]] = None,
     sha_runtime_path: Optional[Dict[str, str]] = None,
+    llm_enricher: Optional[Any] = None,
+    record_failure: bool = True,
 ) -> Tuple[bool, str, bool]:
     detail_url = str(row.get("detail_url", "")).strip()
     image_sha = str(row.get("image_sha256", "")).strip()
@@ -278,18 +1083,205 @@ def write_metadata_for_queue_row(
     mapped_description = _normalize_multiline_text(mapped_fields.get("description", ""))
     source_list_url = normalize_optional_field(mapped_fields.get("source_url") or row.get("source_url", ""))
     image_url = normalize_optional_field(mapped_fields.get("image_url") or row.get("image_url", ""))
-    position = normalize_optional_field(mapped_fields.get("position") or fields.get("title", ""))
+    inferred_position = extract_field_by_aliases(
+        fields,
+        [
+            "position",
+            "title",
+            "job_title",
+            "role",
+            "occupation",
+            "post",
+            "职位",
+            "职务",
+            "职称",
+            "岗位",
+            "身份",
+        ],
+        strip_labels=["职位", "职务", "职称", "岗位", "Title", "title", "Position", "position"],
+    )
+    position = normalize_optional_field(
+        mapped_fields.get("position")
+        or mapped_fields.get("title")
+        or fields.get("title", "")
+        or inferred_position
+    )
     english_name = normalize_optional_field(mapped_fields.get("english_name") or fields.get("english_name", ""))
-    mapped_city_text = normalize_optional_field(mapped_fields.get("city"))
-    location_text = normalize_optional_field(mapped_city_text or fields.get("location_text", ""))
+    inferred_location = extract_field_by_aliases(
+        fields,
+        [
+            "city",
+            "location",
+            "location_text",
+            "office",
+            "office_location",
+            "workplace",
+            "work_location",
+            "region",
+            "地址",
+            "地点",
+            "城市",
+            "工作地点",
+            "所在地",
+            "所在城市",
+            "办公室",
+            "所在办公室",
+        ],
+        strip_labels=[
+            "工作地点",
+            "地点",
+            "城市",
+            "所在地",
+            "所在城市",
+            "办公室",
+            "所在办公室",
+            "City",
+            "city",
+            "Location",
+            "location",
+            "Office",
+            "office",
+        ],
+    )
+    mapped_city_text = normalize_optional_field(
+        mapped_fields.get("city") or mapped_fields.get("location") or mapped_fields.get("location_text")
+    )
+    location_text = normalize_optional_field(mapped_city_text or fields.get("location_text", "") or inferred_location)
     email_text = normalize_optional_field(mapped_fields.get("email") or fields.get("email_text", ""))
     location_clean = strip_prefixed_label(location_text, ["工作地点", "地点"])
     email_clean = strip_prefixed_label(email_text, ["邮箱", "Email", "email"])
     gender = normalize_gender(mapped_fields.get("gender") or row.get("gender", ""))
+    if not gender:
+        gender = infer_gender_from_texts(
+            summary,
+            full_content,
+            mapped_description,
+            " ".join(str(v) for v in fields.values()),
+            " ".join(str(v) for v in mapped_fields.values()),
+        )
     police_id = normalize_optional_field(mapped_fields.get("police_id")) or extract_police_id_from_fields(fields)
+    birth_date_raw = normalize_optional_field(
+        mapped_fields.get("birth_date")
+        or mapped_fields.get("birthday")
+        or extract_field_by_aliases(
+            fields,
+            [
+                "birth_date",
+                "birthday",
+                "date_of_birth",
+                "出生日期",
+                "出生时间",
+                "出生年月",
+                "生日",
+                "出生",
+            ],
+        )
+    )
+    birth_date_norm, birth_date_obj = extract_birth_date_from_texts(
+        birth_date_raw,
+        summary,
+        full_content,
+    )
+    photo_taken_at, photo_taken_obj = extract_photo_taken_date_from_image(source_path)
+    age_at_photo = compute_age_at_photo(
+        birth_date_obj,
+        photo_taken_obj,
+        birth_token=(birth_date_norm or birth_date_raw),
+    )
     city_value = location_clean or location_text
-
+    unit_text = normalize_optional_field(
+        mapped_fields.get("unit")
+        or mapped_fields.get("organization")
+        or mapped_fields.get("org")
+        or extract_field_by_aliases(
+            fields,
+            [
+                "unit",
+                "org",
+                "organization",
+                "department",
+                "company",
+                "firm",
+                "hospital",
+                "school",
+                "单位",
+                "机构",
+                "部门",
+                "单位名称",
+                "工作单位",
+                "所在单位",
+                "律所",
+                "医院",
+                "学院",
+                "学校",
+                "公安局",
+                "分局",
+                "派出所",
+            ],
+        )
+    )
     extra_fields: Dict[str, str] = dict(fields)
+    llm_result: Dict[str, Any] = {}
+    if llm_enricher is not None:
+        try:
+            llm_result = llm_enricher.enrich_row(
+                row=row,
+                position=position,
+                city=city_value,
+                unit=unit_text,
+                summary=summary,
+                full_content=full_content,
+                extra_fields=extra_fields,
+                mapped_fields=mapped_fields,
+            )
+        except Exception:
+            llm_result = {}
+
+    llm_position = normalize_optional_field(llm_result.get("position", ""))
+    llm_city = normalize_optional_field(llm_result.get("city", ""))
+    llm_unit = normalize_optional_field(llm_result.get("unit", ""))
+    llm_biography_short = _normalize_multiline_text(llm_result.get("biography_short", ""))
+
+    if (not position) and llm_position:
+        position = llm_position
+    if (not city_value) and llm_city:
+        city_value = llm_city
+        location_text = llm_city
+    if (not unit_text) and llm_unit:
+        unit_text = llm_unit
+
+    location_clean = strip_prefixed_label(location_text, ["工作地点", "地点"])
+    city_value = location_clean or location_text or city_value
+
+    profession_tags = infer_profession_keywords(
+        position,
+        summary,
+        full_content,
+        unit_text,
+        " ".join(extra_fields.values()),
+        " ".join(mapped_fields.values()),
+    )
+    llm_profession = normalize_optional_field(llm_result.get("profession", ""))
+    if llm_profession and llm_profession not in profession_tags:
+        profession_tags.insert(0, llm_profession)
+    llm_profession_tags_raw = llm_result.get("profession_tags", [])
+    if isinstance(llm_profession_tags_raw, list):
+        for tag in llm_profession_tags_raw:
+            token = normalize_optional_field(tag)
+            if token and token not in profession_tags:
+                profession_tags.append(token)
+
+    llm_extra_keywords: List[str] = []
+    llm_keywords_raw = llm_result.get("keywords_extra", [])
+    if isinstance(llm_keywords_raw, list):
+        for item in llm_keywords_raw:
+            token = normalize_optional_field(item)
+            if token and token not in llm_extra_keywords:
+                llm_extra_keywords.append(token)
+
+    position_kw = build_position_keyword(position)
+    source_host_kw = build_source_host_keyword(detail_url, source_list_url, image_url)
+
     dynamic_detail_lines: List[str] = []
     for key, value in extra_fields.items():
         if key in {"title", "english_name", "location_text", "email_text"}:
@@ -305,6 +1297,8 @@ def write_metadata_for_queue_row(
         desc_parts.append(f"英文名：{english_name}")
     if position:
         desc_parts.append(f"职位：{position}")
+    if unit_text:
+        desc_parts.append(f"单位：{unit_text}")
     if location_clean:
         desc_parts.append(f"工作地点：{location_clean}")
     elif location_text:
@@ -315,6 +1309,12 @@ def write_metadata_for_queue_row(
         desc_parts.append(email_text)
     if police_id:
         desc_parts.append(f"警号：{police_id}")
+    if birth_date_norm:
+        desc_parts.append(f"出生日期：{birth_date_norm}")
+    if photo_taken_at:
+        desc_parts.append(f"拍摄日期：{photo_taken_at}")
+    if age_at_photo:
+        desc_parts.append(f"拍摄时年龄：{age_at_photo}岁")
     if dynamic_detail_lines:
         desc_parts.extend(dynamic_detail_lines)
     if detail_url:
@@ -329,22 +1329,33 @@ def write_metadata_for_queue_row(
     if summary:
         desc_parts.append("简介：")
         desc_parts.append(summary)
+    append_bio_to_desc = bool(getattr(llm_enricher, "append_biography_to_description", True))
+    if llm_biography_short and append_bio_to_desc:
+        desc_parts.append("小传：")
+        desc_parts.append(llm_biography_short)
     rich_description = _normalize_multiline_text("\n".join(desc_parts))
 
     keywords: List[str] = []
-    for value in [title, english_name, position, city_value, gender, police_id]:
-        if value and value not in keywords:
-            keywords.append(value)
-    for value in extra_fields.values():
-        if value and value not in keywords:
-            keywords.append(value)
-    for value in mapped_fields.values():
-        if value and ("\n" not in value) and value not in keywords:
-            keywords.append(value)
-    if detail_url and "detail-page" not in keywords:
-        keywords.append("detail-page")
-    if "public-archive" not in keywords:
-        keywords.append("public-archive")
+
+    def _add_keyword(value: Any) -> None:
+        token = normalize_optional_field(value)
+        if token and token not in keywords:
+            keywords.append(token)
+
+    # Minimal and high-value keyword set (clean_keywords() keeps top-N order later).
+    _add_keyword(title)
+    for tag in profession_tags:
+        _add_keyword(tag)
+    _add_keyword(position_kw or position)
+    _add_keyword(unit_text)
+    _add_keyword(city_value)
+    _add_keyword(gender)
+    _add_keyword(police_id)
+    _add_keyword(english_name)
+    _add_keyword(source_host_kw)
+    for token in llm_extra_keywords:
+        _add_keyword(token)
+    _add_keyword("public-archive")
 
     ext = ".jpg"
     source_resolved = Path(source_path).resolve()
@@ -364,6 +1375,7 @@ def write_metadata_for_queue_row(
         "email": email_text,
         "english_name": english_name,
         "title": position,
+        "unit": unit_text,
         "location": city_value,
         "source_detail_url": detail_url,
         "source_list_url": source_list_url,
@@ -382,6 +1394,19 @@ def write_metadata_for_queue_row(
         d2i_profile_payload["gender"] = gender
     if police_id:
         d2i_profile_payload["police_id"] = police_id
+    if birth_date_norm:
+        d2i_profile_payload["birth_date"] = birth_date_norm
+    if photo_taken_at:
+        d2i_profile_payload["photo_taken_at"] = photo_taken_at
+    if age_at_photo:
+        d2i_profile_payload["age_at_photo"] = age_at_photo
+    if profession_tags:
+        d2i_profile_payload["profession"] = profession_tags[0]
+        d2i_profile_payload["profession_tags"] = profession_tags
+    if llm_biography_short:
+        d2i_profile_payload["biography_short"] = llm_biography_short
+    if llm_result:
+        d2i_profile_payload["llm_enriched"] = True
     if summary:
         d2i_profile_payload["summary"] = summary
     if full_content:
@@ -403,6 +1428,18 @@ def write_metadata_for_queue_row(
         "role_aliases": [english_name] if english_name else [],
         "d2i_profile": d2i_profile_payload,
     }
+    audit_snapshot = {
+        "name": person_name or title,
+        "gender": gender,
+        "birth_date": birth_date_norm,
+        "photo_taken_at": photo_taken_at,
+        "age_at_photo": age_at_photo,
+        "position": position,
+        "city": city_value,
+        "unit": unit_text,
+        "profession": (profession_tags[0] if profession_tags else ""),
+        "police_id": police_id,
+    }
 
     try:
         saved_path = str(write_xmp_metadata(str(final_path), payload))
@@ -423,32 +1460,217 @@ def write_metadata_for_queue_row(
                 "input_path": str(source_resolved),
                 "output_path": row["local_image_path"],
                 "status": "ok",
+                "name": person_name or title,
+                "audit": audit_snapshot,
             },
         )
         return True, str(row["local_image_path"]), copied_to_named_folder
     except Exception as exc:
-        append_jsonl(
-            review_path,
-            {
-                "scraped_at": utc_now_iso(),
-                "reason": "metadata_write_failed",
-                "detail_url": detail_url,
-                "local_image_path": str(final_path),
-                "error": str(exc),
-            },
-        )
-        append_jsonl(
-            results_path,
-            {
-                "written_at": utc_now_iso(),
-                "detail_url": detail_url,
-                "input_path": str(source_resolved),
-                "output_path": str(final_path),
-                "status": "failed",
-                "error": str(exc),
-            },
-        )
+        if record_failure:
+            append_jsonl(
+                review_path,
+                {
+                    "scraped_at": utc_now_iso(),
+                    "reason": "metadata_write_failed",
+                    "detail_url": detail_url,
+                    "local_image_path": str(final_path),
+                    "error": str(exc),
+                },
+            )
+            append_jsonl(
+                results_path,
+                {
+                    "written_at": utc_now_iso(),
+                    "detail_url": detail_url,
+                    "input_path": str(source_resolved),
+                    "output_path": str(final_path),
+                    "status": "failed",
+                    "error": str(exc),
+                    "name": person_name or title,
+                    "audit": audit_snapshot,
+                },
+            )
         return False, str(final_path), copied_to_named_folder
+
+
+def _parse_bool_rule(value: Any, default: bool = False) -> bool:
+    if value is None:
+        return bool(default)
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if not text:
+        return bool(default)
+    if text in {"1", "true", "yes", "y", "on"}:
+        return True
+    if text in {"0", "false", "no", "n", "off"}:
+        return False
+    return bool(default)
+
+
+def resolve_metadata_retry_settings(rules: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        max_attempts = int(rules.get("metadata_write_retries", 3))
+    except Exception:
+        max_attempts = 3
+    if max_attempts < 1:
+        max_attempts = 1
+
+    try:
+        retry_delay_seconds = float(rules.get("metadata_write_retry_delay_seconds", 1.2))
+    except Exception:
+        retry_delay_seconds = 1.2
+    if retry_delay_seconds < 0:
+        retry_delay_seconds = 0.0
+
+    try:
+        retry_backoff_factor = float(rules.get("metadata_write_retry_backoff_factor", 1.5))
+    except Exception:
+        retry_backoff_factor = 1.5
+    if retry_backoff_factor < 1.0:
+        retry_backoff_factor = 1.0
+
+    retry_failed_first = _parse_bool_rule(rules.get("retry_failed_first", True), default=True)
+    return {
+        "max_attempts": max_attempts,
+        "retry_delay_seconds": retry_delay_seconds,
+        "retry_backoff_factor": retry_backoff_factor,
+        "retry_failed_first": retry_failed_first,
+    }
+
+
+def _load_latest_metadata_status(results_path: Path) -> Dict[str, str]:
+    latest_status: Dict[str, str] = {}
+    for row in iter_jsonl(results_path):
+        detail_url = str(row.get("detail_url", "")).strip()
+        if not detail_url:
+            continue
+        latest_status[detail_url] = str(row.get("status", "")).strip().lower()
+    return latest_status
+
+
+def _order_metadata_rows_by_retry_priority(
+    rows: List[Dict[str, Any]],
+    latest_status: Dict[str, str],
+    retry_failed_first: bool,
+) -> Tuple[List[Dict[str, Any]], Dict[str, int]]:
+    if not retry_failed_first:
+        return list(rows), {"failed_rows": 0, "pending_rows": len(rows), "ok_rows": 0}
+
+    failed_rows: List[Dict[str, Any]] = []
+    pending_rows: List[Dict[str, Any]] = []
+    ok_rows: List[Dict[str, Any]] = []
+    for row in rows:
+        detail_url = str(row.get("detail_url", "")).strip()
+        status = str(latest_status.get(detail_url, "")).strip().lower() if detail_url else ""
+        if status == "ok":
+            ok_rows.append(row)
+        elif status:
+            failed_rows.append(row)
+        else:
+            pending_rows.append(row)
+
+    ordered_rows = failed_rows + pending_rows + ok_rows
+    return ordered_rows, {
+        "failed_rows": len(failed_rows),
+        "pending_rows": len(pending_rows),
+        "ok_rows": len(ok_rows),
+    }
+
+
+def write_metadata_for_queue_row_with_retries(
+    *,
+    row: Dict[str, Any],
+    source_path: str,
+    named_dir: Path,
+    reserved_paths: set[str],
+    field_labels: Dict[str, str],
+    review_path: Path,
+    results_path: Path,
+    detail_to_final_path: Optional[Dict[str, str]] = None,
+    sha_runtime_path: Optional[Dict[str, str]] = None,
+    llm_enricher: Optional[Any] = None,
+    max_attempts: int = 1,
+    retry_delay_seconds: float = 0.0,
+    retry_backoff_factor: float = 1.0,
+) -> Tuple[bool, str, bool, int]:
+    attempts = max(1, int(max_attempts))
+    delay_seconds = max(0.0, float(retry_delay_seconds))
+    backoff_factor = max(1.0, float(retry_backoff_factor))
+
+    final_path = ""
+    copied_any = False
+    detail_url = str(row.get("detail_url", "")).strip()
+    row_name = _display_person_name(row.get("name", ""), str(row.get("detail_url", "")))
+    if attempts > 1:
+        runtime_log(
+            "STEP",
+            f"{row_name}元数据将按重试策略执行",
+            detail=detail_url,
+            person=row_name,
+            max_attempts=attempts,
+        )
+    for attempt_idx in range(1, attempts + 1):
+        ok, final_path, copied_flag = write_metadata_for_queue_row(
+            row=row,
+            source_path=source_path,
+            named_dir=named_dir,
+            reserved_paths=reserved_paths,
+            field_labels=field_labels,
+            review_path=review_path,
+            results_path=results_path,
+            detail_to_final_path=detail_to_final_path,
+            sha_runtime_path=sha_runtime_path,
+            llm_enricher=llm_enricher,
+            record_failure=(attempt_idx >= attempts),
+        )
+        if copied_flag:
+            copied_any = True
+        if ok:
+            if attempt_idx > 1:
+                runtime_log(
+                    "RETRY",
+                    f"{row_name}元数据重试成功",
+                    detail=detail_url,
+                    person=row_name,
+                    attempt=attempt_idx,
+                    max_attempts=attempts,
+                )
+            return True, final_path, copied_any, attempt_idx
+
+        if final_path:
+            row["local_image_path"] = norm_abs_path(final_path) or final_path
+
+        if attempt_idx < attempts and delay_seconds > 0:
+            sleep_seconds = delay_seconds * (backoff_factor ** (attempt_idx - 1))
+            runtime_log(
+                "RETRY",
+                f"{row_name}元数据写入失败，准备延迟重试",
+                detail=detail_url,
+                person=row_name,
+                attempt=attempt_idx,
+                max_attempts=attempts,
+                next_delay=f"{sleep_seconds:.2f}s",
+            )
+            time.sleep(max(0.0, sleep_seconds))
+        elif attempt_idx < attempts:
+            runtime_log(
+                "RETRY",
+                f"{row_name}元数据写入失败，立即重试",
+                detail=detail_url,
+                person=row_name,
+                attempt=attempt_idx,
+                max_attempts=attempts,
+            )
+
+    runtime_log(
+        "FAIL",
+        f"{row_name}元数据写入失败（已达最大重试次数）",
+        detail=detail_url,
+        person=row_name,
+        attempts=attempts,
+    )
+    return False, final_path, copied_any, attempts
 
 
 def resolve_final_output_root(work_root: Path, rules: Dict[str, Any]) -> Path:
@@ -630,6 +1852,23 @@ def check_backoff(output_root: Path) -> Tuple[bool, Optional[str]]:
     if until_ts > now_ts:
         return False, blocked_until
     return True, None
+
+
+def manual_pause_flag_path(output_root: Path) -> Path:
+    return output_root / "state" / "manual_pause.flag"
+
+
+def wait_if_manual_paused(output_root: Path, stage: str = "") -> None:
+    flag_path = manual_pause_flag_path(output_root)
+    announced = False
+    stage_text = str(stage or "").strip() or "unknown"
+    while flag_path.exists():
+        if not announced:
+            print(f"[PAUSE] manual pause active; waiting ({stage_text})")
+            announced = True
+        time.sleep(1.0)
+    if announced:
+        print(f"[PAUSE] manual pause released; continue ({stage_text})")
 
 
 def clear_backoff(output_root: Path) -> None:
@@ -1135,6 +2374,9 @@ def run_crawl_browser_mode(config: Dict[str, Any], output_root: Path) -> None:
     profile_path = raw_dir / "profiles.jsonl"
     review_path = raw_dir / "review_queue.jsonl"
     failures_path = raw_dir / "failures.jsonl"
+    queue_path = raw_dir / "metadata_queue.jsonl"
+    metadata_results_path = raw_dir / "metadata_write_results.jsonl"
+    metadata_report_path = reports_dir / "metadata_write_report.json"
     crawl_report_path = reports_dir / "crawl_report.json"
     download_root = output_root / "downloads"
     image_root = download_root / "images"
@@ -1177,7 +2419,24 @@ def run_crawl_browser_mode(config: Dict[str, Any], output_root: Path) -> None:
     browser_engine = str(rules.get("browser_engine", "auto")).strip().lower()
     if browser_engine not in {"auto", "edge", "chrome"}:
         browser_engine = "auto"
+    disable_page_images_during_crawl = bool(rules.get("disable_page_images_during_crawl", True))
     inline_download_enabled = bool(rules.get("download_images_during_crawl", True))
+    inline_metadata_enabled = (
+        bool(rules.get("write_metadata_inline_per_item", True))
+        and bool(rules.get("write_metadata", True))
+        and HAS_METADATA_WRITER
+    )
+    metadata_retry_settings = resolve_metadata_retry_settings(rules)
+    metadata_write_retries = int(metadata_retry_settings.get("max_attempts", 1))
+    metadata_retry_delay_seconds = float(metadata_retry_settings.get("retry_delay_seconds", 0.0))
+    metadata_retry_backoff_factor = float(metadata_retry_settings.get("retry_backoff_factor", 1.0))
+    llm_report_path = reports_dir / "llm_enrichment_report.json"
+    llm_enricher: Optional[Any] = None
+    if HAS_LLM_ENRICHER:
+        try:
+            llm_enricher = LLMEnricher(rules, state_dir)  # type: ignore[misc]
+        except Exception:
+            llm_enricher = None
     interval_min = float(
         crawl_cfg.get(
             "interval_min_seconds",
@@ -1228,6 +2487,94 @@ def run_crawl_browser_mode(config: Dict[str, Any], output_root: Path) -> None:
         "inline_image_failed": 0,
     }
 
+    inline_metadata_totals = {
+        "rows_seen": 0,
+        "written_ok": 0,
+        "skipped_existing_detail": 0,
+        "skipped_missing_local_path": 0,
+        "failed": 0,
+        "copied_to_named_folder": 0,
+        "retried_rows": 0,
+        "retry_attempts": 0,
+    }
+    inline_named_dir = resolve_named_output_dir(output_root, rules)
+    inline_reserved_paths: set[str] = set()
+    inline_existing_detail_urls: set[str] = set()
+    inline_field_labels: Dict[str, str] = {}
+    if inline_metadata_enabled:
+        inline_named_dir.mkdir(parents=True, exist_ok=True)
+        inline_field_labels = collect_detail_field_labels(config, rules)
+        inline_existing_detail_urls = _load_existing_detail_urls(queue_path)
+        for p in sorted(inline_named_dir.glob("*")):
+            if p.is_file():
+                inline_reserved_paths.add(str(p.resolve()))
+
+    def _inline_write_for_profile(profile_row: Dict[str, Any], image_sha_value: str, source_path_value: str) -> str:
+        if not inline_metadata_enabled:
+            return ""
+        detail_url_inline = str(profile_row.get("detail_url", "")).strip()
+        person_name = _display_person_name(profile_row.get("name", ""), detail_url_inline)
+        if not detail_url_inline:
+            return ""
+        if detail_url_inline in inline_existing_detail_urls:
+            inline_metadata_totals["skipped_existing_detail"] += 1
+            return ""
+
+        source_norm = norm_abs_path(source_path_value)
+        if (not source_norm) or (not Path(source_norm).exists()):
+            inline_metadata_totals["skipped_missing_local_path"] += 1
+            runtime_log(
+                "WARN",
+                f"{person_name}元数据写入跳过：本地图片不存在",
+                detail=detail_url_inline,
+                person=person_name,
+                candidate=source_path_value,
+            )
+            append_jsonl(
+                review_path,
+                {
+                    "scraped_at": utc_now_iso(),
+                    "reason": "metadata_missing_local_image_path",
+                    "detail_url": detail_url_inline,
+                    "candidates": [source_path_value],
+                },
+            )
+            return ""
+
+        queue_row = build_metadata_queue_row_from_profile(profile_row, image_sha_value, source_norm)
+        inline_metadata_totals["rows_seen"] += 1
+        ok_meta, final_path, copied_flag, attempts_used = write_metadata_for_queue_row_with_retries(
+            row=queue_row,
+            source_path=source_norm,
+            named_dir=inline_named_dir,
+            reserved_paths=inline_reserved_paths,
+            field_labels=inline_field_labels,
+            review_path=review_path,
+            results_path=metadata_results_path,
+            llm_enricher=llm_enricher,
+            max_attempts=metadata_write_retries,
+            retry_delay_seconds=metadata_retry_delay_seconds,
+            retry_backoff_factor=metadata_retry_backoff_factor,
+        )
+        if attempts_used > 1:
+            inline_metadata_totals["retried_rows"] += 1
+            inline_metadata_totals["retry_attempts"] += (attempts_used - 1)
+        if ok_meta:
+            inline_metadata_totals["written_ok"] += 1
+            if copied_flag:
+                inline_metadata_totals["copied_to_named_folder"] += 1
+            append_jsonl(queue_path, queue_row)
+            inline_existing_detail_urls.add(detail_url_inline)
+            return norm_abs_path(final_path) or final_path
+        inline_metadata_totals["failed"] += 1
+        runtime_log(
+            "FAIL",
+            f"{person_name}元数据写入失败",
+            detail=detail_url_inline,
+            person=person_name,
+        )
+        return ""
+
     known_detail_urls = _load_existing_detail_urls(profile_path)
     seen_list_urls: set[str] = set()
     queued_list_urls: set[str] = set()
@@ -1249,8 +2596,7 @@ def run_crawl_browser_mode(config: Dict[str, Any], output_root: Path) -> None:
     consecutive_page_failures = 0
     consecutive_inline_image_failures = 0
 
-    temp_root = SCRIPT_DIR / "_tmp_browser_crawl"
-    temp_root.mkdir(parents=True, exist_ok=True)
+    temp_root = scoped_temp_dir("_tmp_browser_crawl", scope_hint=str(output_root))
     downloader = ImageDownloader(
         save_dir=str(temp_root),
         interval_min=max(0.1, float(interval_min)),
@@ -1261,7 +2607,7 @@ def run_crawl_browser_mode(config: Dict[str, Any], output_root: Path) -> None:
         downloaded_urls=set(),
         turbo_mode=True,
         browser_engine=browser_engine,
-        disable_page_images=True,
+        disable_page_images=disable_page_images_during_crawl,
     )
 
     def _maybe_sleep_between_pages() -> None:
@@ -1272,6 +2618,18 @@ def run_crawl_browser_mode(config: Dict[str, Any], output_root: Path) -> None:
 
     def _record_failure(url: str, reason: str, context: Dict[str, Any]) -> None:
         metrics["failures"] += 1
+        phase = str(context.get("phase", "")).strip() if isinstance(context, dict) else ""
+        person_name = ""
+        if isinstance(context, dict):
+            person_name = _display_person_name(context.get("name", ""), str(context.get("detail_url", "") or url))
+        runtime_log(
+            "FAIL",
+            (f"{person_name}页面抓取失败" if person_name else "页面抓取失败"),
+            phase=phase,
+            url=url,
+            reason=reason,
+            person=person_name,
+        )
         append_jsonl(
             failures_path,
             {
@@ -1301,6 +2659,14 @@ def run_crawl_browser_mode(config: Dict[str, Any], output_root: Path) -> None:
                 "recorded_at": utc_now_iso(),
             },
         )
+        runtime_log(
+            "STOP",
+            "backoff activated during crawl",
+            phase=phase,
+            url=url,
+            reason=reason,
+            blocked_until=blocked_until,
+        )
 
     try:
         downloader._init_browser()  # type: ignore[attr-defined]
@@ -1308,7 +2674,15 @@ def run_crawl_browser_mode(config: Dict[str, Any], output_root: Path) -> None:
         while list_queue:
             if blocked_until:
                 break
+            wait_if_manual_paused(output_root, stage="crawl:list")
             list_url = list_queue.popleft()
+            runtime_log(
+                "STEP",
+                "crawl list page",
+                url=list_url,
+                queued=len(list_queue),
+                discovered=metrics.get("list_rows_seen", 0),
+            )
             if list_url in seen_list_urls:
                 continue
             seen_list_urls.add(list_url)
@@ -1406,7 +2780,17 @@ def run_crawl_browser_mode(config: Dict[str, Any], output_root: Path) -> None:
         while detail_queue:
             if blocked_until:
                 break
+            wait_if_manual_paused(output_root, stage="crawl:detail")
             detail_url, seed_name, list_url, seed_fields = detail_queue.popleft()
+            person_seed = _display_person_name(seed_name, detail_url)
+            runtime_log(
+                "STEP",
+                f"正在抓取{person_seed}的详情页",
+                detail=detail_url,
+                person=person_seed,
+                queued=len(detail_queue),
+                saved=metrics.get("detail_pages_saved", 0),
+            )
             if not _url_allowed(detail_url, allowed_domains):
                 continue
 
@@ -1430,7 +2814,7 @@ def run_crawl_browser_mode(config: Dict[str, Any], output_root: Path) -> None:
                 _record_failure(
                     detail_url,
                     f"detail_browser_fetch_failed:{error}",
-                    {"phase": "detail", "list_url": list_url},
+                    {"phase": "detail", "list_url": list_url, "name": seed_name, "detail_url": detail_url},
                 )
                 if blocked_tag:
                     break
@@ -1443,6 +2827,7 @@ def run_crawl_browser_mode(config: Dict[str, Any], output_root: Path) -> None:
             detail_source = _build_selector_source_from_html(html_payload, selectors, phase="detail")
             detail_name = _extract_first(detail_source, selectors.get("detail_name"))
             name = detail_name or _normalize_text(seed_name)
+            person_name = _display_person_name(name, detail_url)
             image_raw = _extract_first(detail_source, selectors.get("detail_image"))
             image_url = urljoin(detail_url, image_raw) if image_raw else ""
 
@@ -1451,7 +2836,7 @@ def run_crawl_browser_mode(config: Dict[str, Any], output_root: Path) -> None:
             mapped_gender = gender_map.get(gender_text)
             if mapped_gender is None and gender_lookup:
                 mapped_gender = gender_map.get(gender_lookup)
-            gender = normalize_gender(mapped_gender if mapped_gender is not None else gender_text) or default_gender
+            gender = normalize_gender(mapped_gender if mapped_gender is not None else gender_text)
             summary = _extract_joined_text(detail_source, selectors.get("detail_summary"))
             full_content = _extract_full_content_text(detail_source, selectors)
 
@@ -1476,6 +2861,14 @@ def run_crawl_browser_mode(config: Dict[str, Any], output_root: Path) -> None:
             for key, value in extra_fields.items():
                 if value:
                     merged_fields[key] = value
+
+            if not gender:
+                gender = infer_gender_from_texts(
+                    gender_text,
+                    summary,
+                    full_content,
+                    " ".join(str(v) for v in merged_fields.values()),
+                ) or default_gender
 
             mapped_fields = _apply_field_map(
                 field_map,
@@ -1507,10 +2900,20 @@ def run_crawl_browser_mode(config: Dict[str, Any], output_root: Path) -> None:
 
             if inline_download_enabled and image_url:
                 metrics["inline_image_candidates"] += 1
+                reused_cached_image = False
                 if image_url in url_index:
-                    metrics["inline_image_reused_by_url"] += 1
-                    consecutive_inline_image_failures = 0
-                else:
+                    sha_cached, source_cached = _resolve_cached_source_by_image_url(image_url, url_index, sha_index)
+                    if source_cached:
+                        metrics["inline_image_reused_by_url"] += 1
+                        consecutive_inline_image_failures = 0
+                        _inline_write_for_profile(record, sha_cached, source_cached)
+                        reused_cached_image = True
+                    else:
+                        dropped = _drop_stale_cache_index_entries(image_url, sha_cached, url_index, sha_index)
+                        if dropped > 0:
+                            index_dirty_count += dropped
+                            _checkpoint_indexes()
+                if not reused_cached_image:
                     if not first_inline_download:
                         time.sleep(random.uniform(interval_min, interval_max))
                     first_inline_download = False
@@ -1519,11 +2922,12 @@ def run_crawl_browser_mode(config: Dict[str, Any], output_root: Path) -> None:
                         detail_url=detail_url,
                         timeout_seconds=timeout_seconds,
                         max_retries=max(1, int(crawl_cfg.get("retry_times", 3))),
-                        interval_min=interval_min,
-                        interval_max=interval_max,
-                        browser_engine=browser_engine,
-                        downloader=downloader,
-                    )
+                    interval_min=interval_min,
+                    interval_max=interval_max,
+                    browser_engine=browser_engine,
+                    downloader=downloader,
+                    output_root_hint=str(output_root),
+                )
                     if not ok_img:
                         consecutive_inline_image_failures += 1
                         blocked_tag = _classify_browser_blocked_reason(
@@ -1536,6 +2940,15 @@ def run_crawl_browser_mode(config: Dict[str, Any], output_root: Path) -> None:
                         if blocked_tag:
                             _activate_backoff(blocked_tag, image_url, phase="image_inline")
                         metrics["inline_image_failed"] += 1
+                        runtime_log(
+                            "FAIL",
+                            f"{person_name}图片下载失败（内联）",
+                            detail=detail_url,
+                            image=image_url,
+                            person=person_name,
+                            error=error_img,
+                            blocked=bool(blocked_tag),
+                        )
                         append_jsonl(
                             review_path,
                             {
@@ -1559,6 +2972,15 @@ def run_crawl_browser_mode(config: Dict[str, Any], output_root: Path) -> None:
                         if blocked_tag:
                             _activate_backoff(blocked_tag, image_url, phase="image_inline")
                         metrics["inline_image_failed"] += 1
+                        runtime_log(
+                            "FAIL",
+                            f"{person_name}图片下载失败（内联响应不是图片）",
+                            detail=detail_url,
+                            image=image_url,
+                            person=person_name,
+                            size=len(payload_img),
+                            blocked=bool(blocked_tag),
+                        )
                         append_jsonl(
                             review_path,
                             {
@@ -1574,12 +2996,20 @@ def run_crawl_browser_mode(config: Dict[str, Any], output_root: Path) -> None:
                     else:
                         consecutive_inline_image_failures = 0
                         sha = hashlib.sha256(payload_img).hexdigest()
-                        if sha in sha_index:
+                        source_cached = norm_abs_path(str(sha_index.get(sha, ""))) if sha in sha_index else ""
+                        if sha in sha_index and _is_usable_cached_image(source_cached):
                             metrics["inline_image_reused_by_sha"] += 1
                             url_index[image_url] = sha
                             index_dirty_count += 1
                             _checkpoint_indexes()
+                            _inline_write_for_profile(record, sha, source_cached)
                         else:
+                            if sha in sha_index:
+                                try:
+                                    del sha_index[sha]
+                                    index_dirty_count += 1
+                                except Exception:
+                                    pass
                             ext = _guess_extension(image_url, content_type_img)
                             target = image_root / sha[:2] / f"{sha}{ext}"
                             target.parent.mkdir(parents=True, exist_ok=True)
@@ -1589,6 +3019,15 @@ def run_crawl_browser_mode(config: Dict[str, Any], output_root: Path) -> None:
                             index_dirty_count += 1
                             _checkpoint_indexes()
                             metrics["inline_image_downloaded_new"] += 1
+                            runtime_log(
+                                "STEP",
+                                f"{person_name}图片下载成功（内联）",
+                                detail=detail_url,
+                                image=image_url,
+                                person=person_name,
+                                sha=sha[:12],
+                            )
+                            inline_named_path = _inline_write_for_profile(record, sha, str(target.resolve()))
                             append_jsonl(
                                 download_manifest,
                                 {
@@ -1599,6 +3038,7 @@ def run_crawl_browser_mode(config: Dict[str, Any], output_root: Path) -> None:
                                     "sha256": sha,
                                     "saved_path": str(target.resolve()),
                                     "route": "browser_inline",
+                                    **({"named_path": inline_named_path} if inline_named_path else {}),
                                 },
                             )
 
@@ -1620,6 +3060,13 @@ def run_crawl_browser_mode(config: Dict[str, Any], output_root: Path) -> None:
         except Exception:
             pass
 
+    if llm_enricher is not None:
+        try:
+            llm_enricher.flush_cache()
+            append_llm_report(llm_report_path, "crawl_browser_mode_inline_metadata", llm_enricher.report())
+        except Exception:
+            pass
+
     if inline_download_enabled:
         _checkpoint_indexes(force=True)
         save_json(
@@ -1638,6 +3085,21 @@ def run_crawl_browser_mode(config: Dict[str, Any], output_root: Path) -> None:
                 },
             },
         )
+        if inline_metadata_enabled:
+            save_json(
+                metadata_report_path,
+                {
+                    "generated_at": utc_now_iso(),
+                    "enabled": True,
+                    "writer_available": True,
+                    "mode": "inline_per_item",
+                    "named_output_dir": str(inline_named_dir.resolve()),
+                    "totals": inline_metadata_totals,
+                    "llm_enrichment": (
+                        llm_enricher.report() if llm_enricher is not None else {"enabled": False}
+                    ),
+                },
+            )
 
     report = {
         "closed_at": utc_now_iso(),
@@ -1646,9 +3108,13 @@ def run_crawl_browser_mode(config: Dict[str, Any], output_root: Path) -> None:
         "blocked_reason": blocked_reason,
         "crawl_mode": "browser",
         "browser_engine": browser_engine,
+        "disable_page_images_during_crawl": disable_page_images_during_crawl,
         "interval_min_seconds": interval_min,
         "interval_max_seconds": interval_max,
         "inline_download_enabled": inline_download_enabled,
+        "inline_metadata_enabled": inline_metadata_enabled,
+        "inline_metadata_totals": inline_metadata_totals if inline_metadata_enabled else {},
+        "llm_enrichment": llm_enricher.report() if llm_enricher is not None else {"enabled": False},
         "metrics_this_run": metrics,
         "totals_on_disk": {
             "list_records": count_jsonl(list_path),
@@ -1777,12 +3243,12 @@ def _download_image_with_d2i_browser(
     interval_max: float,
     browser_engine: str,
     downloader: Optional[Any] = None,
+    output_root_hint: str = "",
 ) -> Tuple[bool, bytes, str, str]:
     if not HAS_D2I_DOWNLOADER:
         return False, b"", "", f"d2i_downloader_unavailable: {D2I_DOWNLOADER_ERROR}"
 
-    temp_root = SCRIPT_DIR / "_tmp_browser_downloads"
-    temp_root.mkdir(parents=True, exist_ok=True)
+    temp_root = scoped_temp_dir("_tmp_browser_downloads", scope_hint=output_root_hint)
 
     own_downloader = downloader is None
     if downloader is None:
@@ -1912,6 +3378,17 @@ def download_images(config: Dict[str, Any], output_root: Path) -> Dict[str, Any]
         and bool(rules.get("write_metadata", True))
         and HAS_METADATA_WRITER
     )
+    metadata_retry_settings = resolve_metadata_retry_settings(rules)
+    metadata_write_retries = int(metadata_retry_settings.get("max_attempts", 1))
+    metadata_retry_delay_seconds = float(metadata_retry_settings.get("retry_delay_seconds", 0.0))
+    metadata_retry_backoff_factor = float(metadata_retry_settings.get("retry_backoff_factor", 1.0))
+    llm_report_path = reports_root / "llm_enrichment_report.json"
+    llm_enricher: Optional[Any] = None
+    if HAS_LLM_ENRICHER:
+        try:
+            llm_enricher = LLMEnricher(rules, state_root)  # type: ignore[misc]
+        except Exception:
+            llm_enricher = None
 
     totals = {
         "profiles_seen": 0,
@@ -1936,6 +3413,8 @@ def download_images(config: Dict[str, Any], output_root: Path) -> Dict[str, Any]
         "skipped_missing_local_path": 0,
         "failed": 0,
         "copied_to_named_folder": 0,
+        "retried_rows": 0,
+        "retry_attempts": 0,
     }
     inline_named_dir = resolve_named_output_dir(output_root, rules)
     inline_reserved_paths: set[str] = set()
@@ -1962,6 +3441,12 @@ def download_images(config: Dict[str, Any], output_root: Path) -> Dict[str, Any]
         source_norm = norm_abs_path(source_path_value)
         if (not source_norm) or (not Path(source_norm).exists()):
             inline_metadata_totals["skipped_missing_local_path"] += 1
+            runtime_log(
+                "WARN",
+                "inline metadata skipped: local image missing",
+                detail=detail_url,
+                candidate=source_path_value,
+            )
             append_jsonl(
                 review_path,
                 {
@@ -1975,7 +3460,7 @@ def download_images(config: Dict[str, Any], output_root: Path) -> Dict[str, Any]
 
         queue_row = build_metadata_queue_row_from_profile(profile_row, image_sha_value, source_norm)
         inline_metadata_totals["rows_seen"] += 1
-        ok_meta, final_path, copied_flag = write_metadata_for_queue_row(
+        ok_meta, final_path, copied_flag, attempts_used = write_metadata_for_queue_row_with_retries(
             row=queue_row,
             source_path=source_norm,
             named_dir=inline_named_dir,
@@ -1983,7 +3468,14 @@ def download_images(config: Dict[str, Any], output_root: Path) -> Dict[str, Any]
             field_labels=inline_field_labels,
             review_path=review_path,
             results_path=metadata_results_path,
+            llm_enricher=llm_enricher,
+            max_attempts=metadata_write_retries,
+            retry_delay_seconds=metadata_retry_delay_seconds,
+            retry_backoff_factor=metadata_retry_backoff_factor,
         )
+        if attempts_used > 1:
+            inline_metadata_totals["retried_rows"] += 1
+            inline_metadata_totals["retry_attempts"] += (attempts_used - 1)
         if ok_meta:
             inline_metadata_totals["written_ok"] += 1
             if copied_flag:
@@ -1992,12 +3484,33 @@ def download_images(config: Dict[str, Any], output_root: Path) -> Dict[str, Any]
             inline_existing_detail_urls.add(detail_url)
             return norm_abs_path(final_path) or final_path
         inline_metadata_totals["failed"] += 1
+        runtime_log(
+            "FAIL",
+            "inline metadata write failed",
+            detail=detail_url,
+            name=profile_row.get("name", ""),
+        )
         return ""
+
+    failed_image_urls: set[str] = set()
+    if review_path.exists():
+        for review_item in iter_jsonl(review_path):
+            reason = str(review_item.get("reason", "")).strip().lower()
+            if reason.startswith("image_download_"):
+                image_url_retry = str(review_item.get("image_url", "")).strip()
+                if image_url_retry:
+                    failed_image_urls.add(image_url_retry)
+
+    runtime_log(
+        "STAGE",
+        "image download stage scanning started",
+        mode=image_download_mode,
+        failed_retry_candidates=len(failed_image_urls),
+    )
 
     browser_downloader: Optional[Any] = None
     if browser_mode_selected and HAS_D2I_DOWNLOADER:
-        temp_root = SCRIPT_DIR / "_tmp_browser_downloads"
-        temp_root.mkdir(parents=True, exist_ok=True)
+        temp_root = scoped_temp_dir("_tmp_browser_downloads", scope_hint=str(output_root))
         browser_downloader = ImageDownloader(
             save_dir=str(temp_root),
             interval_min=max(0.1, float(interval_min)),
@@ -2029,28 +3542,52 @@ def download_images(config: Dict[str, Any], output_root: Path) -> Dict[str, Any]
                 "recorded_at": utc_now_iso(),
             },
         )
+        runtime_log(
+            "STOP",
+            "backoff activated during image download",
+            phase=phase,
+            url=url,
+            reason=reason,
+            blocked_until=blocked_until,
+        )
 
     try:
         for profile in iter_jsonl(profiles_path):
+            wait_if_manual_paused(output_root, stage="download:images")
             totals["profiles_seen"] += 1
             image_url = str(profile.get("image_url", "")).strip()
             if not image_url:
                 continue
             totals["profiles_with_image_url"] += 1
+            retrying_failed = image_url in failed_image_urls
+            detail_url = str(profile.get("detail_url", "")).strip()
+            person_name = _display_person_name(profile.get("name", ""), detail_url)
+            runtime_log(
+                "STEP",
+                f"正在下载{person_name}的图片",
+                idx=totals["profiles_with_image_url"],
+                retry_failed=retrying_failed,
+                person=person_name,
+                detail=detail_url,
+                image=image_url,
+            )
 
             if image_url in url_index:
-                totals["reused_by_url"] += 1
-                if inline_metadata_enabled:
-                    sha_cached = str(url_index.get(image_url, "")).strip()
-                    source_cached = norm_abs_path(str(sha_index.get(sha_cached, ""))) if sha_cached else ""
-                    _inline_write_for_profile(profile, sha_cached, source_cached)
-                continue
+                sha_cached, source_cached = _resolve_cached_source_by_image_url(image_url, url_index, sha_index)
+                if source_cached:
+                    totals["reused_by_url"] += 1
+                    if inline_metadata_enabled:
+                        _inline_write_for_profile(profile, sha_cached, source_cached)
+                    continue
+                dropped = _drop_stale_cache_index_entries(image_url, sha_cached, url_index, sha_index)
+                if dropped > 0:
+                    index_dirty_count += dropped
+                    _checkpoint_indexes()
 
             if not first_download:
                 time.sleep(random.uniform(interval_min, interval_max))
             first_download = False
 
-            detail_url = str(profile.get("detail_url", "")).strip()
             response_status = 200
             payload = b""
             content_type = ""
@@ -2067,6 +3604,7 @@ def download_images(config: Dict[str, Any], output_root: Path) -> Dict[str, Any]
                     interval_max=interval_max,
                     browser_engine=browser_engine,
                     downloader=browser_downloader,
+                    output_root_hint=str(output_root),
                 )
                 if not ok:
                     consecutive_download_failures += 1
@@ -2080,6 +3618,15 @@ def download_images(config: Dict[str, Any], output_root: Path) -> Dict[str, Any]
                     if blocked_tag:
                         _activate_backoff(blocked_tag, image_url, phase="image_download")
                     totals["failed"] += 1
+                    runtime_log(
+                        "FAIL",
+                        f"{person_name}图片下载失败（浏览器模式）",
+                        detail=detail_url,
+                        image=image_url,
+                        person=person_name,
+                        error=browser_error,
+                        blocked=bool(blocked_tag),
+                    )
                     append_jsonl(
                         review_path,
                         {
@@ -2114,6 +3661,14 @@ def download_images(config: Dict[str, Any], output_root: Path) -> Dict[str, Any]
                 except requests.RequestException as exc:
                     consecutive_download_failures += 1
                     totals["failed"] += 1
+                    runtime_log(
+                        "FAIL",
+                        f"{person_name}图片下载请求异常",
+                        detail=detail_url,
+                        image=image_url,
+                        person=person_name,
+                        error=str(exc),
+                    )
                     append_jsonl(
                         review_path,
                         {
@@ -2144,6 +3699,15 @@ def download_images(config: Dict[str, Any], output_root: Path) -> Dict[str, Any]
             if response_status != 200 or (not payload):
                 consecutive_download_failures += 1
                 totals["failed"] += 1
+                runtime_log(
+                    "FAIL",
+                    f"{person_name}图片下载失败（HTTP错误）",
+                    detail=detail_url,
+                    image=image_url,
+                    person=person_name,
+                    status=response_status,
+                    route=route_used,
+                )
                 append_jsonl(
                     review_path,
                     {
@@ -2170,6 +3734,18 @@ def download_images(config: Dict[str, Any], output_root: Path) -> Dict[str, Any]
                 if browser_challenge_payload:
                     _activate_backoff("browser_challenge_payload", image_url, phase="image_download")
                 totals["failed"] += 1
+                runtime_log(
+                    "FAIL",
+                    f"{person_name}图片下载失败（响应不是图片）",
+                    detail=detail_url,
+                    image=image_url,
+                    person=person_name,
+                    status=response_status,
+                    content_type=content_type,
+                    size=len(payload),
+                    route=route_used,
+                    browser_challenge=browser_challenge_payload,
+                )
                 append_jsonl(
                     review_path,
                     {
@@ -2196,15 +3772,21 @@ def download_images(config: Dict[str, Any], output_root: Path) -> Dict[str, Any]
 
             consecutive_download_failures = 0
             sha = hashlib.sha256(payload).hexdigest()
-            if sha in sha_index:
+            source_cached = norm_abs_path(str(sha_index.get(sha, ""))) if sha in sha_index else ""
+            if sha in sha_index and _is_usable_cached_image(source_cached):
                 totals["reused_by_sha"] += 1
                 url_index[image_url] = sha
                 index_dirty_count += 1
                 _checkpoint_indexes()
                 if inline_metadata_enabled:
-                    source_cached = norm_abs_path(str(sha_index.get(sha, "")))
                     _inline_write_for_profile(profile, sha, source_cached)
                 continue
+            if sha in sha_index:
+                try:
+                    del sha_index[sha]
+                    index_dirty_count += 1
+                except Exception:
+                    pass
 
             ext = _guess_extension(image_url, content_type)
             target = image_root / sha[:2] / f"{sha}{ext}"
@@ -2220,6 +3802,15 @@ def download_images(config: Dict[str, Any], output_root: Path) -> Dict[str, Any]
                 totals["downloaded_via_browser"] += 1
             else:
                 totals["downloaded_via_requests"] += 1
+            runtime_log(
+                "STEP",
+                f"{person_name}图片下载成功",
+                detail=detail_url,
+                image=image_url,
+                person=person_name,
+                route=route_used,
+                sha=sha[:12],
+            )
 
             inline_named_path = ""
             if inline_metadata_enabled:
@@ -2245,6 +3836,12 @@ def download_images(config: Dict[str, Any], output_root: Path) -> Dict[str, Any]
                 pass
 
     _checkpoint_indexes(force=True)
+    if llm_enricher is not None:
+        try:
+            llm_enricher.flush_cache()
+            append_llm_report(llm_report_path, "download_images_inline_metadata", llm_enricher.report())
+        except Exception:
+            pass
     if inline_metadata_enabled:
         save_json(
             metadata_report_path,
@@ -2255,6 +3852,9 @@ def download_images(config: Dict[str, Any], output_root: Path) -> Dict[str, Any]
                 "mode": "inline_per_item",
                 "named_output_dir": str(inline_named_dir.resolve()),
                 "totals": inline_metadata_totals,
+                "llm_enrichment": (
+                    llm_enricher.report() if llm_enricher is not None else {"enabled": False}
+                ),
             },
         )
 
@@ -2271,6 +3871,7 @@ def download_images(config: Dict[str, Any], output_root: Path) -> Dict[str, Any]
         "blocked_reason": blocked_reason,
         "inline_metadata_enabled": inline_metadata_enabled,
         "inline_metadata_totals": inline_metadata_totals if inline_metadata_enabled else {},
+        "llm_enrichment": llm_enricher.report() if llm_enricher is not None else {"enabled": False},
     }
     save_json(reports_root / "image_download_report.json", report)
     return report
@@ -2281,49 +3882,156 @@ def build_metadata_queue(output_root: Path) -> Dict[str, Any]:
     queue_path = output_root / "raw" / "metadata_queue.jsonl"
     url_index_path = output_root / "state" / "image_url_index.json"
     sha_index_path = output_root / "state" / "image_sha_index.json"
+    downloads_manifest_path = output_root / "downloads" / "image_downloads.jsonl"
 
-    url_index: Dict[str, str] = load_json(url_index_path, {})
-    sha_index: Dict[str, str] = load_json(sha_index_path, {})
+    url_index_raw = load_json(url_index_path, {})
+    sha_index_raw = load_json(sha_index_path, {})
+    url_index: Dict[str, str] = {}
+    sha_index: Dict[str, str] = {}
+    if isinstance(url_index_raw, dict):
+        for raw_key, raw_value in url_index_raw.items():
+            key = str(raw_key or "").strip()
+            value = str(raw_value or "").strip()
+            if key and value:
+                url_index[key] = value
+    if isinstance(sha_index_raw, dict):
+        for raw_key, raw_value in sha_index_raw.items():
+            key = str(raw_key or "").strip()
+            value = norm_abs_path(str(raw_value or ""))
+            if key and value:
+                sha_index[key] = value
 
-    existing = set()
-    for row in iter_jsonl(queue_path):
-        key = str(row.get("detail_url", "")).strip()
-        if key:
-            existing.add(key)
+    manifest_by_detail, manifest_by_image = _load_download_manifest_lookups(downloads_manifest_path)
+
+    profiles: List[Dict[str, Any]] = []
+    profiles_by_detail: Dict[str, Dict[str, Any]] = {}
+    for profile in iter_jsonl(profiles_path):
+        if not isinstance(profile, dict):
+            continue
+        profiles.append(profile)
+        detail_url = str(profile.get("detail_url", "")).strip()
+        if detail_url:
+            profiles_by_detail[detail_url] = profile
+
+    queue_rows: List[Dict[str, Any]] = []
+    existing_details: set[str] = set()
+    refreshed = 0
+    for row_raw in iter_jsonl(queue_path):
+        if not isinstance(row_raw, dict):
+            continue
+        row = dict(row_raw)
+        detail_url = str(row.get("detail_url", "")).strip()
+        if not detail_url:
+            continue
+
+        profile = profiles_by_detail.get(detail_url, {})
+        changed = False
+
+        if not str(row.get("name", "")).strip():
+            profile_name = str(profile.get("name", "")).strip() if isinstance(profile, dict) else ""
+            if profile_name:
+                row["name"] = profile_name
+                changed = True
+        if not str(row.get("gender", "")).strip():
+            profile_gender = normalize_gender(profile.get("gender", "")) if isinstance(profile, dict) else ""
+            if profile_gender:
+                row["gender"] = profile_gender
+                changed = True
+        if not _normalize_multiline_text(row.get("summary", "")):
+            profile_summary = _normalize_multiline_text(profile.get("summary", "")) if isinstance(profile, dict) else ""
+            if profile_summary:
+                row["summary"] = profile_summary
+                changed = True
+        if not _normalize_multiline_text(row.get("full_content", "")):
+            profile_content = (
+                _normalize_multiline_text(profile.get("full_content", "") or profile.get("summary", ""))
+                if isinstance(profile, dict)
+                else ""
+            )
+            if profile_content:
+                row["full_content"] = profile_content
+                changed = True
+        if (not isinstance(row.get("fields"), dict)) or (not row.get("fields")):
+            profile_fields = profile.get("fields", {}) if isinstance(profile, dict) else {}
+            if isinstance(profile_fields, dict) and profile_fields:
+                row["fields"] = profile_fields
+                changed = True
+        if (not isinstance(row.get("mapped"), dict)) or (not row.get("mapped")):
+            profile_mapped = profile.get("mapped", {}) if isinstance(profile, dict) else {}
+            if isinstance(profile_mapped, dict) and profile_mapped:
+                row["mapped"] = profile_mapped
+                changed = True
+
+        profile_image_url = str(profile.get("image_url", "")).strip() if isinstance(profile, dict) else ""
+        if (not str(row.get("image_url", "")).strip()) and profile_image_url:
+            row["image_url"] = profile_image_url
+            changed = True
+        profile_source_url = str(profile.get("list_url", "")).strip() if isinstance(profile, dict) else ""
+        if (not str(row.get("source_url", "")).strip()) and profile_source_url:
+            row["source_url"] = profile_source_url
+            changed = True
+
+        image_url = str(row.get("image_url", "")).strip() or profile_image_url
+        row_sha = str(row.get("image_sha256", "")).strip()
+        row_local_path = str(row.get("local_image_path", "")).strip()
+        resolved_sha, resolved_path, _ = _resolve_metadata_source_path(
+            detail_url=detail_url,
+            image_url=image_url,
+            image_sha=row_sha,
+            row_local_path=row_local_path,
+            url_index=url_index,
+            sha_index=sha_index,
+            manifest_by_detail=manifest_by_detail,
+            manifest_by_image=manifest_by_image,
+        )
+        if resolved_sha and (resolved_sha != row_sha):
+            row["image_sha256"] = resolved_sha
+            changed = True
+        if resolved_path and (norm_abs_path(resolved_path) != norm_abs_path(row_local_path)):
+            row["local_image_path"] = resolved_path
+            changed = True
+
+        if changed:
+            refreshed += 1
+
+        queue_rows.append(row)
+        existing_details.add(detail_url)
 
     added = 0
-    for profile in iter_jsonl(profiles_path):
+    for profile in profiles:
         detail_url = str(profile.get("detail_url", "")).strip()
-        if not detail_url or detail_url in existing:
+        if not detail_url or detail_url in existing_details:
             continue
         image_url = str(profile.get("image_url", "")).strip()
-        sha = url_index.get(image_url, "")
-        local_path = sha_index.get(sha, "") if sha else ""
-        row = {
-            "created_at": utc_now_iso(),
-            "name": profile.get("name", ""),
-            "gender": normalize_gender(profile.get("gender", "")),
-            "summary": _normalize_multiline_text(profile.get("summary", "")),
-            "full_content": _normalize_multiline_text(
-                profile.get("full_content", "") or profile.get("summary", "")
-            ),
-            "fields": profile.get("fields", {}),
-            "mapped": profile.get("mapped", {}),
-            "detail_url": detail_url,
-            "source_url": profile.get("list_url", ""),
-            "image_url": image_url,
-            "image_sha256": sha,
-            "local_image_path": local_path,
-        }
-        append_jsonl(queue_path, row)
-        existing.add(detail_url)
+        sha = str(url_index.get(image_url, "")).strip()
+        local_path = norm_abs_path(str(sha_index.get(sha, ""))) if sha else ""
+        resolved_sha, resolved_path, _ = _resolve_metadata_source_path(
+            detail_url=detail_url,
+            image_url=image_url,
+            image_sha=sha,
+            row_local_path=local_path,
+            url_index=url_index,
+            sha_index=sha_index,
+            manifest_by_detail=manifest_by_detail,
+            manifest_by_image=manifest_by_image,
+        )
+        row = build_metadata_queue_row_from_profile(
+            profile,
+            resolved_sha or sha,
+            resolved_path or local_path,
+        )
+        queue_rows.append(row)
+        existing_details.add(detail_url)
         added += 1
+
+    write_jsonl(queue_path, queue_rows)
 
     report = {
         "generated_at": utc_now_iso(),
         "queue_path": str(queue_path.resolve()),
-        "total_rows": count_jsonl(queue_path),
+        "total_rows": len(queue_rows),
         "rows_added_this_run": added,
+        "rows_refreshed_this_run": refreshed,
     }
     save_json(output_root / "reports" / "metadata_queue_report.json", report)
     return report
@@ -2332,7 +4040,13 @@ def build_metadata_queue(output_root: Path) -> Dict[str, Any]:
 def write_metadata_for_downloads(output_root: Path, config: Dict[str, Any]) -> Dict[str, Any]:
     rules = dict(config.get("rules", {}))
     enabled = bool(rules.get("write_metadata", True))
+    metadata_retry_settings = resolve_metadata_retry_settings(rules)
+    metadata_write_retries = int(metadata_retry_settings.get("max_attempts", 1))
+    metadata_retry_delay_seconds = float(metadata_retry_settings.get("retry_delay_seconds", 0.0))
+    metadata_retry_backoff_factor = float(metadata_retry_settings.get("retry_backoff_factor", 1.0))
+    retry_failed_first = bool(metadata_retry_settings.get("retry_failed_first", True))
     report_path = output_root / "reports" / "metadata_write_report.json"
+    llm_report_path = output_root / "reports" / "llm_enrichment_report.json"
     queue_path = output_root / "raw" / "metadata_queue.jsonl"
     review_path = output_root / "raw" / "review_queue.jsonl"
     results_path = output_root / "raw" / "metadata_write_results.jsonl"
@@ -2342,6 +4056,13 @@ def write_metadata_for_downloads(output_root: Path, config: Dict[str, Any]) -> D
         named_dir = output_root.resolve()
     else:
         named_dir = (output_root / named_dir_cfg).resolve() if not Path(named_dir_cfg).is_absolute() else Path(named_dir_cfg).resolve()
+
+    llm_enricher: Optional[Any] = None
+    if HAS_LLM_ENRICHER:
+        try:
+            llm_enricher = LLMEnricher(rules, output_root / "state")  # type: ignore[misc]
+        except Exception:
+            llm_enricher = None
 
     if not enabled:
         report = {"generated_at": utc_now_iso(), "enabled": False}
@@ -2369,6 +4090,21 @@ def write_metadata_for_downloads(output_root: Path, config: Dict[str, Any]) -> D
         return report
 
     rows = list(iter_jsonl(queue_path))
+    latest_status_map = _load_latest_metadata_status(results_path)
+    rows, row_priority_stats = _order_metadata_rows_by_retry_priority(
+        rows,
+        latest_status_map,
+        retry_failed_first=retry_failed_first,
+    )
+    runtime_log(
+        "STAGE",
+        "metadata write stage scanning queue",
+        queue=len(rows),
+        retry_failed_first=retry_failed_first,
+        failed_first=row_priority_stats.get("failed_rows", 0),
+        pending=row_priority_stats.get("pending_rows", 0),
+        ok_deferred=row_priority_stats.get("ok_rows", 0),
+    )
     named_dir.mkdir(parents=True, exist_ok=True)
 
     # Reserve existing final names to keep reruns idempotent.
@@ -2382,10 +4118,20 @@ def write_metadata_for_downloads(output_root: Path, config: Dict[str, Any]) -> D
             reserved_paths.add(str(existing_path.resolve()))
 
     detail_to_final_path: Dict[str, str] = {}
+    url_index_path = output_root / "state" / "image_url_index.json"
     sha_index_path = output_root / "state" / "image_sha_index.json"
+    url_index_raw = load_json(url_index_path, {})
     sha_index = load_json(sha_index_path, {})
+    if not isinstance(url_index_raw, dict):
+        url_index_raw = {}
     if not isinstance(sha_index, dict):
         sha_index = {}
+    url_index: Dict[str, str] = {
+        str(k): str(v)
+        for k, v in url_index_raw.items()
+        if str(k).strip() and str(v).strip()
+    }
+    manifest_by_detail, manifest_by_image = _load_download_manifest_lookups(downloads_manifest_path)
 
     sha_runtime_path: Dict[str, str] = {
         str(k): norm_abs_path(str(v))
@@ -2399,30 +4145,59 @@ def write_metadata_for_downloads(output_root: Path, config: Dict[str, Any]) -> D
         "skipped_missing_local_path": 0,
         "failed": 0,
         "copied_to_named_folder": 0,
+        "retried_rows": 0,
+        "retry_attempts": 0,
+        "failed_rows_prioritized": int(row_priority_stats.get("failed_rows", 0)),
+        "pending_rows_prioritized": int(row_priority_stats.get("pending_rows", 0)),
+        "ok_rows_deferred": int(row_priority_stats.get("ok_rows", 0)),
     }
     field_labels = collect_detail_field_labels(config, rules)
 
     for row in rows:
+        wait_if_manual_paused(output_root, stage="metadata:write")
         totals["rows_seen"] += 1
         detail_url = str(row.get("detail_url", "")).strip()
+        row_name = _display_person_name(row.get("name", ""), detail_url)
+        last_status = str(latest_status_map.get(detail_url, "")).strip().lower() if detail_url else ""
+        runtime_log(
+            "STEP",
+            f"正在写入{row_name}的元数据",
+            idx=totals["rows_seen"],
+            detail=detail_url,
+            person=row_name,
+            retry_previous_fail=(last_status not in {"", "ok"}),
+        )
+        image_url = str(row.get("image_url", "")).strip()
         image_sha = str(row.get("image_sha256", "")).strip()
-        local_path_candidates: List[str] = []
         row_local = norm_abs_path(str(row.get("local_image_path", "")))
-        if row_local:
-            local_path_candidates.append(row_local)
-        if image_sha and image_sha in sha_runtime_path:
-            local_path_candidates.append(norm_abs_path(sha_runtime_path[image_sha]))
-        if image_sha and image_sha in sha_index:
-            local_path_candidates.append(norm_abs_path(str(sha_index[image_sha])))
-
-        source_path = ""
-        for candidate in local_path_candidates:
-            if candidate and Path(candidate).exists():
-                source_path = candidate
-                break
+        resolved_sha, resolved_path, local_path_candidates = _resolve_metadata_source_path(
+            detail_url=detail_url,
+            image_url=image_url,
+            image_sha=image_sha,
+            row_local_path=row_local,
+            url_index=url_index,
+            sha_index={**sha_index, **sha_runtime_path},
+            manifest_by_detail=manifest_by_detail,
+            manifest_by_image=manifest_by_image,
+        )
+        source_path = resolved_path if (resolved_path and _path_exists(resolved_path)) else ""
+        if resolved_sha and (resolved_sha != image_sha):
+            row["image_sha256"] = resolved_sha
+            image_sha = resolved_sha
+        if source_path and (norm_abs_path(source_path) != row_local):
+            row["local_image_path"] = source_path
+        if image_sha and source_path:
+            sha_runtime_path[image_sha] = source_path
 
         if not source_path:
             totals["skipped_missing_local_path"] += 1
+            runtime_log(
+                "WARN",
+                f"{row_name}元数据写入跳过：源图片缺失",
+                detail=detail_url,
+                person=row_name,
+                candidates="; ".join(local_path_candidates),
+            )
             append_jsonl(
                 review_path,
                 {
@@ -2432,9 +4207,28 @@ def write_metadata_for_downloads(output_root: Path, config: Dict[str, Any]) -> D
                     "candidates": local_path_candidates,
                 },
             )
+            append_jsonl(
+                results_path,
+                {
+                    "processed_at": utc_now_iso(),
+                    "detail_url": detail_url,
+                    "name": row_name,
+                    "status": "fail",
+                    "error": "metadata_missing_local_image_path",
+                    "output_path": "",
+                    "attempts": 0,
+                    "audit": {
+                        "name": row_name,
+                        "gender": normalize_gender(row.get("gender", "")),
+                        "birth_date": normalize_optional_field((row.get("mapped") or {}).get("birth_date", "")) if isinstance(row.get("mapped"), dict) else "",
+                        "photo_taken_at": "",
+                        "age_at_photo": "",
+                    },
+                },
+            )
             continue
 
-        ok, _final_path, copied_flag = write_metadata_for_queue_row(
+        ok, _final_path, copied_flag, attempts_used = write_metadata_for_queue_row_with_retries(
             row=row,
             source_path=source_path,
             named_dir=named_dir,
@@ -2444,13 +4238,34 @@ def write_metadata_for_downloads(output_root: Path, config: Dict[str, Any]) -> D
             results_path=results_path,
             detail_to_final_path=detail_to_final_path,
             sha_runtime_path=sha_runtime_path,
+            llm_enricher=llm_enricher,
+            max_attempts=metadata_write_retries,
+            retry_delay_seconds=metadata_retry_delay_seconds,
+            retry_backoff_factor=metadata_retry_backoff_factor,
         )
+        if attempts_used > 1:
+            totals["retried_rows"] += 1
+            totals["retry_attempts"] += (attempts_used - 1)
         if ok:
             totals["written_ok"] += 1
             if copied_flag:
                 totals["copied_to_named_folder"] += 1
+            runtime_log(
+                "STEP",
+                f"{row_name}元数据写入成功",
+                detail=detail_url,
+                person=row_name,
+                attempts=attempts_used,
+            )
         else:
             totals["failed"] += 1
+            runtime_log(
+                "FAIL",
+                f"{row_name}元数据写入失败",
+                detail=detail_url,
+                person=row_name,
+                attempts=attempts_used,
+            )
 
     # Persist updated queue with final named paths.
     write_jsonl(queue_path, rows)
@@ -2471,14 +4286,278 @@ def write_metadata_for_downloads(output_root: Path, config: Dict[str, Any]) -> D
         if changed:
             write_jsonl(downloads_manifest_path, manifest_rows)
 
+    if llm_enricher is not None:
+        try:
+            llm_enricher.flush_cache()
+            append_llm_report(llm_report_path, "metadata_write_phase", llm_enricher.report())
+        except Exception:
+            pass
+
     report = {
         "generated_at": utc_now_iso(),
         "enabled": True,
         "writer_available": True,
         "named_output_dir": str(named_dir),
         "totals": totals,
+        "retry_policy": {
+            "retry_failed_first": retry_failed_first,
+            "metadata_write_retries": metadata_write_retries,
+            "metadata_write_retry_delay_seconds": metadata_retry_delay_seconds,
+            "metadata_write_retry_backoff_factor": metadata_retry_backoff_factor,
+        },
+        "llm_enrichment": llm_enricher.report() if llm_enricher is not None else {"enabled": False},
     }
     save_json(report_path, report)
+    return report
+
+
+def _resolve_metadata_audit_fields(rules: Dict[str, Any]) -> List[str]:
+    default_fields = ["gender", "birth_date", "photo_taken_at", "age_at_photo"]
+    allowed = {
+        "gender",
+        "birth_date",
+        "photo_taken_at",
+        "age_at_photo",
+        "position",
+        "city",
+        "unit",
+        "profession",
+        "police_id",
+    }
+    raw_fields = rules.get("metadata_audit_required_fields", default_fields)
+    if isinstance(raw_fields, str):
+        candidates = [x.strip() for x in re.split(r"[;,，、\s]+", raw_fields) if x.strip()]
+    elif isinstance(raw_fields, list):
+        candidates = [str(x or "").strip() for x in raw_fields if str(x or "").strip()]
+    else:
+        candidates = list(default_fields)
+
+    normalized: List[str] = []
+    for token in candidates:
+        field = str(token or "").strip().lower()
+        if (not field) or (field not in allowed):
+            continue
+        if field not in normalized:
+            normalized.append(field)
+    return normalized or list(default_fields)
+
+
+def write_metadata_audit_report(output_root: Path, config: Dict[str, Any]) -> Dict[str, Any]:
+    rules = dict(config.get("rules", {}))
+    enabled = _parse_bool_rule(rules.get("metadata_audit_enabled", True), default=True)
+    required_fields = _resolve_metadata_audit_fields(rules)
+    try:
+        max_items = int(rules.get("metadata_audit_max_items", 300))
+    except Exception:
+        max_items = 300
+    max_items = max(20, min(2000, max_items))
+    push_review_queue = _parse_bool_rule(rules.get("metadata_audit_push_review_queue", True), default=True)
+
+    report_path = output_root / "reports" / "metadata_audit_report.json"
+    results_path = output_root / "raw" / "metadata_write_results.jsonl"
+    review_path = output_root / "raw" / "review_queue.jsonl"
+
+    if not enabled:
+        report = {
+            "generated_at": utc_now_iso(),
+            "enabled": False,
+            "required_fields": required_fields,
+            "results_path": str(results_path.resolve()),
+        }
+        save_json(report_path, report)
+        runtime_log("STAGE", "metadata audit skipped by config")
+        return report
+
+    runtime_log(
+        "STAGE",
+        "metadata audit start",
+        missing_fields=",".join(required_fields),
+    )
+
+    def _normalize_audit_value(field: str, value: Any) -> str:
+        if field == "gender":
+            return normalize_gender(value)
+        return normalize_optional_field(value)
+
+    def _audit_from_file(output_path: str, fallback: Dict[str, Any]) -> Dict[str, Any]:
+        if (not HAS_METADATA_MANAGER) or (_read_image_metadata is None):
+            return dict(fallback or {})
+        source_path = norm_abs_path(output_path)
+        if (not source_path) or (not Path(source_path).exists()):
+            return dict(fallback or {})
+        try:
+            info = _read_image_metadata(source_path)  # type: ignore[misc]
+        except Exception:
+            return dict(fallback or {})
+        profile: Dict[str, Any] = {}
+        try:
+            if isinstance(getattr(info, "titi_json", None), dict):
+                prof_raw = (info.titi_json or {}).get("d2i_profile")
+                if isinstance(prof_raw, dict):
+                    profile = prof_raw
+        except Exception:
+            profile = {}
+        # Keep output stable even when file metadata is partially missing.
+        return {
+            "name": normalize_optional_field(getattr(info, "person", "") or getattr(info, "title", "") or fallback.get("name", "")),
+            "gender": normalize_gender(getattr(info, "gender", "") or profile.get("gender", "")),
+            "birth_date": normalize_optional_field(profile.get("birth_date", "")),
+            "photo_taken_at": normalize_optional_field(profile.get("photo_taken_at", "")),
+            "age_at_photo": normalize_optional_field(profile.get("age_at_photo", "")),
+            "position": normalize_optional_field(getattr(info, "position", "") or profile.get("title", "") or profile.get("position", "")),
+            "city": normalize_optional_field(getattr(info, "city", "") or profile.get("location", "") or profile.get("city", "")),
+            "unit": normalize_optional_field(profile.get("unit", "")),
+            "profession": normalize_optional_field(profile.get("profession", "")),
+            "police_id": normalize_optional_field(getattr(info, "police_id", "") or profile.get("police_id", "")),
+        }
+
+    totals = {
+        "rows_total": 0,
+        "rows_ok": 0,
+        "rows_failed": 0,
+        "rows_checked": 0,
+        "rows_with_missing": 0,
+    }
+    missing_by_field: Dict[str, int] = {field: 0 for field in required_fields}
+    missing_items: List[Dict[str, Any]] = []
+    missing_map: Dict[str, List[str]] = {}
+    values_map: Dict[str, Dict[str, str]] = {}
+    name_map: Dict[str, str] = {}
+
+    for row in iter_jsonl(results_path):
+        totals["rows_total"] += 1
+        status = str(row.get("status", "")).strip().lower()
+        if status == "ok":
+            totals["rows_ok"] += 1
+        else:
+            totals["rows_failed"] += 1
+            continue
+
+        audit_raw = row.get("audit", {})
+        audit = audit_raw if isinstance(audit_raw, dict) else {}
+        detail_url = str(row.get("detail_url", "")).strip()
+        output_path = norm_abs_path(str(row.get("output_path", "")))
+        effective_audit = _audit_from_file(output_path, audit)
+        name = normalize_optional_field(effective_audit.get("name") or row.get("name", ""))
+
+        values: Dict[str, str] = {}
+        missing_fields: List[str] = []
+        for field in required_fields:
+            value = _normalize_audit_value(field, effective_audit.get(field, ""))
+            values[field] = value
+            if not value:
+                missing_fields.append(field)
+
+        totals["rows_checked"] += 1
+        if detail_url:
+            missing_map[detail_url] = list(missing_fields)
+            values_map[detail_url] = dict(values)
+            name_map[detail_url] = name
+        if missing_fields:
+            totals["rows_with_missing"] += 1
+            for field in missing_fields:
+                missing_by_field[field] = int(missing_by_field.get(field, 0)) + 1
+            if len(missing_items) < max_items:
+                missing_items.append(
+                    {
+                        "detail_url": detail_url,
+                        "name": name,
+                        "output_path": output_path,
+                        "missing_fields": missing_fields,
+                        "values": values,
+                    }
+                )
+
+    review_added = 0
+    review_pruned = 0
+    review_updated = 0
+    if push_review_queue:
+        existing_review_rows = list(iter_jsonl(review_path)) if review_path.exists() else []
+        kept_review_rows: List[Dict[str, Any]] = []
+        known_keys: set[Tuple[str, str]] = set()
+
+        for item in existing_review_rows:
+            if not isinstance(item, dict):
+                continue
+            reason_raw = str(item.get("reason", "")).strip()
+            reason_lower = reason_raw.lower()
+            if not reason_lower.startswith("audit_missing_metadata_fields"):
+                kept_review_rows.append(item)
+                continue
+
+            detail_url = str(item.get("detail_url", "")).strip()
+            missing_fields_now = missing_map.get(detail_url, [])
+            if not missing_fields_now:
+                review_pruned += 1
+                continue
+
+            desired_reason = f"audit_missing_metadata_fields:{','.join(missing_fields_now)}"
+            if reason_raw != desired_reason:
+                item["reason"] = desired_reason
+                item["missing_fields"] = list(missing_fields_now)
+                item["audit_values"] = values_map.get(detail_url, {})
+                review_updated += 1
+            kept_review_rows.append(item)
+            known_keys.add((detail_url, desired_reason.lower()))
+
+        for detail_url, missing_fields_now in missing_map.items():
+            if not detail_url or (not missing_fields_now):
+                continue
+            desired_reason = f"audit_missing_metadata_fields:{','.join(missing_fields_now)}"
+            key = (detail_url, desired_reason.lower())
+            if key in known_keys:
+                continue
+            kept_review_rows.append(
+                {
+                    "scraped_at": utc_now_iso(),
+                    "reason": desired_reason,
+                    "detail_url": detail_url,
+                    "name": name_map.get(detail_url, ""),
+                    "missing_fields": list(missing_fields_now),
+                    "audit_values": values_map.get(detail_url, {}),
+                }
+            )
+            known_keys.add(key)
+            review_added += 1
+
+        if (review_added + review_pruned + review_updated) > 0:
+            write_jsonl(review_path, kept_review_rows)
+
+    checked = int(totals.get("rows_checked", 0))
+    missing = int(totals.get("rows_with_missing", 0))
+    missing_ratio = (missing / checked * 100.0) if checked > 0 else 0.0
+    missing_field_summary = "; ".join(f"{field}:{int(missing_by_field.get(field, 0))}" for field in required_fields)
+
+    report = {
+        "generated_at": utc_now_iso(),
+        "enabled": True,
+        "required_fields": required_fields,
+        "results_path": str(results_path.resolve()),
+        "totals": totals,
+        "missing_by_field": missing_by_field,
+        "missing_ratio_pct": round(missing_ratio, 2),
+        "review_queue_added": review_added,
+        "review_queue_pruned": review_pruned,
+        "review_queue_updated": review_updated,
+        "items": missing_items,
+    }
+    save_json(report_path, report)
+    runtime_log(
+        "STAT",
+        "metadata audit end",
+        checked=checked,
+        missing_items=missing,
+        missing_ratio=f"{missing_ratio:.1f}%",
+        missing_fields=missing_field_summary,
+    )
+    if (review_added + review_pruned + review_updated) > 0:
+        runtime_log(
+            "STAT",
+            "metadata audit review items queued",
+            review_added=review_added,
+            review_pruned=review_pruned,
+            review_updated=review_updated,
+        )
     return report
 
 
@@ -2510,6 +4589,7 @@ def write_delivery_record(output_root: Path, config: Dict[str, Any], reconcile_r
     review_path = output_root / "raw" / "review_queue.jsonl"
     failures_path = output_root / "raw" / "failures.jsonl"
     metadata_results_path = output_root / "raw" / "metadata_write_results.jsonl"
+    metadata_audit_path = output_root / "reports" / "metadata_audit_report.json"
     download_manifest_path = output_root / "downloads" / "image_downloads.jsonl"
     images: List[Dict[str, Any]] = []
 
@@ -2550,6 +4630,7 @@ def write_delivery_record(output_root: Path, config: Dict[str, Any], reconcile_r
     review_items = list(iter_jsonl(review_path)) if review_path.exists() else []
     failure_items = list(iter_jsonl(failures_path)) if failures_path.exists() else []
     metadata_results = list(iter_jsonl(metadata_results_path)) if metadata_results_path.exists() else []
+    metadata_audit = load_json(metadata_audit_path, {}) if metadata_audit_path.exists() else {}
     download_manifest = list(iter_jsonl(download_manifest_path)) if download_manifest_path.exists() else []
 
     named_files = []
@@ -2594,6 +4675,7 @@ def write_delivery_record(output_root: Path, config: Dict[str, Any], reconcile_r
         "trace": {
             "download_manifest": download_manifest,
             "metadata_write_results": metadata_results,
+            "metadata_audit": metadata_audit if isinstance(metadata_audit, dict) else {},
             "review_queue": review_items,
             "failures": failure_items,
         },
@@ -2705,6 +4787,7 @@ def cleanup_intermediate_outputs(output_root: Path, config: Dict[str, Any], reco
 
 
 def run_crawl(config: Dict[str, Any], output_root: Path) -> None:
+    wait_if_manual_paused(output_root, stage="crawl:start")
     rules = dict(config.get("rules", {}))
     image_download_mode = str(rules.get("image_download_mode", "requests_jsl")).strip().lower()
     if image_download_mode in {"browser", "d2i_browser"}:
@@ -2786,26 +4869,208 @@ def main() -> int:
     auto_browser_fallback = bool(rules.get("auto_fallback_to_browser", True))
     fallback_events: List[Dict[str, str]] = []
 
+    def _log(level: str, message: str, **fields: Any) -> None:
+        runtime_log(level, message, **fields)
+
+    def _counts_snapshot() -> Dict[str, int]:
+        return {
+            "list": count_jsonl(output_root / "raw" / "list_records.jsonl"),
+            "profiles": count_jsonl(output_root / "raw" / "profiles.jsonl"),
+            "images": count_jsonl(output_root / "downloads" / "image_downloads.jsonl"),
+            "metadata": count_jsonl(output_root / "raw" / "metadata_write_results.jsonl"),
+            "review": count_jsonl(output_root / "raw" / "review_queue.jsonl"),
+            "failures": count_jsonl(output_root / "raw" / "failures.jsonl"),
+        }
+
+    def _log_counts(stage_label: str, *, previous: Optional[Dict[str, int]] = None) -> Dict[str, int]:
+        current = _counts_snapshot()
+        payload: Dict[str, Any] = {
+            "list": current["list"],
+            "profiles": current["profiles"],
+            "images": current["images"],
+            "metadata": current["metadata"],
+            "review": current["review"],
+            "failures": current["failures"],
+            "pending_meta": max(0, current["profiles"] - current["metadata"]),
+        }
+        if previous:
+            payload["delta_profiles"] = current["profiles"] - int(previous.get("profiles", 0))
+            payload["delta_images"] = current["images"] - int(previous.get("images", 0))
+            payload["delta_metadata"] = current["metadata"] - int(previous.get("metadata", 0))
+            payload["delta_review"] = current["review"] - int(previous.get("review", 0))
+            payload["delta_failures"] = current["failures"] - int(previous.get("failures", 0))
+        _log("STAT", stage_label, **payload)
+        return current
+
+    def _log_runtime_summary(cfg: Dict[str, Any], mode: str) -> None:
+        cfg_rules = dict(cfg.get("rules", {}))
+        crawl_cfg = dict(cfg.get("crawl", {}))
+        _log(
+            "CONF",
+            "runtime summary",
+            mode=mode,
+            fallback=bool(cfg_rules.get("auto_fallback_to_browser", True)),
+            obey_robots=bool(cfg_rules.get("obey_robots_txt", True)),
+            interval=f"{crawl_cfg.get('image_interval_min_seconds', '')}-{crawl_cfg.get('image_interval_max_seconds', '')}",
+            timeout=crawl_cfg.get("timeout_seconds", ""),
+            retry=crawl_cfg.get("retry_times", ""),
+            output_root=str(output_root),
+        )
+
+    _log(
+        "RUN",
+        "public scraper started",
+        output_root=str(output_root),
+        mode=image_download_mode,
+        skip_crawl=args.skip_crawl,
+        skip_images=args.skip_images,
+        skip_metadata=args.skip_metadata,
+    )
+    _log_runtime_summary(active_config, image_download_mode)
+    run_counts_start = _log_counts("counts on disk before run")
+
     can_run, blocked_until = check_backoff(output_root)
     if not can_run:
-        print(f"[STOP] backoff active until {blocked_until}, skip this run.")
+        _log("STOP", "backoff active, skip this run", blocked_until=blocked_until)
         return 2
 
     clear_backoff(output_root)
+    wait_if_manual_paused(output_root, stage="main:before-stages")
 
     blocked_during_run = False
     blocked_after_stage_until = ""
     blocked_after_stage_reason = ""
     inline_metadata_done = False
+    retry_failed_first = bool(rules.get("retry_failed_first", True))
+
+    def _metadata_queue_has_pending_retry() -> bool:
+        queue_path = output_root / "raw" / "metadata_queue.jsonl"
+        if not queue_path.exists():
+            return False
+
+        queue_details: set[str] = set()
+        for row in iter_jsonl(queue_path):
+            detail_url = str(row.get("detail_url", "")).strip()
+            if detail_url:
+                queue_details.add(detail_url)
+        if not queue_details:
+            return False
+
+        results_path = output_root / "raw" / "metadata_write_results.jsonl"
+        latest_status: Dict[str, str] = {}
+        if results_path.exists():
+            for row in iter_jsonl(results_path):
+                detail_url = str(row.get("detail_url", "")).strip()
+                if not detail_url:
+                    continue
+                latest_status[detail_url] = str(row.get("status", "")).strip().lower()
+
+        for detail_url in queue_details:
+            if latest_status.get(detail_url, "") != "ok":
+                return True
+        return False
+
+    def _inline_metadata_fully_synced() -> bool:
+        profile_rows = count_jsonl(output_root / "raw" / "profiles.jsonl")
+        if profile_rows <= 0:
+            return False
+        queue_rows = count_jsonl(output_root / "raw" / "metadata_queue.jsonl")
+        if queue_rows < profile_rows:
+            return False
+        if _metadata_queue_has_pending_retry():
+            return False
+        return True
+
+    def _metadata_pre_retry_needed() -> bool:
+        if args.skip_metadata:
+            return False
+        profile_rows = count_jsonl(output_root / "raw" / "profiles.jsonl")
+        if profile_rows <= 0:
+            return False
+        queue_rows = count_jsonl(output_root / "raw" / "metadata_queue.jsonl")
+        if queue_rows < profile_rows:
+            return True
+        if _metadata_queue_has_pending_retry():
+            return True
+        return False
+
+    def _scan_pending_image_retries() -> Dict[str, int]:
+        profiles_path = output_root / "raw" / "profiles.jsonl"
+        url_index_path = output_root / "state" / "image_url_index.json"
+        sha_index_path = output_root / "state" / "image_sha_index.json"
+        review_path = output_root / "raw" / "review_queue.jsonl"
+
+        url_index = load_json(url_index_path, {})
+        sha_index = load_json(sha_index_path, {})
+        if not isinstance(url_index, dict):
+            url_index = {}
+        if not isinstance(sha_index, dict):
+            sha_index = {}
+
+        profiles_with_image = 0
+        pending_images = 0
+        missing_url_index = 0
+        stale_cache = 0
+        for profile in iter_jsonl(profiles_path):
+            image_url = str(profile.get("image_url", "")).strip()
+            if not image_url:
+                continue
+            profiles_with_image += 1
+            image_sha = str(url_index.get(image_url, "")).strip()
+            if not image_sha:
+                pending_images += 1
+                missing_url_index += 1
+                continue
+            cached_path = norm_abs_path(str(sha_index.get(image_sha, "")))
+            if not _is_usable_cached_image(cached_path):
+                pending_images += 1
+                stale_cache += 1
+
+        review_image_failures = 0
+        for item in iter_jsonl(review_path):
+            reason = str(item.get("reason", "")).strip().lower()
+            if reason.startswith("image_download_"):
+                review_image_failures += 1
+
+        return {
+            "profiles_with_image": profiles_with_image,
+            "pending_images": pending_images,
+            "missing_url_index": missing_url_index,
+            "stale_cache": stale_cache,
+            "review_image_failures": review_image_failures,
+        }
+
+    if retry_failed_first and (not blocked_during_run) and _metadata_pre_retry_needed():
+        wait_if_manual_paused(output_root, stage="main:before-metadata-pre-retry")
+        counts_before_meta_retry = _counts_snapshot()
+        queue_before_retry = count_jsonl(output_root / "raw" / "metadata_queue.jsonl")
+        _log(
+            "STAGE",
+            "metadata pre-retry start (retry failed first)",
+            queue=queue_before_retry,
+        )
+        build_metadata_queue(output_root)
+        queue_after_retry_build = count_jsonl(output_root / "raw" / "metadata_queue.jsonl")
+        _log(
+            "STAT",
+            "metadata pre-retry queue built",
+            queue=queue_after_retry_build,
+            added=max(0, queue_after_retry_build - queue_before_retry),
+        )
+        write_metadata_for_downloads(output_root, active_config)
+        _log_counts("metadata pre-retry end", previous=counts_before_meta_retry)
 
     if not args.skip_crawl:
+        wait_if_manual_paused(output_root, stage="main:before-crawl")
+        counts_before_crawl = _counts_snapshot()
+        _log("STAGE", "crawl stage start", mode=image_download_mode)
         crawl_error: Optional[Exception] = None
         try:
             run_crawl(active_config, output_root)
         except Exception as exc:
             crawl_error = exc
         if (crawl_error is not None) and auto_browser_fallback and (image_download_mode not in {"browser", "d2i_browser"}):
-            print(f"[INFO] quick crawl failed ({crawl_error}), fallback to browser mode.")
+            _log("INFO", "quick crawl failed, fallback to browser mode", error=crawl_error)
             clear_backoff(output_root)
             active_config = _build_browser_fallback_config(active_config)
             rules, image_download_mode, crawl_inline_download = _runtime_flags(active_config)
@@ -2822,6 +5087,8 @@ def main() -> int:
         if crawl_error is not None:
             raise crawl_error
 
+        _log_counts("crawl stage end", previous=counts_before_crawl)
+
         can_continue, blocked_after_stage_until = check_backoff(output_root)
         if (
             (not can_continue)
@@ -2832,9 +5099,7 @@ def main() -> int:
             blocked_after_stage_reason = (
                 str(backoff_payload.get("blocked_reason", "")).strip() if isinstance(backoff_payload, dict) else ""
             )
-            print(
-                "[INFO] quick crawl triggered backoff, fallback to browser mode and retry crawl."
-            )
+            _log("INFO", "quick crawl triggered backoff, fallback to browser mode and retry crawl")
             clear_backoff(output_root)
             active_config = _build_browser_fallback_config(active_config)
             rules, image_download_mode, crawl_inline_download = _runtime_flags(active_config)
@@ -2854,18 +5119,50 @@ def main() -> int:
             backoff_payload = load_json(output_root / "state" / "backoff_state.json", {})
             if isinstance(backoff_payload, dict):
                 blocked_after_stage_reason = str(backoff_payload.get("blocked_reason", "")).strip()
-            print(
-                "[STOP] blocked detected after crawl, pause current run until "
-                f"{blocked_after_stage_until}."
+            _log(
+                "STOP",
+                "blocked detected after crawl, pause current run",
+                blocked_until=blocked_after_stage_until,
+                reason=blocked_after_stage_reason,
             )
+    else:
+        _log("STAGE", "crawl stage skipped by flag")
+        _log_counts("crawl skipped snapshot")
 
     if (not args.skip_images) and (not blocked_during_run):
-        skip_download_stage = crawl_inline_download and (not args.skip_crawl)
-        if skip_download_stage:
-            print(
-                "[INFO] image download stage skipped: browser crawl already downloaded images inline."
+        wait_if_manual_paused(output_root, stage="main:before-download")
+        image_retry_scan = _scan_pending_image_retries()
+        _log(
+            "STAT",
+            "image retry scan",
+            profiles_with_image=image_retry_scan.get("profiles_with_image", 0),
+            pending_images=image_retry_scan.get("pending_images", 0),
+            missing_url_index=image_retry_scan.get("missing_url_index", 0),
+            stale_cache=image_retry_scan.get("stale_cache", 0),
+            review_image_failures=image_retry_scan.get("review_image_failures", 0),
+        )
+        force_image_retry_stage = int(image_retry_scan.get("pending_images", 0)) > 0
+        if crawl_inline_download and (not args.skip_crawl) and force_image_retry_stage:
+            _log(
+                "STAGE",
+                "image stage forced: auto retry unresolved image items",
+                pending_images=image_retry_scan.get("pending_images", 0),
             )
+        skip_download_stage = crawl_inline_download and (not args.skip_crawl) and (not force_image_retry_stage)
+        if skip_download_stage:
+            _log("STAGE", "image stage skipped: browser crawl already downloaded images inline")
+            runtime_rules = dict(active_config.get("rules", {}))
+            inline_metadata_done = (
+                bool(runtime_rules.get("write_metadata_inline_per_item", True))
+                and bool(runtime_rules.get("write_metadata", True))
+                and HAS_METADATA_WRITER
+                and (not args.skip_crawl)
+                and _inline_metadata_fully_synced()
+            )
+            _log_counts("image stage skipped snapshot")
         else:
+            counts_before_image = _counts_snapshot()
+            _log("STAGE", "image stage start", mode=image_download_mode)
             download_report: Dict[str, Any] = {}
             image_error: Optional[Exception] = None
             try:
@@ -2873,7 +5170,7 @@ def main() -> int:
             except Exception as exc:
                 image_error = exc
             if (image_error is not None) and auto_browser_fallback and (image_download_mode not in {"browser", "d2i_browser"}):
-                print(f"[INFO] quick image download failed ({image_error}), fallback to browser mode.")
+                _log("INFO", "quick image download failed, fallback to browser mode", error=image_error)
                 clear_backoff(output_root)
                 active_config = _build_browser_fallback_config(active_config)
                 rules, image_download_mode, crawl_inline_download = _runtime_flags(active_config)
@@ -2891,7 +5188,23 @@ def main() -> int:
                 raise image_error
 
             if isinstance(download_report, dict):
-                inline_metadata_done = bool(download_report.get("inline_metadata_enabled", False)) and (not args.skip_crawl)
+                inline_metadata_done = (
+                    bool(download_report.get("inline_metadata_enabled", False))
+                    and (not args.skip_crawl)
+                    and _inline_metadata_fully_synced()
+                )
+                totals = download_report.get("totals", {})
+                if isinstance(totals, dict):
+                    _log(
+                        "STAGE",
+                        "image stage end",
+                        candidates=totals.get("profiles_with_image_url", ""),
+                        downloaded_new=totals.get("downloaded_new", ""),
+                        reused_url=totals.get("reused_by_url", ""),
+                        reused_sha=totals.get("reused_by_sha", ""),
+                        failed=totals.get("failed", ""),
+                    )
+            _log_counts("image stage end snapshot", previous=counts_before_image)
             can_continue, blocked_after_stage_until = check_backoff(output_root)
             if (
                 (not can_continue)
@@ -2904,9 +5217,7 @@ def main() -> int:
                     if isinstance(backoff_payload, dict)
                     else ""
                 )
-                print(
-                    "[INFO] quick image download triggered backoff, fallback to browser mode and retry image stage."
-                )
+                _log("INFO", "quick image download triggered backoff, fallback to browser mode and retry image stage")
                 clear_backoff(output_root)
                 active_config = _build_browser_fallback_config(active_config)
                 rules, image_download_mode, crawl_inline_download = _runtime_flags(active_config)
@@ -2920,8 +5231,10 @@ def main() -> int:
                 )
                 download_report = download_images(active_config, output_root)
                 if isinstance(download_report, dict):
-                    inline_metadata_done = bool(download_report.get("inline_metadata_enabled", False)) and (
-                        not args.skip_crawl
+                    inline_metadata_done = (
+                        bool(download_report.get("inline_metadata_enabled", False))
+                        and (not args.skip_crawl)
+                        and _inline_metadata_fully_synced()
                     )
                 can_continue, blocked_after_stage_until = check_backoff(output_root)
 
@@ -2930,22 +5243,41 @@ def main() -> int:
                 backoff_payload = load_json(output_root / "state" / "backoff_state.json", {})
                 if isinstance(backoff_payload, dict):
                     blocked_after_stage_reason = str(backoff_payload.get("blocked_reason", "")).strip()
-                print(
-                    "[STOP] blocked detected during image download, pause current run until "
-                    f"{blocked_after_stage_until}."
+                _log(
+                    "STOP",
+                    "blocked detected during image download, pause current run",
+                    blocked_until=blocked_after_stage_until,
+                    reason=blocked_after_stage_reason,
                 )
+    elif args.skip_images:
+        _log("STAGE", "image stage skipped by flag")
+        _log_counts("image skipped snapshot")
+    elif blocked_during_run:
+        _log("STAGE", "image stage skipped because run is paused by backoff")
+        _log_counts("image skipped due backoff snapshot")
 
     skip_metadata_stage = inline_metadata_done and (not args.skip_metadata)
     if skip_metadata_stage:
-        print("[INFO] metadata stage skipped: per-item inline metadata already applied during download.")
+        queue_rows = count_jsonl(output_root / "raw" / "metadata_queue.jsonl")
+        _log("STAGE", "metadata stage skipped: inline metadata already applied", queue=queue_rows)
+        _log_counts("metadata skipped snapshot")
     else:
+        wait_if_manual_paused(output_root, stage="main:before-metadata")
+        counts_before_meta = _counts_snapshot()
+        queue_before = count_jsonl(output_root / "raw" / "metadata_queue.jsonl")
+        _log("STAGE", "metadata stage start", queue=queue_before, skip_write=args.skip_metadata)
         build_metadata_queue(output_root)
+        queue_after_build = count_jsonl(output_root / "raw" / "metadata_queue.jsonl")
+        _log("STAT", "metadata queue built", queue=queue_after_build, added=max(0, queue_after_build - queue_before))
         if not args.skip_metadata:
             write_metadata_for_downloads(output_root, active_config)
+        _log_counts("metadata stage end", previous=counts_before_meta)
+    metadata_audit_report = write_metadata_audit_report(output_root, active_config)
     report = write_reconcile_report(output_root)
     record_path = write_delivery_record(output_root, active_config, report)
     cleanup_report = cleanup_intermediate_outputs(output_root, active_config, record_path)
     if isinstance(report, dict):
+        report["metadata_audit"] = metadata_audit_report
         report["delivery_record_path"] = str(record_path.resolve())
         report["cleanup"] = cleanup_report
         report["run_state"] = "paused_by_backoff" if blocked_during_run else "finished"
@@ -2959,6 +5291,33 @@ def main() -> int:
             "used": bool(fallback_events),
             "events": fallback_events,
         }
+    final_counts = _counts_snapshot()
+    _log_counts("counts on disk after run", previous=run_counts_start)
+    _log(
+        "DONE",
+        "public scraper finished",
+        run_state=("paused_by_backoff" if blocked_during_run else "finished"),
+        list=final_counts["list"],
+        profiles=final_counts["profiles"],
+        images=final_counts["images"],
+        metadata=final_counts["metadata"],
+        review=final_counts["review"],
+        failures=final_counts["failures"],
+    )
+    if blocked_during_run:
+        _log(
+            "HINT",
+            "run paused by backoff, retry later with continue",
+            blocked_until=blocked_after_stage_until,
+            reason=blocked_after_stage_reason,
+        )
+    elif final_counts["review"] > 0 or final_counts["failures"] > 0:
+        _log(
+            "HINT",
+            "some items need manual review or retry",
+            review=final_counts["review"],
+            failures=final_counts["failures"],
+        )
     print(json.dumps(report, ensure_ascii=False, indent=2))
     return 2 if blocked_during_run else 0
 

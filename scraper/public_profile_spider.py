@@ -77,6 +77,55 @@ def _normalize_gender(value: Any) -> str:
     return raw
 
 
+_GENDER_EXPLICIT_PATTERN = re.compile(r"性别\s*[：:]\s*(男|女)")
+_GENDER_MALE_HINT_PATTERNS: List[str] = [
+    r"男性",
+    r"男子",
+    r"先生",
+    r"其父",
+    r"丈夫",
+    r"(?:^|[，,。；;、\s（(【\[])(?:男)(?:[，,。；;、\s）)】\]]|$)",
+    r"(?:^|[，,。；;、\s（(【\[])(?:他|他们)(?:[，,。；;、\s）)】\]]|$|的|是|在|于|曾|将|已|被|为|与|和|生于|出生|牺牲|任职|工作)",
+]
+_GENDER_FEMALE_HINT_PATTERNS: List[str] = [
+    r"女性",
+    r"女子",
+    r"女士",
+    r"其母",
+    r"妻子",
+    r"(?:^|[，,。；;、\s（(【\[])(?:女)(?:[，,。；;、\s）)】\]]|$)",
+    r"(?:^|[，,。；;、\s（(【\[])(?:她|她们)(?:[，,。；;、\s）)】\]]|$|的|是|在|于|曾|将|已|被|为|与|和|生于|出生|牺牲|任职|工作)",
+]
+
+
+def _infer_gender_from_texts(*texts: Any) -> str:
+    samples: List[str] = []
+    for raw in texts:
+        text = _normalize_multiline_text(raw)
+        if text:
+            samples.append(text)
+    if not samples:
+        return ""
+
+    merged = "\n".join(samples)
+    explicit_match = _GENDER_EXPLICIT_PATTERN.search(merged)
+    if explicit_match:
+        return _normalize_gender(explicit_match.group(1))
+
+    male_hits = 0
+    female_hits = 0
+    for pattern in _GENDER_MALE_HINT_PATTERNS:
+        male_hits += len(re.findall(pattern, merged))
+    for pattern in _GENDER_FEMALE_HINT_PATTERNS:
+        female_hits += len(re.findall(pattern, merged))
+
+    if male_hits > female_hits:
+        return "男"
+    if female_hits > male_hits:
+        return "女"
+    return ""
+
+
 def _ensure_list(value: Any) -> List[str]:
     if value is None:
         return []
@@ -331,6 +380,16 @@ class PublicProfileSpider(scrapy.Spider):
         for key, value in extra_fields.items():
             if value:
                 merged_fields[key] = value
+
+        if not gender:
+            gender = _infer_gender_from_texts(
+                gender_text,
+                summary,
+                full_content,
+                " ".join(str(v) for v in merged_fields.values()),
+            )
+            if not gender:
+                gender = self.default_gender
 
         mapped_fields = self._apply_field_map(
             name=name,

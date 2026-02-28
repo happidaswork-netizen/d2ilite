@@ -228,3 +228,27 @@ The following fixes were added after the first baseline draft and are part of cu
 5. Progress-row click freeze mitigation
    - Added selection sync guard + queued open (`after_idle`) + open re-entry lock.
    - Goal: prevent event storms when clicking names in pending/done tables.
+
+6. Python 3.13+ compatibility fix (`imghdr` removal)
+   - `downloader.py` no longer depends on stdlib `imghdr` (removed in newer Python versions).
+   - Scraper browser mode can now start normally on Python versions without `imghdr`.
+
+7. Download payload validation hardening
+   - Added strict payload checks before writing files:
+     - `content-type` prefix (`image/*`)
+     - common image magic bytes (JPEG/PNG/GIF/WEBP/BMP/TIFF)
+   - Prevents HTML/challenge/error pages from being saved as `.jpg` and later shown as corrupted images.
+
+8. Browser crawl image rendering toggle
+   - Added runtime config key: `rules.disable_page_images_during_crawl` (default `true`).
+   - Purpose: when `true`, browser crawl disables page image rendering to reduce bandwidth and anti-bot noise.
+   - For visual debugging, set to `false` to render page images in-browser while crawling.
+
+9. Browser mode inline metadata sync
+   - Browser inline download now also writes metadata per item during crawl.
+   - GUI `元数据` column can update during run, not only after whole task finishes.
+
+10. Manual pause / per-row retry in GUI
+   - `中止任务` adjusted to `暂停任务` semantics (state kept, can resume via `继续任务`).
+   - Progress table now supports right-click per-row retry marking.
+   - Retry operation removes that row's detail/image/metadata result records and URL cache mapping, then re-run via `继续任务`.

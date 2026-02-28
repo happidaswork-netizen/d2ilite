@@ -5,6 +5,8 @@ __pycache__/
 *.db
 Thumbs.db
 data/public_archive/
+data/_debug_bad_exif/
+data/_debug_bad_exif_ascii/
 scraper/config.local.json
 tmp_tiantong_*
 scraper/config.*.test*.json

@@ -35,6 +35,11 @@ try:
         pyexiv2.registerNs('urn:titi:ns:1.0', 'titi')
     except Exception:
         pass  # 可能已注册
+    try:
+        # Suppress noisy EXIV2 warnings; keep errors visible.
+        pyexiv2.set_log_level(3)  # 0=debug,1=info,2=warn,3=error,4=mute
+    except Exception:
+        pass
 except ImportError:
     HAS_PYEXIV2 = False
     print("[警告] pyexiv2 未安装，将使用旧版 EXIF 方式写入元数据")

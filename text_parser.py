@@ -316,18 +316,31 @@ def extract_person_info(text):
     keywords = []
     
     # ===== 性别提取 =====
-    male_patterns = r'男性|男子|先生|他的|其父|丈夫|男，'
-    female_patterns = r'女性|女子|女士|她的|其母|妻子|女，'
+    explicit_gender = re.search(r'性别\s*[：:]\s*(男|女)', text)
+    if explicit_gender:
+        info['gender'] = explicit_gender.group(1)
+        keywords.append(info['gender'])
+    else:
+        male_patterns = [
+            r'男性|男子|先生|他的|其父|丈夫',
+            r'(?:^|[，,。；;、\s（(【\[])(?:男)(?:[，,。；;、\s）)】\]]|$)',
+            r'(?:^|[，,。；;、\s（(【\[])(?:他|他们)(?:[，,。；;、\s）)】\]]|$|的|是|在|于|曾|将|已|被|为|与|和|生于|出生|牺牲|任职|工作)',
+        ]
+        female_patterns = [
+            r'女性|女子|女士|她的|其母|妻子',
+            r'(?:^|[，,。；;、\s（(【\[])(?:女)(?:[，,。；;、\s）)】\]]|$)',
+            r'(?:^|[，,。；;、\s（(【\[])(?:她|她们)(?:[，,。；;、\s）)】\]]|$|的|是|在|于|曾|将|已|被|为|与|和|生于|出生|牺牲|任职|工作)',
+        ]
+
+        male_count = sum(len(re.findall(pattern, text)) for pattern in male_patterns)
+        female_count = sum(len(re.findall(pattern, text)) for pattern in female_patterns)
     
-    male_count = len(re.findall(male_patterns, text))
-    female_count = len(re.findall(female_patterns, text))
-    
-    if male_count > female_count:
-        info['gender'] = '男'
-        keywords.append('男')
-    elif female_count > male_count:
-        info['gender'] = '女'
-        keywords.append('女')
+        if male_count > female_count:
+            info['gender'] = '男'
+            keywords.append('男')
+        elif female_count > male_count:
+            info['gender'] = '女'
+            keywords.append('女')
     
     # ===== 出生年份 =====
     # 匹配：1990年出生、生于1990年、1990年生

@@ -50,6 +50,29 @@ SENSITIVE_DOMAINS = [
 ]
 
 
+def _looks_like_image_payload(content_type, payload):
+    """判断响应体是否是图片，避免把 HTML/错误页保存为图片。"""
+    ct = str(content_type or "").lower()
+    if ct.startswith("image/"):
+        return True
+    if not payload:
+        return False
+    head = bytes(payload[:32])
+    if head.startswith(b"\xff\xd8\xff"):  # JPEG
+        return True
+    if head.startswith(b"\x89PNG\r\n\x1a\n"):  # PNG
+        return True
+    if head.startswith(b"GIF87a") or head.startswith(b"GIF89a"):  # GIF
+        return True
+    if head.startswith(b"RIFF") and len(payload) >= 12 and payload[8:12] == b"WEBP":  # WEBP
+        return True
+    if head.startswith(b"BM"):  # BMP
+        return True
+    if head.startswith(b"II*\x00") or head.startswith(b"MM\x00*"):  # TIFF
+        return True
+    return False
+
+
 class ImageDownloader:
     """图片下载器 - 支持普通模式和浏览器模式，模拟自然浏览行为"""
     
@@ -286,13 +309,17 @@ class ImageDownloader:
         """使用requests下载"""
         headers = {'Referer': f"{urlparse(url).scheme}://{urlparse(url).netloc}/"}
         
-        response = self.session.get(url, headers=headers, timeout=self.timeout, stream=True)
+        response = self.session.get(url, headers=headers, timeout=self.timeout, stream=False)
         response.raise_for_status()
+        payload = response.content or b""
+        content_type = response.headers.get('Content-Type', '')
+        if not _looks_like_image_payload(content_type, payload):
+            raise Exception(
+                f"响应不是图片: content-type={content_type or 'unknown'}, size={len(payload)}"
+            )
         
         with open(save_path, 'wb') as f:
-            for chunk in response.iter_content(chunk_size=8192):
-                if chunk:
-                    f.write(chunk)
+            f.write(payload)
         
         return save_path
     
@@ -353,9 +380,10 @@ class ImageDownloader:
             
             if response.status_code == 200:
                 content_type = response.headers.get('Content-Type', '')
-                if 'image' in content_type or len(response.content) > 1000:
+                payload = response.content or b""
+                if _looks_like_image_payload(content_type, payload):
                     with open(save_path, 'wb') as f:
-                        f.write(response.content)
+                        f.write(payload)
                     return save_path
             
             # 如果直接下载失败，尝试从浏览器页面截取图片
@@ -368,15 +396,19 @@ class ImageDownloader:
                         if img_src.startswith("data:image"):
                             # Base64图片
                             img_data = img_src.split(",", 1)[1]
-                            with open(save_path, "wb") as f:
-                                f.write(base64.b64decode(img_data))
-                            return save_path
+                            payload = base64.b64decode(img_data)
+                            if _looks_like_image_payload("image/*", payload):
+                                with open(save_path, "wb") as f:
+                                    f.write(payload)
+                                return save_path
                         elif img_src.startswith("http"):
                             resp = requests.get(img_src, headers=headers, cookies=cookies, 
                                               timeout=self.timeout, verify=False)
-                            if resp.status_code == 200 and len(resp.content) > 500:
+                            payload = resp.content or b""
+                            ctype = resp.headers.get('Content-Type', '')
+                            if resp.status_code == 200 and _looks_like_image_payload(ctype, payload):
                                 with open(save_path, "wb") as f:
-                                    f.write(resp.content)
+                                    f.write(payload)
                                 return save_path
             except Exception:
                 pass
