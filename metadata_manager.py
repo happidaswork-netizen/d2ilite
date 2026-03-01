@@ -659,9 +659,35 @@ def read_image_metadata(filepath: str) -> ImageMetadataInfo:
         try:
             _read_with_pyexiv2(filepath, info)
         except Exception:
-            # pyexiv2 在 Windows 上对中文路径/长路径/网络盘有已知兼容问题；
-            # 读取失败时回退到 piexif，至少保证 EXIF/XP* 可用。
-            _read_with_piexif(filepath, info)
+            # pyexiv2 在 Windows 上对中文路径/长路径/网络盘有已知兼容问题。
+            # 先尝试复制到本地临时文件再读取（避免 UNC/编码路径失败），
+            # 若仍失败再回退到 piexif，至少保证 EXIF/XP* 可用。
+            pyexiv_recovered = False
+            fd = None
+            tmp_path = ""
+            try:
+                suffix = os.path.splitext(filepath)[1] or ".jpg"
+                fd, tmp_path = tempfile.mkstemp(suffix=suffix)
+                os.close(fd)
+                fd = None
+                shutil.copy2(filepath, tmp_path)
+                _read_with_pyexiv2(tmp_path, info)
+                pyexiv_recovered = True
+            except Exception:
+                pyexiv_recovered = False
+            finally:
+                if fd is not None:
+                    try:
+                        os.close(fd)
+                    except Exception:
+                        pass
+                if tmp_path and os.path.exists(tmp_path):
+                    try:
+                        os.remove(tmp_path)
+                    except Exception:
+                        pass
+            if not pyexiv_recovered:
+                _read_with_piexif(filepath, info)
     else:
         _read_with_piexif(filepath, info)
 
@@ -713,6 +739,61 @@ def read_image_metadata(filepath: str) -> ImageMetadataInfo:
     # 警号兜底：从 titi_json.d2i_profile 及其 extra_fields 提取
     if (not info.police_id) and info.titi_json:
         info.police_id = _extract_police_id_from_titi_json(info.titi_json)
+
+    # 关键展示字段兜底：优先从 titi_json.d2i_profile 回填，避免 GUI 显示空值。
+    if info.titi_json:
+        try:
+            profile = (info.titi_json.get("d2i_profile") or {}) if isinstance(info.titi_json, dict) else {}
+            if isinstance(profile, dict):
+                if not info.source:
+                    source_candidates = [
+                        profile.get("source"),
+                        profile.get("source_detail_url"),
+                        profile.get("source_profile_url"),
+                        profile.get("source_url"),
+                        profile.get("detail_url"),
+                        profile.get("url"),
+                        info.image_url,
+                    ]
+                    for candidate in source_candidates:
+                        text = _clean_link_text(candidate)
+                        if text:
+                            info.source = text
+                            break
+                if not info.city:
+                    city_candidates = [
+                        profile.get("city"),
+                        profile.get("location"),
+                        profile.get("location_text"),
+                    ]
+                    for candidate in city_candidates:
+                        text = clean_text(str(candidate or "")).strip()
+                        if text:
+                            info.city = text
+                            break
+                if not info.position:
+                    pos_candidates = [
+                        profile.get("position"),
+                        profile.get("title"),
+                        profile.get("job_title"),
+                    ]
+                    for candidate in pos_candidates:
+                        text = clean_text(str(candidate or "")).strip()
+                        if text:
+                            info.position = text
+                            break
+                if not info.title:
+                    title_candidates = [
+                        profile.get("title"),
+                        profile.get("name"),
+                    ]
+                    for candidate in title_candidates:
+                        text = clean_text(str(candidate or "")).strip()
+                        if text:
+                            info.title = text
+                            break
+        except Exception:
+            pass
 
     # 判断状态
     info.status = _determine_status(info)

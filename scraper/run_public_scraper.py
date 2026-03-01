@@ -1980,7 +1980,25 @@ def _normalize_multiline_text(value: Any) -> str:
         line = _normalize_text(raw_line)
         if line:
             lines.append(line)
-    return "\n".join(lines)
+    merged = "\n".join(lines).strip()
+    if not merged:
+        return ""
+
+    # Some sites split date tokens into one token per line, e.g.
+    # "2019\n年\n9\n月\n11\n日". Merge these back to readable phrases.
+    merged = re.sub(r"^\s*[\"'`“”‘’]+\s*\n?", "", merged)
+    merged = re.sub(
+        r"(\d{4})\s*\n\s*年\s*\n\s*(\d{1,2})\s*\n\s*月\s*\n\s*(\d{1,2})\s*\n\s*日",
+        r"\1年\2月\3日",
+        merged,
+    )
+    merged = re.sub(r"(\d{4})\s*\n\s*年", r"\1年", merged)
+    merged = re.sub(r"(\d{1,2})\s*\n\s*月", r"\1月", merged)
+    merged = re.sub(r"(\d{1,2})\s*\n\s*日", r"\1日", merged)
+    merged = re.sub(r"(\d{1,2})\s*\n\s*号", r"\1号", merged)
+    merged = re.sub(r"(\d{1,2})\s*\n\s*次", r"\1次", merged)
+    merged = re.sub(r"\n{3,}", "\n\n", merged)
+    return merged.strip()
 
 
 def _ensure_list(value: Any) -> List[str]:
