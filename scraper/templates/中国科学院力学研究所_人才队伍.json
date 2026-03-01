@@ -1,0 +1,237 @@
+{
+  "site_name": "imech_people_multilevel",
+  "start_urls": [
+    "https://imech.cas.cn/people/na/",
+    "https://imech.cas.cn/people/zgj/",
+    "https://imech.cas.cn/people/fgj/",
+    "https://imech.cas.cn/people/youth/ljrc/",
+    "https://imech.cas.cn/people/youth/qnrc/",
+    "https://imech.cas.cn/people/youth/qchy/",
+    "https://imech.cas.cn/people/youth/yp/"
+  ],
+  "allowed_domains": [
+    "imech.cas.cn",
+    "www.imech.cas.cn",
+    "web4.qysoft.cn"
+  ],
+  "user_agent": "D2ILiteArchiveBot/1.0 (+local archival use)",
+  "default_headers": {
+    "Referer": "https://imech.cas.cn/people/",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+  },
+  "image_headers": {
+    "Referer": "https://imech.cas.cn/people/"
+  },
+  "output_root": "data/public_archive",
+  "selectors": {
+    "list_item": "ul#content > li, div.content .group ul.row > li.col-md-3",
+    "name": [
+      ".txtinfo h4::text",
+      ".info-txt h3::text",
+      "h4::text",
+      "h3::text"
+    ],
+    "detail_link": [
+      "a.peopleList::attr(href)",
+      "a::attr(href)"
+    ],
+    "list_fields": {
+      "list_image_url": "img::attr(src)",
+      "list_group": "xpath:normalize-space(string(ancestor::div[contains(@class,'group')][1]/preceding-sibling::div[contains(@class,'sortlanmu')][1]//div[contains(@class,'sortlanmu_l')][1]))",
+      "grwy_url": [
+        "a::attr(data-grwy)",
+        ".peplink::text"
+      ]
+    },
+    "next_page": [],
+    "detail_name": [
+      "#name::text",
+      "#xm::text",
+      ".staffinfo .info-txt h3::text",
+      ".ryname_l abbr:first-child::text",
+      "xpath:normalize-space(substring-before(string(//title),'--'))"
+    ],
+    "detail_image": [
+      "#pic::attr(src)",
+      ".staffinfo .info-img img::attr(src)",
+      ".module-a #pic::attr(src)",
+      ".module-a img::attr(src)",
+      "meta[property='og:image']::attr(content)"
+    ],
+    "detail_gender": [
+      "#sex::text",
+      "#xb::text"
+    ],
+    "detail_summary": [
+      "#jl *::text",
+      ".staffinfo .details .TRS_Editor *::text",
+      ".rydetail .field .detail *::text"
+    ],
+    "detail_full_text": [
+      ".staffinfo .details *::text",
+      ".rydetail *::text",
+      ".xlmain *::text"
+    ],
+    "detail_fields": {
+      "title": "#zc::text",
+      "education": "#xl::text",
+      "degree": "#xw::text",
+      "mentor_type": "#dslx::text",
+      "phone": [
+        "#dh::text",
+        "#phone::text"
+      ],
+      "email": [
+        "#dzyj::text",
+        "#email::text"
+      ],
+      "address": [
+        "#txdz::text",
+        "#addr::text"
+      ],
+      "homepage": [
+        "#grzy a::attr(href)",
+        "#grzy::text",
+        "#webpage::text"
+      ],
+      "social_roles": "#shrz *::text",
+      "research_direction": "#yjfx *::text",
+      "publications": "#dblz *::text",
+      "honors": "#hjjry *::text",
+      "list_group": "xpath:normalize-space(string(//div[contains(@class,'column_l')][1]))",
+      "page_title": "title::text",
+      "meta_keywords": "xpath:string(//meta[@name='keywords']/@content)",
+      "meta_description": "xpath:string(//meta[@name='description']/@content)"
+    },
+    "detail_field_labels": {
+      "list_image_url": "列表头像链接",
+      "list_group": "列表分组",
+      "grwy_url": "个人网页链接",
+      "title": "职称",
+      "education": "学历",
+      "degree": "学位",
+      "mentor_type": "导师类型",
+      "phone": "电话",
+      "email": "电子邮件",
+      "address": "通讯地址",
+      "homepage": "个人主页",
+      "social_roles": "社会任职",
+      "research_direction": "研究方向",
+      "publications": "代表论著",
+      "honors": "获奖及荣誉",
+      "page_title": "页面标题",
+      "meta_keywords": "页面关键词",
+      "meta_description": "页面简介"
+    }
+  },
+  "rules": {
+    "obey_robots_txt": true,
+    "snapshot_html": true,
+    "extract_images": true,
+    "write_metadata": true,
+    "write_metadata_inline_per_item": true,
+    "named_images_dir": "",
+    "image_referer_from_detail_url": true,
+    "required_fields": [
+      "name",
+      "detail_url",
+      "image_url"
+    ],
+    "default_gender": "",
+    "gender_map": {
+      "男": "male",
+      "女": "female",
+      "male": "male",
+      "female": "female"
+    },
+    "field_map": {
+      "person": [
+        "name"
+      ],
+      "image_url": [
+        "image_url",
+        "field.list_image_url"
+      ],
+      "gender": [
+        "gender"
+      ],
+      "position": [
+        "field.title"
+      ],
+      "unit": [
+        "field.list_group"
+      ],
+      "department": [
+        "field.list_group"
+      ],
+      "email": [
+        "field.email"
+      ],
+      "phone": [
+        "field.phone"
+      ],
+      "summary": [
+        "summary"
+      ],
+      "full_content": [
+        "full_content",
+        "summary"
+      ],
+      "source_profile_url": [
+        "detail_url",
+        "field.grwy_url"
+      ],
+      "homepage": [
+        "field.homepage"
+      ]
+    },
+    "auto_unit_subdir": true,
+    "unit_name": "中国科学院力学研究所",
+    "output_subdir_pattern": "{unit}_人才队伍",
+    "year_hint": "",
+    "detail_field_labels": {
+      "list_image_url": "列表头像链接",
+      "list_group": "列表分组",
+      "grwy_url": "个人网页链接",
+      "title": "职称",
+      "education": "学历",
+      "degree": "学位",
+      "mentor_type": "导师类型",
+      "phone": "电话",
+      "email": "电子邮件",
+      "address": "通讯地址",
+      "homepage": "个人主页",
+      "social_roles": "社会任职",
+      "research_direction": "研究方向",
+      "publications": "代表论著",
+      "honors": "获奖及荣誉",
+      "page_title": "页面标题",
+      "meta_keywords": "页面关键词",
+      "meta_description": "页面简介"
+    },
+    "image_download_mode": "browser",
+    "auto_fallback_to_browser": true,
+    "browser_engine": "edge",
+    "disable_page_images_during_crawl": true,
+    "output_mode": "images_only_with_record",
+    "keep_record_file": true
+  },
+  "crawl": {
+    "concurrent_requests": 1,
+    "download_delay": 5,
+    "autothrottle_start_delay": 5,
+    "autothrottle_max_delay": 8,
+    "retry_times": 3,
+    "timeout_seconds": 30,
+    "blocked_statuses": [
+      403,
+      429
+    ],
+    "blocked_backoff_hours": 6,
+    "suspect_block_consecutive_failures": 3,
+    "interval_min_seconds": 5,
+    "interval_max_seconds": 8,
+    "image_interval_min_seconds": 5,
+    "image_interval_max_seconds": 8
+  }
+}

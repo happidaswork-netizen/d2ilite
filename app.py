@@ -233,7 +233,22 @@ def _read_raw_with_pyexiv2(filepath: str) -> Tuple[Dict[str, Any], Dict[str, Any
                 iptc = {}
             return dict(xmp), dict(exif), dict(iptc)
 
+    def _should_force_temp(path: str) -> bool:
+        p = str(path or "").strip()
+        if not p:
+            return False
+        # pyexiv2 on Windows may hang or fail on non-ASCII/long/UNC paths; prefer a temp ASCII copy.
+        if p.startswith("\\\\"):
+            return True
+        try:
+            p.encode("ascii")
+        except UnicodeEncodeError:
+            return True
+        return len(p) >= 240
+
     try:
+        if _should_force_temp(filepath):
+            raise RuntimeError("force_temp")
         return _read(filepath)
     except Exception as e:
         err = str(e)
@@ -243,6 +258,7 @@ def _read_raw_with_pyexiv2(filepath: str) -> Tuple[Dict[str, Any], Dict[str, Any
             or ("errno = 2" in err)
             or ("No such file or directory" in err)
             or ("Failed to open the data source" in err and os.path.exists(filepath))
+            or (err == "force_temp")
         ):
             fd, tmp_path = tempfile.mkstemp(suffix=os.path.splitext(filepath)[1])
             os.close(fd)
@@ -403,6 +419,7 @@ class D2ILiteApp(BaseWindow):
         self._preview_pil: Optional[Image.Image] = None
         self._preview_tk = None
         self._preview_resize_after: Optional[str] = None
+        self._load_current_token: int = 0
 
         self._last_info: Optional[ImageMetadataInfo] = None
         self._last_basic: Dict[str, Any] = {}
@@ -410,6 +427,7 @@ class D2ILiteApp(BaseWindow):
         self._last_exif: Dict[str, Any] = {}
         self._last_iptc: Dict[str, Any] = {}
         self._folder_index_ready: bool = False
+        self._jsonl_count_cache: Dict[str, Tuple[int, float, int]] = {}
 
         self._snapshot_dirty: bool = True
         self._all_view_dirty: bool = True
@@ -903,13 +921,13 @@ class D2ILiteApp(BaseWindow):
         line2 = ttk.Frame(panel)
         line2.pack(fill=tk.X, pady=(4, 0))
         self._scraper_monitor_counts_var = tk.StringVar(
-            value="进度: 总目标 0 / 已发现 0 (0.0%) / 已完成 0 / 详情 0 / 图片 0 / 元数据 0"
+            value="进度: 总目标 0 / 已发现 0 (0.0%) / 已下载 0 (0.0%) / 已完成 0 / 列表 0 / 详情 0 / 图片 0 / 元数据 0"
         )
         ttk.Label(line2, textvariable=self._scraper_monitor_counts_var).pack(side=tk.LEFT)
 
         line3 = ttk.Frame(panel)
         line3.pack(fill=tk.X, pady=(4, 0))
-        self._scraper_monitor_progress_var = tk.StringVar(value="发现进度：0 / 0 (0.0%)")
+        self._scraper_monitor_progress_var = tk.StringVar(value="下载进度：0 / 0 (0.0%)")
         ttk.Label(line3, textvariable=self._scraper_monitor_progress_var, width=22).pack(side=tk.LEFT)
         self._scraper_monitor_progress_bar = ttk.Progressbar(
             line3,
@@ -1709,6 +1727,12 @@ class D2ILiteApp(BaseWindow):
         meta_ok = str(row.get("meta", "")).strip() in ok_tokens
         return detail_ok and image_ok and meta_ok
 
+    @staticmethod
+    def _is_scraper_row_image_downloaded(row: Dict[str, Any]) -> bool:
+        if not isinstance(row, dict):
+            return False
+        return str(row.get("image", "")).strip() in {"√", "✓"}
+
     def _update_scraper_progress_group_titles(self, pending_count: int, done_count: int) -> None:
         pending_box = self._scraper_monitor_pending_box
         done_box = self._scraper_monitor_done_box
@@ -1960,13 +1984,60 @@ class D2ILiteApp(BaseWindow):
         try:
             self._load_target(target)
             self._scraper_monitor_last_opened_path = target
-            self._sync_scraper_audit_hints_after_open(target)
             self._set_status(f"已打开：{os.path.basename(target)}")
             self._focus_main_preview_from_scraper()
+            self._queue_scraper_audit_sync_after_open(target)
         except Exception:
             pass
         finally:
             self._scraper_row_opening = False
+
+    def _queue_scraper_audit_sync_after_open(self, target_path: str) -> None:
+        # Audit sync can be expensive (reads JSONL + metadata); keep it off the UI thread.
+        if self._is_process_running(self._public_scraper_proc):
+            return
+        output_root = str(self._public_scraper_output_root or "").strip()
+        detail_url = str(getattr(self, "_scraper_last_selected_detail_url", "") or "").strip()
+        if (not output_root) or (not detail_url):
+            return
+
+        target_norm = os.path.abspath(str(target_path or "").strip())
+        output_root_norm = os.path.abspath(output_root)
+        detail_norm = detail_url
+        cached_info = self._last_info if isinstance(self._last_info, ImageMetadataInfo) else None
+
+        import threading
+
+        def _runner() -> None:
+            changed = False
+            try:
+                info = cached_info
+                if (info is None) or (os.path.abspath(getattr(info, "filepath", "")) != target_norm):
+                    info = read_image_metadata(target_norm)
+
+                missing_fields = self._scraper_missing_required_fields_from_info(info)
+                name_hint = str(getattr(info, "person", "") or getattr(info, "title", "") or "").strip()
+                changed = self._sync_scraper_audit_review_queue_for_detail(
+                    output_root_norm,
+                    detail_norm,
+                    missing_fields=missing_fields,
+                    name_hint=name_hint,
+                )
+            except Exception:
+                changed = False
+
+            def _done() -> None:
+                if not changed:
+                    return
+                self._scraper_monitor_last_progress_snapshot = ""
+                self._refresh_scraper_monitor_panel()
+
+            try:
+                self.after(0, _done)
+            except Exception:
+                _done()
+
+        threading.Thread(target=_runner, daemon=True).start()
 
     def _sync_scraper_audit_hints_after_open(self, target_path: str) -> None:
         # When user opens an item and metadata is already corrected, auto-clear stale audit hints.
@@ -2511,6 +2582,10 @@ class D2ILiteApp(BaseWindow):
                 messagebox.showinfo("提示", "该任务已在运行中。", parent=self)
             self._refresh_public_task_manager_list()
             return
+        continue_opts = self._show_public_scraper_continue_options_dialog(root)
+        if not continue_opts:
+            self._set_status("已取消继续任务")
+            return
         ok = self._start_public_scraper_from_existing_task(
             output_root=root,
             skip_crawl=False,
@@ -2519,6 +2594,9 @@ class D2ILiteApp(BaseWindow):
             show_success_dialog=True,
             success_title="继续任务",
             runtime_state="继续运行中",
+            mode_override=str(continue_opts.get("mode", "")),
+            auto_fallback_override=bool(continue_opts.get("auto_fallback", True)),
+            disable_page_images_override=bool(continue_opts.get("disable_page_images", True)),
         )
         if ok:
             self._refresh_public_task_manager_list()
@@ -2531,6 +2609,10 @@ class D2ILiteApp(BaseWindow):
         self._set_active_public_scraper_task(root, refresh=False)
         need_crawl = self._retry_requires_crawl_phase(root)
         skip_crawl = (not need_crawl)
+        retry_opts = self._show_public_scraper_continue_options_dialog(root)
+        if not retry_opts:
+            self._set_status("已取消失败重试")
+            return
         ok = self._start_public_scraper_from_existing_task(
             output_root=root,
             skip_crawl=skip_crawl,
@@ -2539,6 +2621,9 @@ class D2ILiteApp(BaseWindow):
             show_success_dialog=True,
             success_title=("重试失败（含详情重抓）" if need_crawl else "重试失败"),
             runtime_state=("继续运行中" if need_crawl else "失败重试中"),
+            mode_override=str(retry_opts.get("mode", "")),
+            auto_fallback_override=bool(retry_opts.get("auto_fallback", True)),
+            disable_page_images_override=bool(retry_opts.get("disable_page_images", True)),
         )
         if ok:
             self._set_status("重试任务已启动（自动包含详情重抓）" if need_crawl else "重试任务已启动（失败优先）")
@@ -2759,11 +2844,16 @@ class D2ILiteApp(BaseWindow):
         if output_root:
             rows = self._collect_scraper_progress_rows(output_root)
             completed_rows = sum(1 for row in rows if self._is_scraper_row_completed(row))
+            downloaded_rows = sum(1 for row in rows if self._is_scraper_row_image_downloaded(row))
             discovered_rows = len(rows)
             estimated_total = self._estimate_scraper_total_target(output_root)
             total_target = max(discovered_rows, estimated_total, self._scraper_monitor_total_hint)
             self._scraper_monitor_total_hint = total_target
-            progress_pct = (discovered_rows / total_target * 100.0) if total_target > 0 else 0.0
+            discovered_pct = (discovered_rows / total_target * 100.0) if total_target > 0 else 0.0
+            download_target = max(discovered_rows, 0)
+            download_pct = (downloaded_rows / download_target * 100.0) if download_target > 0 else 0.0
+            if download_pct > 100.0:
+                download_pct = 100.0
 
             list_rows = self._count_jsonl_rows(os.path.join(output_root, "raw", "list_records.jsonl"))
             profile_rows = self._count_jsonl_rows(os.path.join(output_root, "raw", "profiles.jsonl"))
@@ -2772,16 +2862,17 @@ class D2ILiteApp(BaseWindow):
             if self._scraper_monitor_counts_var is not None:
                 self._scraper_monitor_counts_var.set(
                     "进度: "
-                    f"总目标 {total_target} / 已发现 {discovered_rows} ({progress_pct:.1f}%) / 已完成 {completed_rows} / "
+                    f"总目标 {total_target} / 已发现 {discovered_rows} ({discovered_pct:.1f}%) / "
+                    f"已下载 {downloaded_rows} ({download_pct:.1f}%) / 已完成 {completed_rows} / "
                     f"列表 {list_rows} / 详情 {profile_rows} / 图片 {image_rows} / 元数据 {metadata_rows}"
                 )
             if self._scraper_monitor_progress_var is not None:
                 self._scraper_monitor_progress_var.set(
-                    f"发现进度：{discovered_rows} / {total_target} ({progress_pct:.1f}%)"
+                    f"下载进度：{downloaded_rows} / {download_target} ({download_pct:.1f}%)"
                 )
             if self._scraper_monitor_progress_bar is not None:
                 try:
-                    self._scraper_monitor_progress_bar["value"] = progress_pct
+                    self._scraper_monitor_progress_bar["value"] = download_pct
                 except Exception:
                     pass
             if self._scraper_monitor_paths_var is not None:
@@ -2790,10 +2881,10 @@ class D2ILiteApp(BaseWindow):
         else:
             if self._scraper_monitor_counts_var is not None:
                 self._scraper_monitor_counts_var.set(
-                    "进度: 总目标 0 / 已发现 0 (0.0%) / 已完成 0 / 详情 0 / 图片 0 / 元数据 0"
+                    "进度: 总目标 0 / 已发现 0 (0.0%) / 已下载 0 (0.0%) / 已完成 0 / 列表 0 / 详情 0 / 图片 0 / 元数据 0"
                 )
             if self._scraper_monitor_progress_var is not None:
-                self._scraper_monitor_progress_var.set("发现进度：0 / 0 (0.0%)")
+                self._scraper_monitor_progress_var.set("下载进度：0 / 0 (0.0%)")
             if self._scraper_monitor_progress_bar is not None:
                 try:
                     self._scraper_monitor_progress_bar["value"] = 0.0
@@ -3213,34 +3304,127 @@ class D2ILiteApp(BaseWindow):
         self.position_var.set(f"{self.current_index + 1} / {len(self.folder_images)}")
         self._set_status("读取中...")
 
+        # Clear stale UI state early to avoid showing previous metadata while loading.
         try:
-            basic = _read_image_basic_info(path)
-            info = read_image_metadata(path)
-            raw_xmp = dict(getattr(info, "other_xmp", {}) or {})
-            raw_exif = dict(getattr(info, "other_exif", {}) or {})
-            raw_iptc = dict(getattr(info, "other_iptc", {}) or {})
-
-            # 回退：极少数情况下结构化读取未带出全量命名空间，再补一次原始读取。
-            if HAS_PYEXIV2 and (not raw_xmp) and (not raw_exif) and (not raw_iptc):
+            for var in (self.edit_vars or {}).values():
                 try:
-                    raw_xmp, raw_exif, raw_iptc = _read_raw_with_pyexiv2(path)
+                    var.set("")
                 except Exception:
-                    raw_xmp, raw_exif, raw_iptc = {}, {}, {}
-
-            self._last_info = info
-            self._last_basic = basic
-            self._last_xmp = raw_xmp or {}
-            self._last_exif = raw_exif or {}
-            self._last_iptc = raw_iptc or {}
-
-            self._render_preview(path)
-            self._fill_edit_form(info)
+                    pass
+            try:
+                self.desc_text.delete("1.0", tk.END)
+            except Exception:
+                pass
+            try:
+                self._clear_adaptive_profile_rows()
+            except Exception:
+                pass
+            self._last_info = None
+            self._last_basic = {}
+            self._last_xmp = {}
+            self._last_exif = {}
+            self._last_iptc = {}
             self._mark_all_tab_data_dirty()
             self._refresh_visible_tab_data()
-            self._set_status("完成")
-        except Exception as e:
-            self._set_status("读取失败")
-            messagebox.showerror("读取失败", str(e))
+        except Exception:
+            pass
+
+        try:
+            self.preview_label.configure(image="", text="(加载中...)")
+        except Exception:
+            pass
+
+        self._load_current_token = int(self._load_current_token or 0) + 1
+        token = self._load_current_token
+
+        import threading
+
+        def _worker(target_path: str, my_token: int) -> None:
+            # Phase 1: preview (fastest) so user sees the image even if metadata is slow/hangs.
+            preview_pil: Optional[Image.Image] = None
+            preview_err = ""
+            try:
+                with Image.open(target_path) as img:
+                    preview_pil = img.copy()
+            except Exception as exc:
+                preview_pil = None
+                preview_err = str(exc)
+
+            def _apply_preview() -> None:
+                if int(getattr(self, "_load_current_token", 0)) != my_token:
+                    return
+                if os.path.abspath(str(getattr(self, "current_path", "") or "")) != os.path.abspath(target_path):
+                    return
+                if preview_pil is not None:
+                    self._preview_pil = preview_pil
+                    self._refresh_preview_image()
+                    return
+                self._preview_pil = None
+                self._preview_tk = None
+                try:
+                    self.preview_label.configure(image="", text="(无法预览)")
+                except Exception:
+                    pass
+
+            try:
+                self.after(0, _apply_preview)
+            except Exception:
+                _apply_preview()
+
+            # Phase 2: metadata (may be slow on network/CJK paths).
+            err = ""
+            basic: Dict[str, Any] = {}
+            info: Optional[ImageMetadataInfo] = None
+            raw_xmp: Dict[str, Any] = {}
+            raw_exif: Dict[str, Any] = {}
+            raw_iptc: Dict[str, Any] = {}
+            try:
+                basic = _read_image_basic_info(target_path)
+                info = read_image_metadata(target_path)
+                raw_xmp = dict(getattr(info, "other_xmp", {}) or {})
+                raw_exif = dict(getattr(info, "other_exif", {}) or {})
+                raw_iptc = dict(getattr(info, "other_iptc", {}) or {})
+
+                # 回退：极少数情况下结构化读取未带出全量命名空间，再补一次原始读取。
+                if HAS_PYEXIV2 and (not raw_xmp) and (not raw_exif) and (not raw_iptc):
+                    try:
+                        raw_xmp, raw_exif, raw_iptc = _read_raw_with_pyexiv2(target_path)
+                    except Exception:
+                        raw_xmp, raw_exif, raw_iptc = {}, {}, {}
+            except Exception as exc:
+                err = str(exc)
+
+            def _apply_metadata() -> None:
+                if int(getattr(self, "_load_current_token", 0)) != my_token:
+                    return
+                if os.path.abspath(str(getattr(self, "current_path", "") or "")) != os.path.abspath(target_path):
+                    return
+                if err or (info is None):
+                    self._set_status("读取失败")
+                    detail = err or preview_err or "未知错误"
+                    messagebox.showerror("读取失败", detail, parent=self)
+                    return
+
+                self._last_info = info
+                self._last_basic = basic
+                self._last_xmp = raw_xmp or {}
+                self._last_exif = raw_exif or {}
+                self._last_iptc = raw_iptc or {}
+
+                try:
+                    self._fill_edit_form(info)
+                except Exception:
+                    pass
+                self._mark_all_tab_data_dirty()
+                self._refresh_visible_tab_data()
+                self._set_status("完成")
+
+            try:
+                self.after(0, _apply_metadata)
+            except Exception:
+                _apply_metadata()
+
+        threading.Thread(target=_worker, args=(path, token), daemon=True).start()
 
     def _refresh_current(self):
         if self.current_path:
@@ -3928,6 +4112,7 @@ class D2ILiteApp(BaseWindow):
             os.path.join(app_dir, "scraper", "config.example.json"),
         ]
         payload: Dict[str, Any] = {}
+        loaded_template_path = ""
         for candidate in template_candidates:
             if not os.path.exists(candidate):
                 continue
@@ -3936,6 +4121,7 @@ class D2ILiteApp(BaseWindow):
                     loaded = json.load(f)
                 if isinstance(loaded, dict):
                     payload = loaded
+                    loaded_template_path = os.path.abspath(candidate)
                     break
             except Exception:
                 continue
@@ -3949,18 +4135,56 @@ class D2ILiteApp(BaseWindow):
         if not host:
             raise ValueError("无效链接：无法解析域名")
 
-        allowed_domains: List[str] = []
-        for domain in [host, host[4:] if host.startswith("www.") else f"www.{host}"]:
-            d = str(domain or "").strip().lower()
-            if d and (d not in allowed_domains):
-                allowed_domains.append(d)
+        custom_template_path = os.path.abspath(template_path) if template_path else ""
+        using_custom_template = bool(custom_template_path and loaded_template_path and (custom_template_path == loaded_template_path))
 
-        site_name = self._guess_public_site_name(start_url)
+        template_start_urls_raw = payload.get("start_urls")
+        template_start_urls: List[str] = []
+        if isinstance(template_start_urls_raw, list):
+            for item in template_start_urls_raw:
+                value = str(item or "").strip()
+                if value:
+                    template_start_urls.append(value)
+        elif isinstance(template_start_urls_raw, str):
+            value = str(template_start_urls_raw).strip()
+            if value:
+                template_start_urls.append(value)
+
+        runtime_start_urls: List[str] = []
+        if using_custom_template and template_start_urls:
+            for item in template_start_urls:
+                if item not in runtime_start_urls:
+                    runtime_start_urls.append(item)
+            if start_url not in runtime_start_urls:
+                runtime_start_urls.insert(0, start_url)
+        else:
+            runtime_start_urls = [start_url]
+
+        allowed_domains: List[str] = []
+        for seed_url in runtime_start_urls:
+            seed_host = (urllib.parse.urlparse(seed_url).hostname or "").strip().lower()
+            if not seed_host:
+                continue
+            for domain in [seed_host, seed_host[4:] if seed_host.startswith("www.") else f"www.{seed_host}"]:
+                d = str(domain or "").strip().lower()
+                if d and (d not in allowed_domains):
+                    allowed_domains.append(d)
+
+        template_allowed_domains_raw = payload.get("allowed_domains")
+        if using_custom_template and isinstance(template_allowed_domains_raw, list):
+            for item in template_allowed_domains_raw:
+                d = str(item or "").strip().lower()
+                if d and (d not in allowed_domains):
+                    allowed_domains.append(d)
+
+        site_name = str(payload.get("site_name", "")).strip() if using_custom_template else ""
+        if not site_name:
+            site_name = self._guess_public_site_name(start_url)
         referer = f"{parsed.scheme}://{parsed.netloc}/"
         base_output_root = os.path.abspath(str(output_root or "").strip() or self._suggest_public_scraper_output_root(start_url))
 
         payload["site_name"] = site_name
-        payload["start_urls"] = [start_url]
+        payload["start_urls"] = runtime_start_urls
         payload["allowed_domains"] = allowed_domains
         payload["output_root"] = base_output_root
 
@@ -4333,18 +4557,45 @@ class D2ILiteApp(BaseWindow):
                 entry["manual_paused"] = False
         self._public_scraper_manual_paused = False
 
-    @staticmethod
-    def _count_jsonl_rows(path: str) -> int:
+    def _count_jsonl_rows(self, path: str) -> int:
         if not path or (not os.path.exists(path)):
             return 0
-        count = 0
         try:
-            with open(path, "r", encoding="utf-8") as f:
-                for line in f:
-                    if line.strip():
-                        count += 1
+            stat = os.stat(path)
         except Exception:
             return 0
+
+        cache_key = os.path.abspath(path)
+        cached = self._jsonl_count_cache.get(cache_key)
+        if (
+            isinstance(cached, tuple)
+            and len(cached) == 3
+            and cached[0] == stat.st_size
+            and cached[1] == stat.st_mtime
+        ):
+            try:
+                return int(cached[2])
+            except Exception:
+                pass
+
+        count = 0
+        try:
+            # Fast path: count newline bytes (JSONL files should not contain empty lines).
+            with open(path, "rb") as f:
+                while True:
+                    chunk = f.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    count += chunk.count(b"\n")
+            if stat.st_size > 0:
+                with open(path, "rb") as f:
+                    f.seek(-1, os.SEEK_END)
+                    if f.read(1) != b"\n":
+                        count += 1
+        except Exception:
+            count = 0
+
+        self._jsonl_count_cache[cache_key] = (stat.st_size, stat.st_mtime, count)
         return count
 
     def _update_public_scraper_progress(self):
@@ -4354,17 +4605,23 @@ class D2ILiteApp(BaseWindow):
             return
         rows = self._collect_scraper_progress_rows(output_root)
         completed_rows = sum(1 for row in rows if self._is_scraper_row_completed(row))
+        downloaded_rows = sum(1 for row in rows if self._is_scraper_row_image_downloaded(row))
         discovered_rows = len(rows)
         total_target = max(len(rows), self._estimate_scraper_total_target(output_root), self._scraper_monitor_total_hint)
         self._scraper_monitor_total_hint = total_target
-        progress_pct = (discovered_rows / total_target * 100.0) if total_target > 0 else 0.0
+        discovered_pct = (discovered_rows / total_target * 100.0) if total_target > 0 else 0.0
+        download_target = max(discovered_rows, 0)
+        download_pct = (downloaded_rows / download_target * 100.0) if download_target > 0 else 0.0
+        if download_pct > 100.0:
+            download_pct = 100.0
         list_rows = self._count_jsonl_rows(os.path.join(output_root, "raw", "list_records.jsonl"))
         profile_rows = self._count_jsonl_rows(os.path.join(output_root, "raw", "profiles.jsonl"))
         image_rows = self._count_jsonl_rows(os.path.join(output_root, "downloads", "image_downloads.jsonl"))
         metadata_rows = self._count_jsonl_rows(os.path.join(output_root, "raw", "metadata_write_results.jsonl"))
         text = (
             "抓取中 "
-            f"发现:{discovered_rows}/{total_target}({progress_pct:.1f}%) "
+            f"下载:{downloaded_rows}/{download_target}({download_pct:.1f}%) "
+            f"发现:{discovered_rows}/{total_target}({discovered_pct:.1f}%) "
             f"完成:{completed_rows} "
             f"列表:{list_rows} "
             f"详情:{profile_rows} "
@@ -4583,6 +4840,7 @@ class D2ILiteApp(BaseWindow):
             value=str(rules_defaults.get("output_mode", "images_only_with_record")).strip().lower()
             in {"images_only", "images_only_with_record"}
         )
+        direct_write_images_var = tk.BooleanVar(value=bool(rules_defaults.get("direct_write_images", True)))
         global_llm = self._get_global_llm_settings()
         global_llm_enabled = bool(global_llm.get("enabled_default", False))
         global_llm_model = str(global_llm.get("model", "")).strip()
@@ -4715,6 +4973,7 @@ class D2ILiteApp(BaseWindow):
                     str(rules_cfg.get("output_mode", "images_only_with_record")).strip().lower()
                     in {"images_only", "images_only_with_record"}
                 )
+                direct_write_images_var.set(bool(rules_cfg.get("direct_write_images", True)))
 
             output_cfg = _normalize_template_output_root(str(payload.get("output_root", "")))
             if output_cfg:
@@ -4869,22 +5128,32 @@ class D2ILiteApp(BaseWindow):
         ).grid(row=11, column=0, columnspan=4, sticky="w", pady=(4, 0))
         ttk.Checkbutton(
             opts,
+            text="图片直写（不生成 downloads/images 缓存）",
+            variable=direct_write_images_var,
+        ).grid(row=12, column=0, columnspan=4, sticky="w", pady=(4, 0))
+        ttk.Label(
+            opts,
+            text="提示：开启后图片将直接写入最终目录，减少中间产物（过程更干净）。",
+            bootstyle="secondary",
+        ).grid(row=13, column=0, columnspan=4, sticky="w", pady=(2, 0))
+        ttk.Checkbutton(
+            opts,
             text="启用 LLM 语义增强（补字段 + 生成小传）",
             variable=llm_enable_var,
-        ).grid(row=12, column=0, columnspan=4, sticky="w", pady=(6, 0))
-        ttk.Label(opts, text="LLM 模型").grid(row=13, column=0, sticky="w", padx=(0, 6), pady=(4, 0))
-        ttk.Entry(opts, textvariable=llm_model_var, width=28).grid(row=13, column=1, sticky="w", pady=(4, 0))
-        ttk.Label(opts, text="API Base").grid(row=13, column=2, sticky="w", padx=(18, 6), pady=(4, 0))
-        ttk.Entry(opts, textvariable=llm_api_base_var, width=36).grid(row=13, column=3, sticky="w", pady=(4, 0))
-        ttk.Label(opts, text="API Key").grid(row=14, column=0, sticky="w", padx=(0, 6), pady=(4, 0))
+        ).grid(row=14, column=0, columnspan=4, sticky="w", pady=(6, 0))
+        ttk.Label(opts, text="LLM 模型").grid(row=15, column=0, sticky="w", padx=(0, 6), pady=(4, 0))
+        ttk.Entry(opts, textvariable=llm_model_var, width=28).grid(row=15, column=1, sticky="w", pady=(4, 0))
+        ttk.Label(opts, text="API Base").grid(row=15, column=2, sticky="w", padx=(18, 6), pady=(4, 0))
+        ttk.Entry(opts, textvariable=llm_api_base_var, width=36).grid(row=15, column=3, sticky="w", pady=(4, 0))
+        ttk.Label(opts, text="API Key").grid(row=16, column=0, sticky="w", padx=(0, 6), pady=(4, 0))
         ttk.Entry(opts, textvariable=llm_api_key_var, width=66, show="*").grid(
-            row=14, column=1, columnspan=3, sticky="ew", pady=(4, 0)
+            row=16, column=1, columnspan=3, sticky="ew", pady=(4, 0)
         )
         ttk.Label(
             opts,
             text="提示：兼容在线 OpenAI API（如 https://api.openai.com/v1）和本地 Ollama。",
             bootstyle="secondary",
-        ).grid(row=15, column=0, columnspan=4, sticky="w", pady=(2, 0))
+        ).grid(row=17, column=0, columnspan=4, sticky="w", pady=(2, 0))
 
         actions = ttk.Frame(container)
         actions.grid(row=9, column=0, columnspan=3, sticky="e", pady=(12, 0))
@@ -4948,6 +5217,7 @@ class D2ILiteApp(BaseWindow):
             result["llm_api_base"] = str(llm_api_base_var.get() or "").strip()
             result["llm_api_key"] = str(llm_api_key_var.get() or "").strip()
             result["output_minimal"] = bool(output_minimal_var.get())
+            result["direct_write_images"] = bool(direct_write_images_var.get())
             result["template_path"] = selected_template_path
             result["save_generated_template"] = bool(save_template_var.get()) and (not selected_template_path)
             result["cleanup_generated_template"] = bool(cleanup_template_var.get()) and (not selected_template_path)
@@ -5050,6 +5320,7 @@ class D2ILiteApp(BaseWindow):
         rules["image_download_mode"] = mode if mode in {"requests_jsl", "browser"} else "requests_jsl"
         rules["auto_fallback_to_browser"] = bool(setup.get("auto_fallback_to_browser", True))
         rules["disable_page_images_during_crawl"] = bool(setup.get("disable_page_images_during_crawl", True))
+        rules["direct_write_images"] = bool(setup.get("direct_write_images", True))
         rules["llm_enrich_enabled"] = bool(setup.get("llm_enrich_enabled", False))
 
         global_llm = self._get_global_llm_settings()
@@ -5217,6 +5488,9 @@ class D2ILiteApp(BaseWindow):
         show_success_dialog: bool = True,
         success_title: str = "继续任务",
         runtime_state: str = "继续运行中",
+        mode_override: str = "",
+        auto_fallback_override: Optional[bool] = None,
+        disable_page_images_override: Optional[bool] = None,
     ) -> bool:
         app_dir = os.path.dirname(__file__)
         script_path = os.path.join(app_dir, "scraper", "run_public_scraper.py")
@@ -5261,6 +5535,15 @@ class D2ILiteApp(BaseWindow):
         rules.setdefault("metadata_write_retries", 3)
         rules.setdefault("metadata_write_retry_delay_seconds", 1.2)
         rules.setdefault("metadata_write_retry_backoff_factor", 1.5)
+        mode = str(mode_override or "").strip().lower()
+        if mode in {"requests_jsl", "browser"}:
+            rules["image_download_mode"] = mode
+            if mode == "browser":
+                rules["download_images_during_crawl"] = True
+        if auto_fallback_override is not None:
+            rules["auto_fallback_to_browser"] = bool(auto_fallback_override)
+        if disable_page_images_override is not None:
+            rules["disable_page_images_during_crawl"] = bool(disable_page_images_override)
         # Avoid keeping API keys on disk inside task runtime_config.json.
         rules.pop("llm_api_key", None)
         runtime_config["rules"] = rules
@@ -5381,37 +5664,183 @@ class D2ILiteApp(BaseWindow):
             )
         return True
 
+    @staticmethod
+    def _read_public_task_runtime_rules(output_root: str) -> Dict[str, Any]:
+        root = os.path.abspath(str(output_root or "").strip())
+        if not root:
+            return {}
+        config_path = os.path.join(root, "state", "runtime_config.json")
+        if not os.path.exists(config_path):
+            return {}
+        try:
+            with open(config_path, "r", encoding="utf-8") as f:
+                payload = json.load(f)
+            if not isinstance(payload, dict):
+                return {}
+            rules = payload.get("rules")
+            return dict(rules) if isinstance(rules, dict) else {}
+        except Exception:
+            return {}
+
+    def _show_public_scraper_continue_options_dialog(self, output_root: str) -> Optional[Dict[str, Any]]:
+        root = os.path.abspath(str(output_root or "").strip())
+        if not root:
+            return None
+        rules = self._read_public_task_runtime_rules(root)
+        mode_default = str(rules.get("image_download_mode", "requests_jsl")).strip().lower()
+        if mode_default not in {"requests_jsl", "browser"}:
+            mode_default = "requests_jsl"
+        fallback_default = bool(rules.get("auto_fallback_to_browser", True))
+        disable_page_images_default = bool(rules.get("disable_page_images_during_crawl", True))
+
+        dialog = tk.Toplevel(self)
+        dialog.title("继续任务：模式设置")
+        dialog.transient(self)
+        dialog.grab_set()
+        dialog.resizable(False, False)
+
+        frame = ttk.Frame(dialog, padding=12)
+        frame.pack(fill=tk.BOTH, expand=True)
+        frame.columnconfigure(1, weight=1)
+
+        ttk.Label(frame, text="任务目录").grid(row=0, column=0, sticky="w", padx=(0, 8), pady=(0, 8))
+        ttk.Label(frame, text=root, bootstyle="secondary").grid(row=0, column=1, sticky="w", pady=(0, 8))
+
+        mode_var = tk.StringVar(value=mode_default)
+        ttk.Label(frame, text="抓取模式").grid(row=1, column=0, sticky="w", padx=(0, 8), pady=(0, 6))
+        mode_box = ttk.Frame(frame)
+        mode_box.grid(row=1, column=1, sticky="w", pady=(0, 6))
+        ttk.Radiobutton(mode_box, text="请求模式(快)", variable=mode_var, value="requests_jsl").pack(side=tk.LEFT)
+        ttk.Radiobutton(mode_box, text="浏览器模式(慢稳)", variable=mode_var, value="browser").pack(
+            side=tk.LEFT, padx=(12, 0)
+        )
+
+        auto_fallback_var = tk.BooleanVar(value=fallback_default)
+        disable_page_images_var = tk.BooleanVar(value=disable_page_images_default)
+        ttk.Checkbutton(
+            frame,
+            text="请求模式失败时自动回退浏览器模式",
+            variable=auto_fallback_var,
+        ).grid(row=2, column=0, columnspan=2, sticky="w", pady=(2, 0))
+        ttk.Checkbutton(
+            frame,
+            text="浏览器抓取时禁用页面图片渲染（更省流量）",
+            variable=disable_page_images_var,
+        ).grid(row=3, column=0, columnspan=2, sticky="w", pady=(4, 0))
+
+        ttk.Label(
+            frame,
+            text="提示：本次继续任务会按这里的设置覆盖运行配置。",
+            bootstyle="secondary",
+        ).grid(row=4, column=0, columnspan=2, sticky="w", pady=(6, 0))
+
+        result: Dict[str, Any] = {}
+
+        def _cancel():
+            dialog.destroy()
+
+        def _ok():
+            mode = str(mode_var.get() or "requests_jsl").strip().lower()
+            if mode not in {"requests_jsl", "browser"}:
+                mode = "requests_jsl"
+            result["mode"] = mode
+            result["auto_fallback"] = bool(auto_fallback_var.get())
+            result["disable_page_images"] = bool(disable_page_images_var.get())
+            dialog.destroy()
+
+        actions = ttk.Frame(frame)
+        actions.grid(row=5, column=0, columnspan=2, sticky="e", pady=(12, 0))
+        ttk.Button(actions, text="取消", command=_cancel, width=10).pack(side=tk.RIGHT)
+        ttk.Button(actions, text="继续运行", command=_ok, width=12).pack(side=tk.RIGHT, padx=(0, 8))
+
+        dialog.protocol("WM_DELETE_WINDOW", _cancel)
+        dialog.bind("<Escape>", lambda _e: _cancel())
+        dialog.bind("<Return>", lambda _e: _ok())
+
+        dialog.update_idletasks()
+        x = self.winfo_rootx() + max((self.winfo_width() - dialog.winfo_reqwidth()) // 2, 0)
+        y = self.winfo_rooty() + max((self.winfo_height() - dialog.winfo_reqheight()) // 3, 0)
+        dialog.geometry(f"+{x}+{y}")
+        dialog.lift()
+        try:
+            dialog.attributes("-topmost", True)
+            dialog.after(300, lambda: dialog.attributes("-topmost", False))
+        except Exception:
+            pass
+        self.wait_window(dialog)
+        return result if result else None
+
     def _continue_public_scraper_from_gui(self):
         proc = self._public_scraper_proc
+        selected = ""
         if proc and (proc.poll() is None):
             if self._public_scraper_manual_paused:
                 output_root = str(self._public_scraper_output_root or "").strip()
                 if not output_root:
                     messagebox.showerror("继续失败", "当前任务目录丢失，无法恢复运行。", parent=self)
                     return
-                ok = self._set_public_scraper_manual_pause_flag(output_root, paused=False)
-                if not ok:
-                    messagebox.showerror("继续失败", "无法移除暂停标记文件，请检查目录写权限。", parent=self)
+                choice = messagebox.askyesnocancel(
+                    "继续任务",
+                    "当前任务处于手动暂停状态。\n\n"
+                    "是：直接恢复当前进程（沿用当前模式）。\n"
+                    "否：结束当前进程，先改模式再继续任务。",
+                    parent=self,
+                )
+                if choice is None:
+                    self._set_status("已取消继续任务")
                     return
+                if choice:
+                    ok = self._set_public_scraper_manual_pause_flag(output_root, paused=False)
+                    if not ok:
+                        messagebox.showerror("继续失败", "无法移除暂停标记文件，请检查目录写权限。", parent=self)
+                        return
+                    self._public_scraper_manual_paused = False
+                    self._public_scraper_runtime_state = "运行中"
+                    self._sync_active_task_to_registry()
+                    self._set_scraper_control_buttons(running=True)
+                    self._set_status("抓取任务已继续运行")
+                    self._refresh_scraper_monitor_panel()
+                    self._refresh_public_task_manager_list()
+                    self._schedule_public_scraper_poll()
+                    return
+                try:
+                    proc.terminate()
+                    proc.wait(timeout=5)
+                except Exception:
+                    try:
+                        proc.kill()
+                        proc.wait(timeout=2)
+                    except Exception:
+                        pass
+                self._set_public_scraper_manual_pause_flag(output_root, paused=False)
+                self._close_public_scraper_log_handle()
+                self._public_scraper_proc = None
                 self._public_scraper_manual_paused = False
-                self._public_scraper_runtime_state = "运行中"
+                self._public_scraper_runtime_state = "已停止(待继续)"
                 self._sync_active_task_to_registry()
-                self._set_scraper_control_buttons(running=True)
-                self._set_status("抓取任务已继续运行")
+                self._set_scraper_control_buttons(running=False)
                 self._refresh_scraper_monitor_panel()
                 self._refresh_public_task_manager_list()
-                self._schedule_public_scraper_poll()
+                selected = output_root
+            else:
+                messagebox.showinfo("提示", "当前任务仍在运行，请先暂停任务后再继续。", parent=self)
                 return
 
-        app_dir = os.path.dirname(__file__)
-        initial_dir = self._public_scraper_output_root or os.path.join(app_dir, "data", "public_archive")
-        selected = filedialog.askdirectory(
-            parent=self,
-            title="选择要继续的任务目录（可在当前任务运行时并行启动）",
-            initialdir=initial_dir,
-            mustexist=True,
-        )
         if not selected:
+            app_dir = os.path.dirname(__file__)
+            initial_dir = self._public_scraper_output_root or os.path.join(app_dir, "data", "public_archive")
+            selected = filedialog.askdirectory(
+                parent=self,
+                title="选择要继续的任务目录（可在当前任务运行时并行启动）",
+                initialdir=initial_dir,
+                mustexist=True,
+            )
+        if not selected:
+            self._set_status("已取消继续任务")
+            return
+
+        continue_opts = self._show_public_scraper_continue_options_dialog(selected)
+        if not continue_opts:
             self._set_status("已取消继续任务")
             return
 
@@ -5423,6 +5852,9 @@ class D2ILiteApp(BaseWindow):
             show_success_dialog=True,
             success_title="继续任务",
             runtime_state="继续运行中",
+            mode_override=str(continue_opts.get("mode", "")),
+            auto_fallback_override=bool(continue_opts.get("auto_fallback", True)),
+            disable_page_images_override=bool(continue_opts.get("disable_page_images", True)),
         )
 
     def _retry_public_scraper_from_gui(self):
@@ -5443,6 +5875,11 @@ class D2ILiteApp(BaseWindow):
             self._set_status("已取消失败重试")
             return
 
+        retry_opts = self._show_public_scraper_continue_options_dialog(selected)
+        if not retry_opts:
+            self._set_status("已取消失败重试")
+            return
+
         self._set_active_public_scraper_task(selected, refresh=False)
         need_crawl = self._retry_requires_crawl_phase(selected)
         skip_crawl = (not need_crawl)
@@ -5454,6 +5891,9 @@ class D2ILiteApp(BaseWindow):
             show_success_dialog=True,
             success_title=("重试失败（含详情重抓）" if need_crawl else "重试失败"),
             runtime_state=("继续运行中" if need_crawl else "失败重试中"),
+            mode_override=str(retry_opts.get("mode", "")),
+            auto_fallback_override=bool(retry_opts.get("auto_fallback", True)),
+            disable_page_images_override=bool(retry_opts.get("disable_page_images", True)),
         )
 
     def _pause_public_scraper_from_gui(self):

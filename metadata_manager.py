@@ -946,6 +946,34 @@ def _read_with_pyexiv2(filepath: str, info: ImageMetadataInfo):
             except: pass
 
     try:
+        def _should_force_temp(path: str) -> bool:
+            p = str(path or "").strip()
+            if not p:
+                return False
+            # pyexiv2 on Windows may hang or fail on non-ASCII/long/UNC paths; prefer a temp ASCII copy.
+            if p.startswith("\\\\"):
+                return True
+            try:
+                p.encode("ascii")
+            except UnicodeEncodeError:
+                return True
+            return len(p) >= 240
+
+        if _should_force_temp(filepath):
+            fd, tmp_path = tempfile.mkstemp(suffix=os.path.splitext(filepath)[1])
+            os.close(fd)
+            try:
+                shutil.copy2(filepath, tmp_path)
+                with pyexiv2.Image(tmp_path) as img:
+                    _extract_data(img)
+                return
+            finally:
+                if os.path.exists(tmp_path):
+                    try:
+                        os.remove(tmp_path)
+                    except Exception:
+                        pass
+
         with pyexiv2.Image(filepath) as img:
             _extract_data(img)
 

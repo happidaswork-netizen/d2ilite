@@ -393,6 +393,21 @@ def write_jsonl(path: Path, rows: List[Dict[str, Any]]) -> None:
             handle.write(json.dumps(row, ensure_ascii=False) + "\n")
 
 
+def _atomic_write_bytes(path: Path, payload: bytes) -> None:
+    """
+    Best-effort atomic file write to avoid partial/corrupted outputs when the process is killed.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    try:
+        if tmp.exists():
+            tmp.unlink()
+    except Exception:
+        pass
+    tmp.write_bytes(payload)
+    tmp.replace(path)
+
+
 def norm_abs_path(path_value: str) -> str:
     raw = str(path_value or "").strip()
     if not raw:
@@ -1362,11 +1377,21 @@ def write_metadata_for_queue_row(
     current_local = norm_abs_path(str(row.get("local_image_path", "")))
     existing_local_path = Path(current_local) if current_local else None
     copied_to_named_folder = False
+
+    # File naming must be person-centric for monitor/open-row consistency.
+    display_name_for_file = normalize_optional_field(row.get("name", "")) or person_name or title or "unnamed"
+    desired_base = sanitize_filename(display_name_for_file, fallback="unnamed")
+    keep_existing_named_file = False
     if existing_local_path and existing_local_path.exists() and existing_local_path.parent.resolve() == named_dir:
-        final_path = existing_local_path.resolve()
+        current_base = sanitize_filename(existing_local_path.stem, fallback="")
+        if current_base == desired_base or current_base.startswith(f"{desired_base}_"):
+            keep_existing_named_file = True
+
+    if keep_existing_named_file:
+        final_path = existing_local_path.resolve()  # type: ignore[union-attr]
         reserved_paths.add(str(final_path))
     else:
-        final_path = unique_named_path(named_dir, title or "unnamed", ext=ext, reserved=reserved_paths)
+        final_path = unique_named_path(named_dir, display_name_for_file, ext=ext, reserved=reserved_paths)
         if source_resolved != final_path:
             shutil.copy2(source_resolved, final_path)
             copied_to_named_folder = True
@@ -2426,6 +2451,7 @@ def run_crawl_browser_mode(config: Dict[str, Any], output_root: Path) -> None:
         and bool(rules.get("write_metadata", True))
         and HAS_METADATA_WRITER
     )
+    direct_write_images = _parse_bool_rule(rules.get("direct_write_images", False), default=False)
     metadata_retry_settings = resolve_metadata_retry_settings(rules)
     metadata_write_retries = int(metadata_retry_settings.get("max_attempts", 1))
     metadata_retry_delay_seconds = float(metadata_retry_settings.get("retry_delay_seconds", 0.0))
@@ -2453,16 +2479,26 @@ def run_crawl_browser_mode(config: Dict[str, Any], output_root: Path) -> None:
         interval_min = 0.1
     if interval_max < interval_min:
         interval_max = interval_min
-    url_index = load_json(url_index_path, {})
-    if not isinstance(url_index, dict):
-        url_index = {}
-    sha_index = load_json(sha_index_path, {})
-    if not isinstance(sha_index, dict):
-        sha_index = {}
+
+    url_index: Dict[str, str] = {}
+    sha_index: Dict[str, str] = {}
+    if not direct_write_images:
+        url_index_raw = load_json(url_index_path, {})
+        sha_index_raw = load_json(sha_index_path, {})
+        if isinstance(url_index_raw, dict):
+            url_index = {
+                str(k): str(v) for k, v in url_index_raw.items() if str(k).strip() and str(v).strip()
+            }
+        if isinstance(sha_index_raw, dict):
+            sha_index = {
+                str(k): str(v) for k, v in sha_index_raw.items() if str(k).strip() and str(v).strip()
+            }
     index_dirty_count = 0
 
     def _checkpoint_indexes(force: bool = False) -> None:
         nonlocal index_dirty_count
+        if direct_write_images:
+            return
         if not inline_download_enabled:
             return
         if not force:
@@ -2508,6 +2544,15 @@ def run_crawl_browser_mode(config: Dict[str, Any], output_root: Path) -> None:
         for p in sorted(inline_named_dir.glob("*")):
             if p.is_file():
                 inline_reserved_paths.add(str(p.resolve()))
+
+    direct_manifest_by_detail: Dict[str, Dict[str, str]] = {}
+    if direct_write_images:
+        inline_named_dir.mkdir(parents=True, exist_ok=True)
+        if not inline_reserved_paths:
+            for p in sorted(inline_named_dir.glob("*")):
+                if p.is_file():
+                    inline_reserved_paths.add(str(p.resolve()))
+        direct_manifest_by_detail, _ = _load_download_manifest_lookups(download_manifest)
 
     def _inline_write_for_profile(profile_row: Dict[str, Any], image_sha_value: str, source_path_value: str) -> str:
         if not inline_metadata_enabled:
@@ -2882,6 +2927,19 @@ def run_crawl_browser_mode(config: Dict[str, Any], output_root: Path) -> None:
                 fields=merged_fields,
             )
 
+            # Fallback for sites where detail pages are unstable but list cards already contain image links.
+            if not image_url:
+                mapped_image_url = normalize_optional_field(mapped_fields.get("image_url", ""))
+                if mapped_image_url:
+                    image_url = urljoin((detail_url or list_url), mapped_image_url)
+            if not image_url:
+                for fallback_key in ("image_url", "list_image_url", "avatar_url", "photo_url", "portrait_url"):
+                    fallback_raw = normalize_optional_field(merged_fields.get(fallback_key, ""))
+                    if not fallback_raw:
+                        continue
+                    image_url = urljoin((detail_url or list_url), fallback_raw)
+                    break
+
             record = {
                 "scraped_at": utc_now_iso(),
                 "name": name,
@@ -2901,7 +2959,145 @@ def run_crawl_browser_mode(config: Dict[str, Any], output_root: Path) -> None:
             if inline_download_enabled and image_url:
                 metrics["inline_image_candidates"] += 1
                 reused_cached_image = False
-                if image_url in url_index:
+                if direct_write_images:
+                    previous = direct_manifest_by_detail.get(detail_url, {}) if detail_url else {}
+                    previous_sha = str(previous.get("sha", "")).strip()
+                    previous_path = norm_abs_path(str(previous.get("path", "")))
+                    if previous_path and _is_usable_cached_image(previous_path):
+                        consecutive_inline_image_failures = 0
+                        _inline_write_for_profile(record, previous_sha, previous_path)
+                    else:
+                        if not first_inline_download:
+                            time.sleep(random.uniform(interval_min, interval_max))
+                        first_inline_download = False
+                        ok_img, payload_img, content_type_img, error_img = _download_image_with_d2i_browser(
+                            image_url=image_url,
+                            detail_url=detail_url,
+                            timeout_seconds=timeout_seconds,
+                            max_retries=max(1, int(crawl_cfg.get("retry_times", 3))),
+                            interval_min=interval_min,
+                            interval_max=interval_max,
+                            browser_engine=browser_engine,
+                            downloader=downloader,
+                            output_root_hint=str(output_root),
+                        )
+                        if not ok_img:
+                            consecutive_inline_image_failures += 1
+                            blocked_tag = _classify_browser_blocked_reason(
+                                error_text=error_img,
+                                html_payload="",
+                                blocked_statuses=blocked_statuses,
+                            )
+                            if (not blocked_tag) and (consecutive_inline_image_failures >= suspect_failures_threshold):
+                                blocked_tag = "suspected_block_consecutive_image_failures"
+                            if blocked_tag:
+                                _activate_backoff(blocked_tag, image_url, phase="image_inline")
+                            metrics["inline_image_failed"] += 1
+                            runtime_log(
+                                "FAIL",
+                                f"{person_name}图片下载失败（内联）",
+                                detail=detail_url,
+                                image=image_url,
+                                person=person_name,
+                                error=error_img,
+                                blocked=bool(blocked_tag),
+                            )
+                            append_jsonl(
+                                review_path,
+                                {
+                                    "scraped_at": utc_now_iso(),
+                                    "reason": "image_download_browser_inline_failed",
+                                    "image_url": image_url,
+                                    "detail_url": detail_url,
+                                    "error": error_img,
+                                },
+                            )
+                            if blocked_tag:
+                                break
+                        elif not _looks_like_image_payload(content_type_img, payload_img):
+                            consecutive_inline_image_failures += 1
+                            challenge_payload = _looks_like_browser_challenge_payload(payload_img)
+                            blocked_tag = ""
+                            if challenge_payload:
+                                blocked_tag = "browser_challenge_payload"
+                            elif consecutive_inline_image_failures >= suspect_failures_threshold:
+                                blocked_tag = "suspected_block_consecutive_image_failures"
+                            if blocked_tag:
+                                _activate_backoff(blocked_tag, image_url, phase="image_inline")
+                            metrics["inline_image_failed"] += 1
+                            runtime_log(
+                                "FAIL",
+                                f"{person_name}图片下载失败（内联响应不是图片）",
+                                detail=detail_url,
+                                image=image_url,
+                                person=person_name,
+                                size=len(payload_img),
+                                blocked=bool(blocked_tag),
+                            )
+                            append_jsonl(
+                                review_path,
+                                {
+                                    "scraped_at": utc_now_iso(),
+                                    "reason": "image_download_browser_inline_not_image",
+                                    "image_url": image_url,
+                                    "detail_url": detail_url,
+                                    "size": len(payload_img),
+                                },
+                            )
+                            if blocked_tag:
+                                break
+                        else:
+                            consecutive_inline_image_failures = 0
+                            sha = hashlib.sha256(payload_img).hexdigest()
+                            target_named: Optional[Path] = None
+                            if previous_path:
+                                try:
+                                    previous_p = Path(previous_path)
+                                    if (
+                                        previous_p.exists()
+                                        and previous_p.is_file()
+                                        and previous_p.parent.resolve() == inline_named_dir.resolve()
+                                    ):
+                                        target_named = previous_p.resolve()
+                                except Exception:
+                                    target_named = None
+                            if target_named is None:
+                                target_named = unique_named_path(
+                                    inline_named_dir,
+                                    normalize_optional_field(name) or person_name,
+                                    ext=".jpg",
+                                    reserved=inline_reserved_paths,
+                                )
+                            _atomic_write_bytes(target_named, payload_img)
+                            metrics["inline_image_downloaded_new"] += 1
+                            runtime_log(
+                                "STEP",
+                                f"{person_name}图片下载成功（内联）",
+                                detail=detail_url,
+                                image=image_url,
+                                person=person_name,
+                                sha=sha[:12],
+                            )
+                            inline_named_path = _inline_write_for_profile(record, sha, str(target_named.resolve()))
+                            saved_path = str(target_named.resolve())
+                            named_path = norm_abs_path(inline_named_path) or saved_path
+                            append_jsonl(
+                                download_manifest,
+                                {
+                                    "downloaded_at": utc_now_iso(),
+                                    "detail_url": detail_url,
+                                    "image_url": image_url,
+                                    "name": name,
+                                    "sha256": sha,
+                                    "saved_path": saved_path,
+                                    "named_path": named_path,
+                                    "route": "browser_inline_direct",
+                                },
+                            )
+                            if detail_url:
+                                direct_manifest_by_detail[detail_url] = {"sha": sha, "path": named_path}
+
+                if (not direct_write_images) and image_url in url_index:
                     sha_cached, source_cached = _resolve_cached_source_by_image_url(image_url, url_index, sha_index)
                     if source_cached:
                         metrics["inline_image_reused_by_url"] += 1
@@ -2913,7 +3109,7 @@ def run_crawl_browser_mode(config: Dict[str, Any], output_root: Path) -> None:
                         if dropped > 0:
                             index_dirty_count += dropped
                             _checkpoint_indexes()
-                if not reused_cached_image:
+                if (not direct_write_images) and (not reused_cached_image):
                     if not first_inline_download:
                         time.sleep(random.uniform(interval_min, interval_max))
                     first_inline_download = False
@@ -3305,6 +3501,8 @@ def download_images(config: Dict[str, Any], output_root: Path) -> Dict[str, Any]
     if not profiles_path.exists():
         return {"enabled": True, "profiles_missing": True}
 
+    direct_write_images = _parse_bool_rule(rules.get("direct_write_images", False), default=False)
+
     download_root = output_root / "downloads"
     image_root = download_root / "images"
     state_root = output_root / "state"
@@ -3319,12 +3517,32 @@ def download_images(config: Dict[str, Any], output_root: Path) -> Dict[str, Any]
     sha_index_path = state_root / "image_sha_index.json"
     backoff_path = state_root / "backoff_state.json"
 
-    url_index: Dict[str, str] = load_json(url_index_path, {})
-    sha_index: Dict[str, str] = load_json(sha_index_path, {})
+    direct_named_dir: Optional[Path] = None
+    direct_reserved_paths: set[str] = set()
+    manifest_by_detail: Dict[str, Dict[str, str]] = {}
+    if direct_write_images:
+        direct_named_dir = resolve_named_output_dir(output_root, rules)
+        direct_named_dir.mkdir(parents=True, exist_ok=True)
+        for p in sorted(direct_named_dir.glob("*")):
+            if p.is_file():
+                direct_reserved_paths.add(str(p.resolve()))
+        manifest_by_detail, _ = _load_download_manifest_lookups(download_manifest)
+
+    url_index: Dict[str, str] = {}
+    sha_index: Dict[str, str] = {}
+    if not direct_write_images:
+        url_index_raw = load_json(url_index_path, {})
+        sha_index_raw = load_json(sha_index_path, {})
+        if isinstance(url_index_raw, dict):
+            url_index = {str(k): str(v) for k, v in url_index_raw.items() if str(k).strip() and str(v).strip()}
+        if isinstance(sha_index_raw, dict):
+            sha_index = {str(k): str(v) for k, v in sha_index_raw.items() if str(k).strip() and str(v).strip()}
     index_dirty_count = 0
 
     def _checkpoint_indexes(force: bool = False) -> None:
         nonlocal index_dirty_count
+        if direct_write_images:
+            return
         if not force:
             if index_dirty_count <= 0:
                 return
@@ -3572,7 +3790,48 @@ def download_images(config: Dict[str, Any], output_root: Path) -> Dict[str, Any]
                 image=image_url,
             )
 
-            if image_url in url_index:
+            if direct_write_images and direct_named_dir is not None and detail_url:
+                previous = manifest_by_detail.get(detail_url, {})
+                previous_sha = str(previous.get("sha", "")).strip()
+                previous_path = norm_abs_path(str(previous.get("path", "")))
+                if previous_path and _is_usable_cached_image(previous_path):
+                    # If a previous run left the file outside the final folder (e.g. old sha cache),
+                    # copy it into named output for a cleaner pipeline in direct-write mode.
+                    try:
+                        prev_p = Path(previous_path).resolve()
+                        if prev_p.parent.resolve() != direct_named_dir.resolve():
+                            target_named = unique_named_path(
+                                direct_named_dir,
+                                normalize_optional_field(profile.get("name", "")) or person_name,
+                                ext=".jpg",
+                                reserved=direct_reserved_paths,
+                            )
+                            shutil.copy2(prev_p, target_named)
+                            copied_path = str(target_named.resolve())
+                            append_jsonl(
+                                download_manifest,
+                                {
+                                    "downloaded_at": utc_now_iso(),
+                                    "detail_url": detail_url,
+                                    "image_url": image_url,
+                                    "name": profile.get("name", ""),
+                                    "sha256": previous_sha,
+                                    "saved_path": copied_path,
+                                    "named_path": copied_path,
+                                    "route": "direct_copy_existing",
+                                },
+                            )
+                            manifest_by_detail[detail_url] = {"sha": previous_sha, "path": copied_path}
+                            if inline_metadata_enabled:
+                                _inline_write_for_profile(profile, previous_sha, copied_path)
+                            continue
+                    except Exception:
+                        pass
+                    if inline_metadata_enabled:
+                        _inline_write_for_profile(profile, previous_sha, previous_path)
+                    continue
+
+            if (not direct_write_images) and image_url in url_index:
                 sha_cached, source_cached = _resolve_cached_source_by_image_url(image_url, url_index, sha_index)
                 if source_cached:
                     totals["reused_by_url"] += 1
@@ -3772,6 +4031,71 @@ def download_images(config: Dict[str, Any], output_root: Path) -> Dict[str, Any]
 
             consecutive_download_failures = 0
             sha = hashlib.sha256(payload).hexdigest()
+
+            if direct_write_images and direct_named_dir is not None:
+                target_named: Optional[Path] = None
+                previous = manifest_by_detail.get(detail_url, {}) if detail_url else {}
+                previous_path = norm_abs_path(str(previous.get("path", "")))
+                if previous_path:
+                    try:
+                        previous_p = Path(previous_path)
+                        if (
+                            previous_p.exists()
+                            and previous_p.is_file()
+                            and previous_p.parent.resolve() == direct_named_dir.resolve()
+                        ):
+                            target_named = previous_p.resolve()
+                    except Exception:
+                        target_named = None
+
+                if target_named is None:
+                    target_named = unique_named_path(
+                        direct_named_dir,
+                        normalize_optional_field(profile.get("name", "")) or person_name,
+                        ext=".jpg",
+                        reserved=direct_reserved_paths,
+                    )
+
+                _atomic_write_bytes(target_named, payload)
+
+                totals["downloaded_new"] += 1
+                if route_used == "browser":
+                    totals["downloaded_via_browser"] += 1
+                else:
+                    totals["downloaded_via_requests"] += 1
+                runtime_log(
+                    "STEP",
+                    f"{person_name}图片下载成功",
+                    detail=detail_url,
+                    image=image_url,
+                    person=person_name,
+                    route=route_used,
+                    sha=sha[:12],
+                )
+
+                inline_named_path = ""
+                if inline_metadata_enabled:
+                    inline_named_path = _inline_write_for_profile(profile, sha, str(target_named.resolve()))
+
+                saved_path = str(target_named.resolve())
+                named_path = norm_abs_path(inline_named_path) or saved_path
+                append_jsonl(
+                    download_manifest,
+                    {
+                        "downloaded_at": utc_now_iso(),
+                        "detail_url": detail_url,
+                        "image_url": image_url,
+                        "name": profile.get("name", ""),
+                        "sha256": sha,
+                        "saved_path": saved_path,
+                        "named_path": named_path,
+                        "route": f"{route_used}_direct",
+                    },
+                )
+                if detail_url:
+                    manifest_by_detail[detail_url] = {"sha": sha, "path": named_path}
+                continue
+
             source_cached = norm_abs_path(str(sha_index.get(sha, ""))) if sha in sha_index else ""
             if sha in sha_index and _is_usable_cached_image(source_cached):
                 totals["reused_by_sha"] += 1
@@ -4040,6 +4364,7 @@ def build_metadata_queue(output_root: Path) -> Dict[str, Any]:
 def write_metadata_for_downloads(output_root: Path, config: Dict[str, Any]) -> Dict[str, Any]:
     rules = dict(config.get("rules", {}))
     enabled = bool(rules.get("write_metadata", True))
+    direct_write_images = _parse_bool_rule(rules.get("direct_write_images", False), default=False)
     metadata_retry_settings = resolve_metadata_retry_settings(rules)
     metadata_write_retries = int(metadata_retry_settings.get("max_attempts", 1))
     metadata_retry_delay_seconds = float(metadata_retry_settings.get("retry_delay_seconds", 0.0))
@@ -4271,7 +4596,7 @@ def write_metadata_for_downloads(output_root: Path, config: Dict[str, Any]) -> D
     write_jsonl(queue_path, rows)
 
     # Save runtime sha index for easier future lookups (path may now point to named file).
-    if sha_runtime_path:
+    if sha_runtime_path and (not direct_write_images):
         save_json(sha_index_path, sha_runtime_path)
 
     # Keep original saved_path, add named_path for consumer use.
@@ -5000,12 +5325,24 @@ def main() -> int:
         sha_index_path = output_root / "state" / "image_sha_index.json"
         review_path = output_root / "raw" / "review_queue.jsonl"
 
-        url_index = load_json(url_index_path, {})
-        sha_index = load_json(sha_index_path, {})
-        if not isinstance(url_index, dict):
-            url_index = {}
-        if not isinstance(sha_index, dict):
-            sha_index = {}
+        direct_write_images = _parse_bool_rule(rules.get("direct_write_images", False), default=False)
+        url_index: Dict[str, str] = {}
+        sha_index: Dict[str, str] = {}
+        manifest_by_detail: Dict[str, Dict[str, str]] = {}
+        if direct_write_images:
+            downloads_manifest_path = output_root / "downloads" / "image_downloads.jsonl"
+            manifest_by_detail, _ = _load_download_manifest_lookups(downloads_manifest_path)
+        else:
+            url_index_raw = load_json(url_index_path, {})
+            sha_index_raw = load_json(sha_index_path, {})
+            if isinstance(url_index_raw, dict):
+                url_index = {
+                    str(k): str(v) for k, v in url_index_raw.items() if str(k).strip() and str(v).strip()
+                }
+            if isinstance(sha_index_raw, dict):
+                sha_index = {
+                    str(k): str(v) for k, v in sha_index_raw.items() if str(k).strip() and str(v).strip()
+                }
 
         profiles_with_image = 0
         pending_images = 0
@@ -5016,6 +5353,19 @@ def main() -> int:
             if not image_url:
                 continue
             profiles_with_image += 1
+            if direct_write_images:
+                detail_url = str(profile.get("detail_url", "")).strip()
+                entry = manifest_by_detail.get(detail_url, {}) if detail_url else {}
+                cached_path = norm_abs_path(str(entry.get("path", "")))
+                if not cached_path:
+                    pending_images += 1
+                    missing_url_index += 1
+                    continue
+                if not _is_usable_cached_image(cached_path):
+                    pending_images += 1
+                    stale_cache += 1
+                continue
+
             image_sha = str(url_index.get(image_url, "")).strip()
             if not image_sha:
                 pending_images += 1

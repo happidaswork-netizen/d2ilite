@@ -1,7 +1,7 @@
 {
-  "site_name": "mps_qingming_2021",
+  "site_name": "mps_qingming_2020",
   "start_urls": [
-    "https://www.mps.gov.cn/n2255079/n7634837/n7797754/index.html"
+    "https://www.mps.gov.cn/n2255079/n6865805/n7047625/index.html"
   ],
   "allowed_domains": [
     "www.mps.gov.cn",
@@ -22,45 +22,41 @@
   },
   "output_root": "data/public_archive",
   "selectors": {
-    "list_item": "div.main1 dl dd a[href*='/content.html']",
+    "list_item": "a[href*='/n7047637/'][href*='/content.html']",
     "name": [
       "::text",
       "xpath:normalize-space(string(.))"
     ],
     "detail_link": "::attr(href)",
-    "list_fields": {
-      "list_region": "xpath:normalize-space(string(ancestor::dl[1]/preceding-sibling::*[1]))"
-    },
+    "list_fields": {},
     "next_page": [],
     "detail_name": [
-      ".con_title::text",
-      "xpath:normalize-space(string((//h1|//h2)[1]))",
-      "xpath:normalize-space(substring-before(string(//title),'_'))",
+      ".box9 dl dt::text",
+      "xpath:normalize-space(substring-before(string(//title),'--'))",
       "title::text"
     ],
     "detail_image": [
       ".touxiang img::attr(src)",
-      ".content_con img::attr(src)",
+      ".box10 img::attr(src)",
       "meta[property='og:image']::attr(content)"
     ],
     "detail_gender": [],
     "detail_summary": [
-      ".content_con p::text",
-      ".content_con p *::text"
+      ".box10 *::text"
     ],
     "detail_full_text": [
-      ".content_con *::text"
+      ".box10 *::text"
     ],
     "detail_fields": {
-      "region": "xpath:normalize-space((//div[contains(@class,'nav3_small')]//a[@href])[last()])",
-      "list_region": "xpath:normalize-space(string(//div[contains(@class,'main1')]//h2[1]))",
+      "region": "xpath:normalize-space((//div[contains(@class,'box8')]//a[@href])[last()])",
+      "publish_date": "xpath:normalize-space(string(//div[contains(@class,'box9')]//p[1]))",
       "page_title": "title::text",
       "meta_keywords": "xpath:string(//meta[@name='keywords']/@content)",
       "meta_description": "xpath:string(//meta[@name='description']/@content)"
     },
     "detail_field_labels": {
       "region": "地区",
-      "list_region": "列表分组",
+      "publish_date": "发布时间",
       "page_title": "页面标题",
       "meta_keywords": "页面关键词",
       "meta_description": "页面简介"
@@ -89,8 +85,7 @@
         "image_url"
       ],
       "unit": [
-        "field.region",
-        "field.list_region"
+        "field.region"
       ],
       "summary": [
         "summary"
@@ -106,10 +101,10 @@
     "auto_unit_subdir": true,
     "unit_name": "公安部英烈",
     "output_subdir_pattern": "{unit}_{year}",
-    "year_hint": "2021",
+    "year_hint": "2020",
     "detail_field_labels": {
       "region": "地区",
-      "list_region": "列表分组",
+      "publish_date": "发布时间",
       "page_title": "页面标题",
       "meta_keywords": "页面关键词",
       "meta_description": "页面简介"
@@ -144,6 +139,3 @@
     "image_interval_max_seconds": 8
   }
 }
-
-
-

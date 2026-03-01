@@ -40,6 +40,9 @@ Copy `config.example.json` (or `config.template.generic.json`) to your own file 
   - default `true` (save traffic / lower anti-bot risk; browser page preview may show broken/empty images)
   - set `false` if you need visual page-image rendering during crawl debugging
   - in GUI setup dialog, this can be toggled directly (no manual template editing needed)
+- optional direct image write (cleaner output): `rules.direct_write_images=true`
+  - images are saved directly into final named folder (`rules.named_images_dir`) as person-name files
+  - avoids generating `downloads/images` sha cache folder (less intermediate clutter / lower peak disk usage)
 - optional LLM enrichment (semantic fill + short biography):
   - enable `rules.llm_enrich_enabled=true`
   - set `rules.llm_model` and `rules.llm_api_base` (OpenAI-compatible endpoint)

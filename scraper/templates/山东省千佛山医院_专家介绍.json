@@ -1,0 +1,164 @@
+{
+  "site_name": "sdhospital_expert",
+  "start_urls": [
+    "https://www.sdhospital.com.cn/expert/"
+  ],
+  "allowed_domains": [
+    "www.sdhospital.com.cn",
+    "sdhospital.com.cn",
+    "static.sdhospital.com.cn",
+    "oss.sdhospital.com.cn"
+  ],
+  "user_agent": "D2ILiteArchiveBot/1.0 (+local archival use)",
+  "default_headers": {
+    "Referer": "https://www.sdhospital.com.cn/expert/",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+  },
+  "image_headers": {
+    "Referer": "https://www.sdhospital.com.cn/expert/"
+  },
+  "output_root": "data/public_archive",
+  "selectors": {
+    "list_item": "ul.doctor-list > li",
+    "name": [
+      "div.detail h2 a::text"
+    ],
+    "detail_link": "div.detail h2 a::attr(href)",
+    "list_fields": {
+      "image_url": "div.detail a.thumb img::attr(src)",
+      "department_text": "div.info div.depart-info a::text",
+      "department_url": "div.info div.depart-info a::attr(href)",
+      "title": "xpath:normalize-space(translate(substring-after(string(.//div[contains(@class,'info')]/div[contains(.,'职称')][1]),'职称'),'：:',''))",
+      "list_summary": "xpath:normalize-space(string(.//p[1]))",
+      "profile_page_url": "div.detail h2 a::attr(href)"
+    },
+    "next_page": [
+      "div.pager a.pager-next::attr(href)"
+    ],
+    "detail_name": [
+      ".doctor-details .doctor-resume > h1::text",
+      ".doctor-details .doctor-resume h1::text",
+      "xpath:normalize-space(substring-before(string(//title),'-专家介绍'))"
+    ],
+    "detail_image": [
+      ".doctor-details .doctor-resume .doctor-img img::attr(src)",
+      ".doctor-resume .doctor-img img::attr(src)",
+      "meta[property='og:image']::attr(content)"
+    ],
+    "detail_gender": [],
+    "detail_summary": [
+      ".doctor-items-intro > p::text",
+      ".doctor-items-intro > p *::text",
+      ".doctor-items-intro::text"
+    ],
+    "detail_full_text": [
+      ".doctor-items-intro *::text"
+    ],
+    "detail_fields": {
+      "department_text": "xpath:normalize-space((//div[contains(@class,'doctor-resume')]//p//u[contains(normalize-space(),'科室')]/following-sibling::a[1])[1])",
+      "department_url": "xpath:string((//div[contains(@class,'doctor-resume')]//p//u[contains(normalize-space(),'科室')]/following-sibling::a[1]/@href)[1])",
+      "title": "xpath:normalize-space(translate(substring-after(string((//div[contains(@class,'doctor-resume')]//p)[1]),'职称'),'：:',''))",
+      "profile_page_url": "xpath:string(//link[@rel='canonical']/@href)",
+      "page_title": "title::text",
+      "meta_keywords": "xpath:string(//meta[@name='keywords']/@content)",
+      "meta_description": "xpath:string(//meta[@name='description']/@content)"
+    },
+    "detail_field_labels": {
+      "image_url": "头像链接",
+      "department_text": "科室",
+      "department_url": "科室页链接",
+      "title": "职称",
+      "list_summary": "列表摘要",
+      "profile_page_url": "专家主页链接",
+      "page_title": "页面标题",
+      "meta_keywords": "页面关键词",
+      "meta_description": "页面简介"
+    }
+  },
+  "rules": {
+    "obey_robots_txt": true,
+    "snapshot_html": true,
+    "extract_images": true,
+    "write_metadata": true,
+    "write_metadata_inline_per_item": true,
+    "named_images_dir": "",
+    "image_referer_from_detail_url": true,
+    "required_fields": [
+      "name",
+      "detail_url",
+      "image_url"
+    ],
+    "default_gender": "",
+    "gender_map": {},
+    "field_map": {
+      "person": [
+        "name"
+      ],
+      "image_url": [
+        "image_url",
+        "field.image_url"
+      ],
+      "position": [
+        "field.title"
+      ],
+      "unit": [
+        "field.department_text"
+      ],
+      "department": [
+        "field.department_text"
+      ],
+      "summary": [
+        "summary",
+        "field.list_summary"
+      ],
+      "full_content": [
+        "full_content",
+        "summary",
+        "field.list_summary"
+      ],
+      "source_profile_url": [
+        "detail_url",
+        "field.profile_page_url"
+      ]
+    },
+    "auto_unit_subdir": true,
+    "unit_name": "山东省千佛山医院",
+    "output_subdir_pattern": "{unit}_专家介绍",
+    "year_hint": "",
+    "detail_field_labels": {
+      "image_url": "头像链接",
+      "department_text": "科室",
+      "department_url": "科室页链接",
+      "title": "职称",
+      "list_summary": "列表摘要",
+      "profile_page_url": "专家主页链接",
+      "page_title": "页面标题",
+      "meta_keywords": "页面关键词",
+      "meta_description": "页面简介"
+    },
+    "image_download_mode": "browser",
+    "auto_fallback_to_browser": true,
+    "browser_engine": "edge",
+    "disable_page_images_during_crawl": true,
+    "output_mode": "images_only_with_record",
+    "keep_record_file": true
+  },
+  "crawl": {
+    "concurrent_requests": 1,
+    "download_delay": 5,
+    "autothrottle_start_delay": 5,
+    "autothrottle_max_delay": 8,
+    "retry_times": 3,
+    "timeout_seconds": 30,
+    "blocked_statuses": [
+      403,
+      429
+    ],
+    "blocked_backoff_hours": 6,
+    "suspect_block_consecutive_failures": 3,
+    "interval_min_seconds": 5,
+    "interval_max_seconds": 8,
+    "image_interval_min_seconds": 5,
+    "image_interval_max_seconds": 8
+  }
+}

@@ -68,6 +68,7 @@
     "snapshot_html": true,
     "extract_images": true,
     "write_metadata": true,
+    "direct_write_images": true,
     "named_images_dir": "",
     "image_referer_from_detail_url": true,
     "required_fields": [

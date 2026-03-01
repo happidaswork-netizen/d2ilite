@@ -1,0 +1,159 @@
+{
+  "site_name": "sdjxxrmyy_experts",
+  "start_urls": [
+    "https://sdjxxrmyy.cn/?zjjs/"
+  ],
+  "allowed_domains": [
+    "sdjxxrmyy.cn",
+    "www.sdjxxrmyy.cn"
+  ],
+  "user_agent": "D2ILiteArchiveBot/1.0 (+local archival use)",
+  "default_headers": {
+    "Referer": "https://sdjxxrmyy.cn/?zjjs/",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+  },
+  "image_headers": {
+    "Referer": "https://sdjxxrmyy.cn/?zjjs/"
+  },
+  "output_root": "data/public_archive",
+  "selectors": {
+    "list_item": "div.col-12.col-sm-6.col-lg-3 div.card",
+    "name": [
+      "h5.card-title a::text",
+      ".card-img-top::attr(alt)"
+    ],
+    "detail_link": "h5.card-title a::attr(href)",
+    "list_fields": {
+      "title": "div.card-body .btn::text",
+      "list_summary": [
+        "p.card-text::text",
+        "p.card-text *::text"
+      ],
+      "list_image_url": ".card-img-top::attr(src)"
+    },
+    "next_page": [
+      "a.page-num::attr(href)",
+      "xpath://a[contains(@class,'page-link') and contains(normalize-space(),'下一页')]/@href"
+    ],
+    "detail_name": [
+      "h2.text-center::text",
+      "title::text"
+    ],
+    "detail_image": [
+      "div.content + center img::attr(src)",
+      "center img::attr(src)",
+      "meta[property='og:image']::attr(content)"
+    ],
+    "detail_gender": [],
+    "detail_summary": [
+      "div.content p::text",
+      "div.content p *::text",
+      "div.content::text"
+    ],
+    "detail_full_text": [
+      "div.content *::text"
+    ],
+    "detail_fields": {
+      "department_text": "xpath:normalize-space((//p[contains(@class,'dibu')]//a[@href])[last()])",
+      "department_url": "xpath:string((//p[contains(@class,'dibu')]//a[@href])[last()]/@href)",
+      "prev_name": "xpath:normalize-space(substring-after(string((//div[contains(@class,'text-secondary')]//p[contains(normalize-space(),'上一篇')])[1]),'上一篇：'))",
+      "prev_url": "xpath:string((//div[contains(@class,'text-secondary')]//p[contains(normalize-space(),'上一篇')]//a)[1]/@href)",
+      "next_name": "xpath:normalize-space(substring-after(string((//div[contains(@class,'text-secondary')]//p[contains(normalize-space(),'下一篇')])[1]),'下一篇：'))",
+      "next_url": "xpath:string((//div[contains(@class,'text-secondary')]//p[contains(normalize-space(),'下一篇')]//a)[1]/@href)",
+      "meta_keywords": "xpath:string(//meta[@name='keywords']/@content)",
+      "meta_description": "xpath:string(//meta[@name='description']/@content)",
+      "page_title": "title::text"
+    },
+    "detail_field_labels": {
+      "title": "职称",
+      "list_summary": "列表简介",
+      "list_image_url": "列表头像链接",
+      "department_text": "科室",
+      "department_url": "科室页链接",
+      "prev_name": "上一篇姓名",
+      "prev_url": "上一篇链接",
+      "next_name": "下一篇姓名",
+      "next_url": "下一篇链接",
+      "meta_keywords": "页面关键词",
+      "meta_description": "页面简介",
+      "page_title": "页面标题"
+    }
+  },
+  "rules": {
+    "obey_robots_txt": false,
+    "snapshot_html": true,
+    "extract_images": true,
+    "write_metadata": true,
+    "write_metadata_inline_per_item": true,
+    "named_images_dir": "",
+    "image_referer_from_detail_url": true,
+    "required_fields": [
+      "name",
+      "detail_url",
+      "image_url"
+    ],
+    "default_gender": "",
+    "gender_map": {},
+    "field_map": {
+      "person": [
+        "name"
+      ],
+      "position": [
+        "field.title"
+      ],
+      "unit": [
+        "field.department_text"
+      ],
+      "department": [
+        "field.department_text"
+      ],
+      "summary": [
+        "summary"
+      ],
+      "full_content": [
+        "full_content"
+      ]
+    },
+    "auto_unit_subdir": true,
+    "unit_name": "嘉祥县人民医院",
+    "output_subdir_pattern": "{unit}_专家介绍",
+    "year_hint": "",
+    "detail_field_labels": {
+      "title": "职称",
+      "list_summary": "列表简介",
+      "list_image_url": "列表头像链接",
+      "department_text": "科室",
+      "department_url": "科室页链接",
+      "prev_name": "上一篇姓名",
+      "prev_url": "上一篇链接",
+      "next_name": "下一篇姓名",
+      "next_url": "下一篇链接",
+      "meta_keywords": "页面关键词",
+      "meta_description": "页面简介",
+      "page_title": "页面标题"
+    },
+    "image_download_mode": "requests_jsl",
+    "auto_fallback_to_browser": true,
+    "browser_engine": "edge",
+    "output_mode": "images_only_with_record",
+    "keep_record_file": true
+  },
+  "crawl": {
+    "concurrent_requests": 1,
+    "download_delay": 5,
+    "autothrottle_start_delay": 5,
+    "autothrottle_max_delay": 8,
+    "retry_times": 3,
+    "timeout_seconds": 30,
+    "blocked_statuses": [
+      403,
+      429
+    ],
+    "blocked_backoff_hours": 6,
+    "suspect_block_consecutive_failures": 3,
+    "interval_min_seconds": 5,
+    "interval_max_seconds": 8,
+    "image_interval_min_seconds": 5,
+    "image_interval_max_seconds": 8
+  }
+}

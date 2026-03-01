@@ -7,36 +7,63 @@
     "www.mps.gov.cn",
     "mps.gov.cn"
   ],
-  "user_agent": "D2ILiteArchiveBot/1.0 (+local archival use)",
+  "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 Edg/122.0.0.0",
   "default_headers": {
     "Referer": "https://www.mps.gov.cn/",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+    "Upgrade-Insecure-Requests": "1"
   },
   "image_headers": {
-    "Referer": "https://www.mps.gov.cn/"
+    "Referer": "https://www.mps.gov.cn/",
+    "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 Edg/122.0.0.0"
   },
   "output_root": "data/public_archive",
   "selectors": {
     "list_item": "div.main1 dl dd a[href*='/content.html']",
     "name": [
-      "::text"
+      "::text",
+      "xpath:normalize-space(string(.))"
     ],
     "detail_link": "::attr(href)",
+    "list_fields": {
+      "list_region": "xpath:normalize-space(string(ancestor::dl[1]/preceding-sibling::*[1]))"
+    },
     "next_page": [],
     "detail_name": [
-      ".con_title::text"
+      ".con_title::text",
+      "xpath:normalize-space(string((//h1|//h2)[1]))",
+      "xpath:normalize-space(substring-before(string(//title),'_'))",
+      "title::text"
     ],
-    "detail_image": ".touxiang img::attr(src)",
+    "detail_image": [
+      ".touxiang img::attr(src)",
+      ".content_con img::attr(src)",
+      "meta[property='og:image']::attr(content)"
+    ],
     "detail_gender": [],
     "detail_summary": [
-      ".content_con p::text"
+      ".content_con p::text",
+      ".content_con p *::text"
     ],
-    "detail_full_text": [],
+    "detail_full_text": [
+      ".content_con *::text"
+    ],
     "detail_fields": {
-      "region": "xpath:normalize-space((//div[contains(@class,'nav3_small')]//a[@href])[last()])"
+      "region": "xpath:normalize-space((//div[contains(@class,'nav3_small')]//a[@href])[last()])",
+      "list_region": "xpath:normalize-space(string(//div[contains(@class,'main1')]//h2[1]))",
+      "page_title": "title::text",
+      "meta_keywords": "xpath:string(//meta[@name='keywords']/@content)",
+      "meta_description": "xpath:string(//meta[@name='description']/@content)"
     },
     "detail_field_labels": {
-      "region": "地区"
+      "region": "地区",
+      "list_region": "列表分组",
+      "page_title": "页面标题",
+      "meta_keywords": "页面关键词",
+      "meta_description": "页面简介"
     }
   },
   "rules": {
@@ -44,6 +71,7 @@
     "snapshot_html": true,
     "extract_images": true,
     "write_metadata": true,
+    "write_metadata_inline_per_item": true,
     "named_images_dir": "",
     "image_referer_from_detail_url": true,
     "required_fields": [
@@ -53,18 +81,48 @@
     ],
     "default_gender": "",
     "gender_map": {},
-    "field_map": {},
+    "field_map": {
+      "person": [
+        "name"
+      ],
+      "image_url": [
+        "image_url"
+      ],
+      "unit": [
+        "field.region",
+        "field.list_region"
+      ],
+      "summary": [
+        "summary"
+      ],
+      "full_content": [
+        "full_content",
+        "summary"
+      ],
+      "source_profile_url": [
+        "detail_url"
+      ]
+    },
     "auto_unit_subdir": true,
     "unit_name": "公安部英烈",
     "output_subdir_pattern": "{unit}_{year}",
     "year_hint": "2021",
     "detail_field_labels": {
-      "region": "地区"
+      "region": "地区",
+      "list_region": "列表分组",
+      "page_title": "页面标题",
+      "meta_keywords": "页面关键词",
+      "meta_description": "页面简介"
     },
     "image_download_mode": "browser",
+    "auto_fallback_to_browser": true,
     "browser_engine": "edge",
+    "disable_page_images_during_crawl": true,
+    "download_images_during_crawl": true,
+    "output_mode": "images_only_with_record",
+    "keep_record_file": true,
     "jsl_clearance_enabled": true,
-    "jsl_max_retries": 4
+    "jsl_max_retries": 6
   },
   "crawl": {
     "concurrent_requests": 1,
@@ -75,7 +133,8 @@
     "timeout_seconds": 30,
     "blocked_statuses": [
       403,
-      429
+      429,
+      521
     ],
     "blocked_backoff_hours": 6,
     "suspect_block_consecutive_failures": 3,
