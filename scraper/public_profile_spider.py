@@ -250,7 +250,7 @@ class PublicProfileSpider(scrapy.Spider):
             self.logger.error("selectors.list_item is required")
             return
 
-        list_nodes = list_source.css(str(list_item_selector))
+        list_nodes = self._select_nodes(list_source, str(list_item_selector))
         for node in list_nodes:
             self.metrics["list_rows_seen"] += 1
             name = self._extract_first(node, self.selectors.get("name"))
@@ -401,6 +401,26 @@ class PublicProfileSpider(scrapy.Spider):
             image_url=image_url,
             fields=merged_fields,
         )
+
+        # Fallback for pages where per-person image URL is carried by list/card fields.
+        if not image_url:
+            mapped_image_url = self._normalize_optional_field(mapped_fields.get("image_url", ""))
+            if mapped_image_url:
+                image_url = response.urljoin(mapped_image_url)
+        if not image_url:
+            for fallback_key in (
+                "image_url",
+                "list_image_url",
+                "avatar_url",
+                "photo_url",
+                "portrait_url",
+                "person_image_url",
+            ):
+                fallback_raw = self._normalize_optional_field(merged_fields.get(fallback_key, ""))
+                if not fallback_raw:
+                    continue
+                image_url = response.urljoin(fallback_raw)
+                break
 
         record = {
             "scraped_at": _utc_now_iso(),
@@ -804,6 +824,20 @@ class PublicProfileSpider(scrapy.Spider):
             return selector_source.css(selector).getall()
         except Exception:
             self.logger.exception("selector failed: %s", selector)
+            return []
+
+    def _select_nodes(self, selector_source: Any, selector: str) -> List[Any]:
+        selector_text = str(selector or "").strip()
+        if not selector_text:
+            return []
+        try:
+            if selector_text.startswith("xpath:"):
+                return list(selector_source.xpath(selector_text[len("xpath:") :]))
+            if selector_text.startswith("/"):
+                return list(selector_source.xpath(selector_text))
+            return list(selector_source.css(selector_text))
+        except Exception:
+            self.logger.exception("node selector failed: %s", selector_text)
             return []
 
     def _build_selector_source(self, response: Response, phase: str) -> Any:

@@ -2025,6 +2025,20 @@ def _select_values(selector_source: Any, selector: str) -> List[str]:
         return []
 
 
+def _select_nodes(selector_source: Any, selector: str) -> List[Any]:
+    selector_text = str(selector or "").strip()
+    if not selector_text:
+        return []
+    try:
+        if selector_text.startswith("xpath:"):
+            return list(selector_source.xpath(selector_text[len("xpath:") :]))
+        if selector_text.startswith("/"):
+            return list(selector_source.xpath(selector_text))
+        return list(selector_source.css(selector_text))
+    except Exception:
+        return []
+
+
 def _extract_first(selector_source: Any, selector_spec: Any) -> str:
     for selector in _ensure_list(selector_spec):
         for value in _select_values(selector_source, selector):
@@ -2784,7 +2798,7 @@ def run_crawl_browser_mode(config: Dict[str, Any], output_root: Path) -> None:
                 _save_snapshot_html(snapshots_dir, "list", list_url, html_payload)
 
             list_source = _build_selector_source_from_html(html_payload, selectors, phase="list")
-            list_nodes = list_source.css(list_item_selector)
+            list_nodes = _select_nodes(list_source, list_item_selector)
             for node in list_nodes:
                 metrics["list_rows_seen"] += 1
                 name = _extract_first(node, selectors.get("name"))

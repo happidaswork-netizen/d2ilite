@@ -1,0 +1,121 @@
+{
+  "site_name": "wenming_9th_moral_models_candidates",
+  "start_urls": [
+    "http://www.wenming.cn/wmzthc/20241216/01846373453045379b859d4006970aa3/c.html",
+    "http://www.wenming.cn/wmzthc/20241216/6ef7011bbe11454fb55ad2daec087355/c.html",
+    "http://www.wenming.cn/wmzthc/20241216/c1a8cce4488442b2a7bc2ac110f115fe/c.html",
+    "http://www.wenming.cn/wmzthc/20241216/d52d342a81674177a9e5e825dd0e2b17/c.html",
+    "http://www.wenming.cn/wmzthc/20241216/98b4f4f393d54157965761b0b3292edd/c.html"
+  ],
+  "allowed_domains": [
+    "wenming.cn"
+  ],
+  "user_agent": "D2ILiteArchiveBot/1.0 (+local archival use)",
+  "default_headers": {
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Referer": "http://www.wenming.cn/wmzthc/9thmd/index.html"
+  },
+  "image_headers": {
+    "Referer": "http://www.wenming.cn/wmzthc/9thmd/index.html"
+  },
+  "output_root": "data/public_archive/wenming_9thmd_candidates_safe_run",
+  "selectors": {
+    "list_item": "xpath://p[contains(@style,'text-align: center')][strong][preceding-sibling::p[1][.//img]][string-length(normalize-space(translate(substring(normalize-space(string(.//strong)),1,1),'0123456789',''))) = 0]",
+    "name": [
+      "xpath:substring-before(normalize-space(string(following-sibling::p[contains(@class,'ueditor-text-p_display')][1])),'，')",
+      "xpath:normalize-space(translate(string(.//strong),'0123456789',''))"
+    ],
+    "detail_link": "xpath:concat('?person=', normalize-space(substring-before(concat(normalize-space(string(.//strong)), ' '), ' ')))",
+    "list_fields": {
+      "person_index": "xpath:normalize-space(substring-before(concat(normalize-space(string(.//strong)), ' '), ' '))",
+      "person_summary": "xpath:normalize-space(string(following-sibling::p[contains(@class,'ueditor-text-p_display')][1]))",
+      "person_image_url": "xpath:string(preceding-sibling::p[1][.//img]//img[1]/@src)"
+    },
+    "next_page": [],
+    "detail_name": [],
+    "detail_image": [],
+    "detail_gender": [],
+    "detail_summary": [],
+    "detail_full_text": [],
+    "detail_fields": {},
+    "detail_field_labels": {}
+  },
+  "rules": {
+    "obey_robots_txt": false,
+    "snapshot_html": true,
+    "extract_images": true,
+    "write_metadata": true,
+    "direct_write_images": true,
+    "named_images_dir": "",
+    "image_referer_from_detail_url": true,
+    "required_fields": [
+      "name",
+      "detail_url",
+      "image_url"
+    ],
+    "default_gender": "",
+    "gender_map": {
+      "男": "male",
+      "女": "female"
+    },
+    "field_map": {
+      "person": [
+        "name"
+      ],
+      "image_url": [
+        "field.person_image_url"
+      ],
+      "summary": [
+        "field.person_summary"
+      ],
+      "full_content": [
+        "field.person_summary"
+      ]
+    },
+    "detail_field_labels": {},
+    "auto_unit_subdir": false,
+    "unit_name": "中国文明网",
+    "output_subdir_pattern": "{unit}_第九届道德模范候选人",
+    "year_hint": "2024",
+    "jsl_clearance_enabled": false,
+    "jsl_max_retries": 2,
+    "image_download_mode": "requests_jsl",
+    "auto_fallback_to_browser": false,
+    "disable_page_images_during_crawl": true,
+    "llm_enrich_enabled": false,
+    "llm_api_base": "https://api.openai.com/v1",
+    "llm_api_key": "",
+    "llm_model": "gpt-4o-mini",
+    "llm_timeout_seconds": 45,
+    "llm_max_retries": 2,
+    "llm_temperature": 0.1,
+    "llm_only_when_missing_fields": true,
+    "llm_generate_biography": true,
+    "llm_append_biography_to_description": true,
+    "llm_cache_enabled": true,
+    "llm_max_input_chars": 6000,
+    "browser_engine": "edge",
+    "output_mode": "images_only_with_record",
+    "keep_record_file": true
+  },
+  "crawl": {
+    "concurrent_requests": 1,
+    "download_delay": 6,
+    "autothrottle_start_delay": 6,
+    "autothrottle_max_delay": 12,
+    "retry_times": 2,
+    "timeout_seconds": 30,
+    "blocked_statuses": [
+      403,
+      429,
+      412,
+      521
+    ],
+    "blocked_backoff_hours": 24,
+    "suspect_block_consecutive_failures": 2,
+    "interval_min_seconds": 6,
+    "interval_max_seconds": 10,
+    "image_interval_min_seconds": 6,
+    "image_interval_max_seconds": 10
+  }
+}
