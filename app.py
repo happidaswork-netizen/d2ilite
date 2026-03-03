@@ -60,11 +60,46 @@ from services.image_service import (
     list_images_in_folder as _svc_list_images_in_folder,
     read_image_basic_info as _svc_read_image_basic_info,
 )
+from services.editor_text_service import (
+    extract_json_payload_from_llm as _svc_extract_json_payload_from_llm,
+    normalize_gender_text as _svc_normalize_gender_text,
+    normalize_multiline_editor_text as _svc_normalize_multiline_editor_text,
+    normalize_profile_for_editor as _svc_normalize_profile_for_editor,
+    normalize_single_line_text as _svc_normalize_single_line_text,
+    prune_empty_profile_values as _svc_prune_empty_profile_values,
+)
 from services.metadata_service import (
+    build_structured_payload as _svc_build_structured_payload,
     normalize_http_url as _svc_normalize_http_url,
     parse_keywords as _svc_parse_keywords,
     read_raw_with_pyexiv2 as _svc_read_raw_with_pyexiv2,
     write_raw_with_pyexiv2 as _svc_write_raw_with_pyexiv2,
+)
+from services.scraper_monitor_service import (
+    extract_runtime_log_field as _svc_extract_runtime_log_field,
+    format_elapsed as _svc_format_elapsed,
+    humanize_scraper_reason as _svc_humanize_scraper_reason,
+    merge_status_reason as _svc_merge_status_reason,
+    normalize_optional_audit_value as _svc_normalize_optional_audit_value,
+    normalize_person_key as _svc_normalize_person_key,
+    read_jsonl_rows as _svc_read_jsonl_rows,
+    read_text_tail as _svc_read_text_tail,
+    repair_mojibake_utf8_latin1 as _svc_repair_mojibake_utf8_latin1,
+    write_jsonl_rows as _svc_write_jsonl_rows,
+)
+from services.runtime_service import (
+    build_utf8_subprocess_env as _svc_build_utf8_subprocess_env,
+    resolve_python_cli_executable as _svc_resolve_python_cli_executable,
+)
+from services.settings_service import (
+    app_settings_path as _svc_app_settings_path,
+    default_app_settings as _svc_default_app_settings,
+    load_app_settings as _svc_load_app_settings,
+    save_app_settings as _svc_save_app_settings,
+)
+from services.viewer_load_service import (
+    load_metadata_snapshot as _svc_load_metadata_snapshot,
+    load_preview_image as _svc_load_preview_image,
 )
 
 try:
@@ -988,204 +1023,39 @@ class D2ILiteApp(BaseWindow):
 
     @staticmethod
     def _format_elapsed(seconds: float) -> str:
-        s = max(0, int(seconds))
-        h = s // 3600
-        m = (s % 3600) // 60
-        sec = s % 60
-        return f"{h:02d}:{m:02d}:{sec:02d}"
+        return _svc_format_elapsed(seconds)
 
     @staticmethod
     def _repair_mojibake_utf8_latin1(text: str) -> str:
-        raw = str(text or "")
-        if not raw:
-            return raw
-        # Typical mojibake markers when UTF-8 bytes were decoded as latin1/cp1252.
-        if not any(ch in raw for ch in ("Ã", "Â", "ä", "å", "æ", "ç", "é", "ï", "¤", "º", "", "")):
-            return raw
-        try:
-            candidate = raw.encode("latin1").decode("utf-8")
-        except Exception:
-            return raw
-        def _score(value: str) -> int:
-            cjk = sum(1 for ch in value if "\u4e00" <= ch <= "\u9fff")
-            bad = sum(1 for ch in value if ch in {"Ã", "Â", "¤", "º", "", "", "�"})
-            return cjk * 2 - bad
-        return candidate if _score(candidate) > _score(raw) else raw
+        return _svc_repair_mojibake_utf8_latin1(text)
 
     @staticmethod
     def _read_text_tail(path: str, max_lines: int = 30) -> str:
-        if not path or (not os.path.exists(path)):
-            return ""
-        try:
-            with open(path, "rb") as f:
-                data = f.read()
-            if not data:
-                return ""
-            lines = data.splitlines(keepends=True)
-            selected = lines[-max(1, int(max_lines or 30)):]
-            decoded_lines: List[str] = []
-            for raw in selected:
-                line = ""
-                for enc in ("utf-8", "utf-8-sig", "gb18030", "cp936"):
-                    try:
-                        line = raw.decode(enc)
-                        break
-                    except Exception:
-                        continue
-                if not line:
-                    line = raw.decode("latin1", errors="ignore")
-                line = D2ILiteApp._repair_mojibake_utf8_latin1(line)
-                decoded_lines.append(line)
-            text = "".join(decoded_lines).strip()
-            return D2ILiteApp._repair_mojibake_utf8_latin1(text)
-        except Exception:
-            return ""
+        return _svc_read_text_tail(path, max_lines=max_lines)
 
     @staticmethod
     def _read_jsonl_rows(path: str, max_rows: int = 0) -> List[Dict[str, Any]]:
-        rows: List[Dict[str, Any]] = []
-        if (not path) or (not os.path.exists(path)):
-            return rows
-        try:
-            with open(path, "r", encoding="utf-8", errors="ignore") as f:
-                for line in f:
-                    raw = line.strip()
-                    if not raw:
-                        continue
-                    try:
-                        obj = json.loads(raw)
-                    except Exception:
-                        continue
-                    if isinstance(obj, dict):
-                        rows.append(obj)
-                        if max_rows > 0 and len(rows) >= max_rows:
-                            break
-        except Exception:
-            return []
-        return rows
+        return _svc_read_jsonl_rows(path, max_rows=max_rows)
 
     @staticmethod
     def _write_jsonl_rows(path: str, rows: List[Dict[str, Any]]) -> None:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "w", encoding="utf-8") as f:
-            for item in (rows or []):
-                if not isinstance(item, dict):
-                    continue
-                f.write(json.dumps(item, ensure_ascii=False) + "\n")
+        _svc_write_jsonl_rows(path, rows)
 
     @staticmethod
     def _merge_status_reason(entry: Dict[str, Any], msg: str):
-        text = D2ILiteApp._humanize_scraper_reason(str(msg or "").strip())
-        if not text:
-            return
-        old = str(entry.get("reason", "")).strip()
-        if not old:
-            entry["reason"] = text
-            return
-        if text in old:
-            return
-        entry["reason"] = f"{old} | {text}"
+        _svc_merge_status_reason(entry, msg)
 
     @staticmethod
     def _humanize_scraper_reason(text: str) -> str:
-        raw = str(text or "").strip()
-        if not raw:
-            return ""
-
-        def _compact_path(value: str) -> str:
-            v = str(value or "").strip()
-            if not v:
-                return ""
-            try:
-                base = os.path.basename(v)
-                return f"...\\{base}" if base else v
-            except Exception:
-                return v
-
-        def _map_one(part: str) -> str:
-            p = str(part or "").strip()
-            if not p:
-                return ""
-            l = p.lower()
-            if l.startswith("audit_missing_metadata_fields"):
-                missing_raw = ""
-                if ":" in p:
-                    missing_raw = p.split(":", 1)[1].strip()
-                fields_map = {
-                    "gender": "性别",
-                    "birth_date": "出生日期",
-                    "photo_taken_at": "拍摄日期",
-                    "age_at_photo": "拍摄时年龄",
-                    "position": "职务",
-                    "city": "城市",
-                    "unit": "单位",
-                    "profession": "职业",
-                    "police_id": "警号",
-                }
-                if missing_raw:
-                    tokens = [x.strip().lower() for x in re.split(r"[,，;；\s]+", missing_raw) if x.strip()]
-                    labels: List[str] = []
-                    for token in tokens:
-                        labels.append(fields_map.get(token, token))
-                    if labels:
-                        return "元数据待补充：" + "、".join(labels)
-                return "元数据待补充：关键字段缺失"
-
-            if l == "metadata_missing_local_image_path":
-                return "元数据未写入：本地图片缺失"
-            if l == "image_download_http_error":
-                return "图片下载失败：HTTP 错误"
-            if l == "image_download_not_image":
-                return "图片下载失败：返回内容不是图片"
-            if l == "image_download_request_failed":
-                return "图片下载失败：请求异常"
-            if l == "image_download_browser_failed":
-                return "图片下载失败：浏览器模式异常"
-            if l == "missing_detail_url_from_list":
-                return "列表项缺少详情链接"
-            if "missing_required_fields" in l:
-                return "详情页关键字段缺失"
-            if l.startswith("list_browser_fetch_failed"):
-                return "列表页抓取失败（浏览器）"
-            if l.startswith("detail_browser_fetch_failed"):
-                return "详情页抓取失败（浏览器）"
-            if l.startswith("metadata_write_failed"):
-                return "元数据写入失败"
-
-            if p.startswith("安全写入失败:"):
-                tail = p.split(":", 1)[1].strip() if ":" in p else ""
-                return f"元数据写入失败：{_compact_path(tail)}" if tail else "元数据写入失败"
-            if "utf-8" in l and "codec can't decode" in l:
-                return "元数据写入失败：编码异常(utf-8)"
-            return p
-
-        parts = [x.strip() for x in raw.split("|") if x.strip()]
-        if not parts:
-            return _map_one(raw)
-        mapped_parts: List[str] = []
-        for item in parts:
-            mapped = _map_one(item)
-            if mapped and (mapped not in mapped_parts):
-                mapped_parts.append(mapped)
-        return " | ".join(mapped_parts)
+        return _svc_humanize_scraper_reason(text)
 
     @staticmethod
     def _normalize_person_key(name: Any) -> str:
-        text = str(name or "").strip().lower()
-        if not text:
-            return ""
-        return re.sub(r"\s+", "", text)
+        return _svc_normalize_person_key(name)
 
     @staticmethod
     def _extract_runtime_log_field(line: str, label: str) -> str:
-        text = str(line or "")
-        key = str(label or "").strip()
-        if (not text) or (not key):
-            return ""
-        m = re.search(rf"{re.escape(key)}\s*:\s*([^|]+)", text)
-        if not m:
-            return ""
-        return str(m.group(1) or "").strip()
+        return _svc_extract_runtime_log_field(line, label)
 
     def _extract_scraper_live_actions(
         self,
@@ -1236,26 +1106,7 @@ class D2ILiteApp(BaseWindow):
 
     @staticmethod
     def _normalize_optional_audit_value(value: Any) -> str:
-        raw = str(value or "").strip()
-        if not raw:
-            return ""
-        lowered = raw.lower()
-        unknown_tokens = {
-            "unknown",
-            "unkonw",
-            "n/a",
-            "na",
-            "none",
-            "null",
-            "未知",
-            "未详",
-            "不详",
-            "待补充",
-            "-",
-        }
-        if lowered in unknown_tokens or raw in unknown_tokens:
-            return ""
-        return raw
+        return _svc_normalize_optional_audit_value(value)
 
     def _scraper_missing_required_fields_from_info(self, info: ImageMetadataInfo) -> List[str]:
         missing: List[str] = []
@@ -3343,14 +3194,7 @@ class D2ILiteApp(BaseWindow):
 
         def _worker(target_path: str, my_token: int) -> None:
             # Phase 1: preview (fastest) so user sees the image even if metadata is slow/hangs.
-            preview_pil: Optional[Image.Image] = None
-            preview_err = ""
-            try:
-                with Image.open(target_path) as img:
-                    preview_pil = img.copy()
-            except Exception as exc:
-                preview_pil = None
-                preview_err = str(exc)
+            preview_pil, preview_err = _svc_load_preview_image(target_path)
 
             def _apply_preview() -> None:
                 if int(getattr(self, "_load_current_token", 0)) != my_token:
@@ -3374,27 +3218,20 @@ class D2ILiteApp(BaseWindow):
                 _apply_preview()
 
             # Phase 2: metadata (may be slow on network/CJK paths).
-            err = ""
-            basic: Dict[str, Any] = {}
-            info: Optional[ImageMetadataInfo] = None
-            raw_xmp: Dict[str, Any] = {}
-            raw_exif: Dict[str, Any] = {}
-            raw_iptc: Dict[str, Any] = {}
-            try:
-                basic = _read_image_basic_info(target_path)
-                info = read_image_metadata(target_path)
-                raw_xmp = dict(getattr(info, "other_xmp", {}) or {})
-                raw_exif = dict(getattr(info, "other_exif", {}) or {})
-                raw_iptc = dict(getattr(info, "other_iptc", {}) or {})
-
-                # 回退：极少数情况下结构化读取未带出全量命名空间，再补一次原始读取。
-                if HAS_PYEXIV2 and (not raw_xmp) and (not raw_exif) and (not raw_iptc):
-                    try:
-                        raw_xmp, raw_exif, raw_iptc = _read_raw_with_pyexiv2(target_path)
-                    except Exception:
-                        raw_xmp, raw_exif, raw_iptc = {}, {}, {}
-            except Exception as exc:
-                err = str(exc)
+            (
+                basic,
+                info,
+                raw_xmp,
+                raw_exif,
+                raw_iptc,
+                err,
+            ) = _svc_load_metadata_snapshot(
+                target_path,
+                has_pyexiv2=HAS_PYEXIV2,
+                read_basic_info_fn=_read_image_basic_info,
+                read_image_metadata_fn=read_image_metadata,
+                read_raw_with_pyexiv2_fn=_read_raw_with_pyexiv2,
+            )
 
             def _apply_metadata() -> None:
                 if int(getattr(self, "_load_current_token", 0)) != my_token:
@@ -3513,77 +3350,26 @@ class D2ILiteApp(BaseWindow):
 
     @staticmethod
     def _resolve_python_cli_executable() -> str:
-        exe = os.path.abspath(str(sys.executable or "").strip() or "python")
-        base = os.path.basename(exe).lower()
-        if base == "pythonw.exe":
-            candidate = os.path.join(os.path.dirname(exe), "python.exe")
-            if os.path.exists(candidate):
-                return candidate
-        return exe
+        return _svc_resolve_python_cli_executable()
 
     @staticmethod
     def _build_utf8_subprocess_env() -> Dict[str, str]:
-        env = dict(os.environ)
-        env["PYTHONUTF8"] = "1"
-        env["PYTHONIOENCODING"] = "utf-8"
-        return env
+        return _svc_build_utf8_subprocess_env()
 
     @staticmethod
     def _app_settings_path() -> str:
-        # Keep secrets (API keys) outside the repo/workspace to avoid accidental commits.
-        root = os.path.join(os.path.expanduser("~"), ".d2ilite")
-        return os.path.join(root, "settings.json")
+        return _svc_app_settings_path()
 
     @staticmethod
     def _default_app_settings() -> Dict[str, Any]:
-        return {
-            "version": 1,
-            "updated_at": datetime.now().isoformat(timespec="seconds"),
-            "llm": {
-                "enabled_default": False,
-                "api_base": "",
-                "api_key": "",
-                "model": "",
-                "timeout_seconds": 45,
-                "max_retries": 2,
-                "temperature": 0.1,
-            },
-        }
+        return _svc_default_app_settings()
 
     def _load_app_settings(self) -> Dict[str, Any]:
-        path = self._app_settings_path()
-        base = self._default_app_settings()
-        if not os.path.exists(path):
-            return base
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                payload = json.load(f)
-            if not isinstance(payload, dict):
-                return base
-        except Exception:
-            return base
-
-        merged = dict(base)
-        merged.update(payload)
-        llm_default = dict(base.get("llm", {}) if isinstance(base.get("llm"), dict) else {})
-        llm_payload = payload.get("llm", {})
-        if isinstance(llm_payload, dict):
-            llm_default.update(llm_payload)
-        merged["llm"] = llm_default
-        return merged
+        return _svc_load_app_settings(self._app_settings_path())
 
     def _save_app_settings(self, payload: Dict[str, Any]) -> bool:
         data = payload if isinstance(payload, dict) else {}
-        path = self._app_settings_path()
-        try:
-            os.makedirs(os.path.dirname(path), exist_ok=True)
-            data = dict(data)
-            data["updated_at"] = datetime.now().isoformat(timespec="seconds")
-            with open(path, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
-            return True
-        except Exception:
-            return False
+        return _svc_save_app_settings(data, self._app_settings_path())
 
     def _get_global_llm_settings(self) -> Dict[str, Any]:
         llm = self._app_settings.get("llm") if isinstance(self._app_settings, dict) else {}
@@ -7130,103 +6916,23 @@ class D2ILiteApp(BaseWindow):
 
     @staticmethod
     def _normalize_single_line_text(value: Any) -> str:
-        raw = str(value or "").replace("\x00", " ").strip()
-        return re.sub(r"\s+", " ", raw).strip()
+        return _svc_normalize_single_line_text(value)
 
     @classmethod
     def _normalize_multiline_editor_text(cls, value: Any) -> str:
-        text = str(value or "").replace("\r\n", "\n").replace("\r", "\n")
-        if not text:
-            return ""
-        lines: List[str] = []
-        prev_blank = False
-        for raw_line in text.split("\n"):
-            line = cls._normalize_single_line_text(raw_line)
-            if line:
-                lines.append(line)
-                prev_blank = False
-            else:
-                if lines and (not prev_blank):
-                    lines.append("")
-                prev_blank = True
-        while lines and (not lines[-1]):
-            lines.pop()
-        return "\n".join(lines).strip()
+        return _svc_normalize_multiline_editor_text(value)
 
     @classmethod
     def _normalize_gender_text(cls, value: Any) -> str:
-        raw = cls._normalize_single_line_text(value)
-        if not raw:
-            return ""
-        lowered = raw.lower()
-        if lowered in {"male", "m", "man", "男性"} or raw == "男":
-            return "男"
-        if lowered in {"female", "f", "woman", "女性"} or raw == "女":
-            return "女"
-        return raw
+        return _svc_normalize_gender_text(value)
 
     @classmethod
     def _normalize_profile_for_editor(cls, value: Any) -> Any:
-        if isinstance(value, dict):
-            out: Dict[str, Any] = {}
-            for raw_k, raw_v in value.items():
-                key = cls._normalize_single_line_text(raw_k)
-                if not key:
-                    continue
-                cleaned = cls._normalize_profile_for_editor(raw_v)
-                if cleaned in (None, "", [], {}):
-                    continue
-                out[key] = cleaned
-            return out
-        if isinstance(value, list):
-            out_list: List[Any] = []
-            for item in value:
-                cleaned = cls._normalize_profile_for_editor(item)
-                if cleaned in (None, "", [], {}):
-                    continue
-                out_list.append(cleaned)
-            return out_list
-        if isinstance(value, str):
-            text = cls._normalize_multiline_editor_text(value)
-            if (not text) or ("\n" in text):
-                return text
-            if ("http://" in text.lower()) or ("https://" in text.lower()):
-                normalized_url = _normalize_http_url(text)
-                if normalized_url.lower().startswith(("http://", "https://")):
-                    return normalized_url
-            return text
-        return value
+        return _svc_normalize_profile_for_editor(value, url_normalizer=_normalize_http_url)
 
     @staticmethod
     def _extract_json_payload_from_llm(raw_text: Any) -> Dict[str, Any]:
-        text = str(raw_text or "").strip()
-        if not text:
-            return {}
-        try:
-            parsed = json.loads(text)
-            return parsed if isinstance(parsed, dict) else {}
-        except Exception:
-            pass
-
-        fenced = re.findall(r"```(?:json)?\s*(\{[\s\S]*?\})\s*```", text, flags=re.IGNORECASE)
-        for block in fenced:
-            try:
-                parsed = json.loads(block)
-                if isinstance(parsed, dict):
-                    return parsed
-            except Exception:
-                continue
-
-        left = text.find("{")
-        right = text.rfind("}")
-        if left >= 0 and right > left:
-            snippet = text[left : right + 1]
-            try:
-                parsed = json.loads(snippet)
-                return parsed if isinstance(parsed, dict) else {}
-            except Exception:
-                return {}
-        return {}
+        return _svc_extract_json_payload_from_llm(raw_text)
 
     def _collect_editor_llm_config(self) -> Dict[str, Any]:
         if (not HAS_LLM_CLIENT) or (OpenAICompatibleClient is None):
@@ -7880,23 +7586,7 @@ class D2ILiteApp(BaseWindow):
 
     @staticmethod
     def _prune_empty_profile_values(value: Any) -> Any:
-        if isinstance(value, dict):
-            out: Dict[str, Any] = {}
-            for k, v in value.items():
-                cleaned = D2ILiteApp._prune_empty_profile_values(v)
-                if cleaned in (None, "", [], {}):
-                    continue
-                out[str(k)] = cleaned
-            return out
-        if isinstance(value, list):
-            out_list = []
-            for item in value:
-                cleaned = D2ILiteApp._prune_empty_profile_values(item)
-                if cleaned in (None, "", [], {}):
-                    continue
-                out_list.append(cleaned)
-            return out_list
-        return value
+        return _svc_prune_empty_profile_values(value)
 
     def _extract_adaptive_profile_fields(self, info: ImageMetadataInfo) -> Dict[str, Any]:
         profile: Dict[str, Any] = {}
@@ -7989,26 +7679,21 @@ class D2ILiteApp(BaseWindow):
         self._snapshot_dirty = False
 
     def _collect_structured_payload(self) -> Dict[str, Any]:
-        payload = {
-            "title": self.edit_vars["title"].get().strip(),
-            "person": self.edit_vars["person"].get().strip(),
-            "gender": self.edit_vars["gender"].get().strip(),
-            "position": self.edit_vars["position"].get().strip(),
-            "city": self.edit_vars["city"].get().strip(),
-            "source": self.edit_vars["source"].get().strip(),
-            "image_url": self.edit_vars["image_url"].get().strip(),
-            "keywords": _parse_keywords(self.edit_vars["keywords"].get()),
-            "titi_asset_id": self.edit_vars["titi_asset_id"].get().strip(),
-            "titi_world_id": self.edit_vars["titi_world_id"].get().strip(),
-            "description": self.desc_text.get("1.0", tk.END).strip(),
-        }
         adaptive = self._collect_adaptive_profile_fields()
-        if adaptive:
-            payload["d2i_profile"] = adaptive
-            police_id_val = str(adaptive.get("police_id", "")).strip()
-            if police_id_val:
-                payload["police_id"] = police_id_val
-        return payload
+        return _svc_build_structured_payload(
+            title=self.edit_vars["title"].get(),
+            person=self.edit_vars["person"].get(),
+            gender=self.edit_vars["gender"].get(),
+            position=self.edit_vars["position"].get(),
+            city=self.edit_vars["city"].get(),
+            source=self.edit_vars["source"].get(),
+            image_url=self.edit_vars["image_url"].get(),
+            keywords_text=self.edit_vars["keywords"].get(),
+            titi_asset_id=self.edit_vars["titi_asset_id"].get(),
+            titi_world_id=self.edit_vars["titi_world_id"].get(),
+            description=self.desc_text.get("1.0", tk.END),
+            adaptive_profile=adaptive,
+        )
 
     def _save_structured(self) -> bool:
         if not self.current_path:

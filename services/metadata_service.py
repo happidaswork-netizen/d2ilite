@@ -154,3 +154,39 @@ def write_raw_with_pyexiv2(
                     pass
         raise
 
+
+def build_structured_payload(
+    *,
+    title: Any = "",
+    person: Any = "",
+    gender: Any = "",
+    position: Any = "",
+    city: Any = "",
+    source: Any = "",
+    image_url: Any = "",
+    keywords_text: Any = "",
+    titi_asset_id: Any = "",
+    titi_world_id: Any = "",
+    description: Any = "",
+    adaptive_profile: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    payload: Dict[str, Any] = {
+        "title": str(title or "").strip(),
+        "person": str(person or "").strip(),
+        "gender": str(gender or "").strip(),
+        "position": str(position or "").strip(),
+        "city": str(city or "").strip(),
+        "source": str(source or "").strip(),
+        "image_url": str(image_url or "").strip(),
+        "keywords": parse_keywords(str(keywords_text or "")),
+        "titi_asset_id": str(titi_asset_id or "").strip(),
+        "titi_world_id": str(titi_world_id or "").strip(),
+        "description": str(description or "").strip(),
+    }
+    adaptive = dict(adaptive_profile or {})
+    if adaptive:
+        payload["d2i_profile"] = adaptive
+        police_id_val = str(adaptive.get("police_id", "")).strip()
+        if police_id_val:
+            payload["police_id"] = police_id_val
+    return payload

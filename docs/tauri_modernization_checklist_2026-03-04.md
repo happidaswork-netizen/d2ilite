@@ -46,6 +46,7 @@
 
 1. `app.py` 仅保留界面和事件绑定。
 2. 关键流程有自动化回归测试（至少 20 张样本图）。
+3. 最低限度契约冒烟脚本可执行：`python scripts/phase0_contract_smoke.py`。
 
 ## Phase 1：现代前端骨架（1 周）
 
