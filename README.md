@@ -107,6 +107,7 @@ build_exe.bat
 - `docs/public_scraper_iteration_2026-02-27.md`
 - `docs/tauri_modernization_checklist_2026-03-04.md`（现代化技术路线与分阶段实施清单）
 - `docs/phase0_refactor_status_2026-03-04.md`（Phase 0 已落地重构清单与验证结果）
+- `docs/desktop_next_bootstrap_2026-03-04.md`（React/TS 新前端骨架与 Tauri 前置步骤）
 
 快速开始：
 
