@@ -41,11 +41,14 @@ from services.task_service import (
     derive_public_task_status,
     discover_public_task_roots,
     estimate_scraper_total_target,
+    is_scraper_row_completed,
+    is_scraper_row_image_downloaded,
     list_public_scraper_templates,
     load_public_scraper_template_states,
     public_scraper_template_state_path,
     public_scraper_templates_dir,
     retry_requires_crawl_phase,
+    scraper_progress_values_has_error,
     save_public_scraper_template_states,
     set_public_scraper_template_state,
     suggest_public_scraper_output_root,
@@ -256,6 +259,14 @@ def test_collect_scraper_progress_rows() -> None:
         _assert_equal(row.get("meta"), "√", "collect_row_meta")
 
 
+def test_scraper_row_status_helpers() -> None:
+    row = {"detail": "√", "image": "√", "meta": "√"}
+    _assert_true(is_scraper_row_completed(row), "row_completed_true")
+    _assert_true(is_scraper_row_image_downloaded(row), "row_image_downloaded_true")
+    values = ("1", "张三", "×", "√", "…", "详情缺失")
+    _assert_true(scraper_progress_values_has_error(values), "progress_values_error")
+
+
 def main() -> int:
     tests = [
         test_normalize_http_url,
@@ -273,6 +284,7 @@ def main() -> int:
         test_template_state_services,
         test_count_jsonl_rows_cache,
         test_collect_scraper_progress_rows,
+        test_scraper_row_status_helpers,
     ]
     for fn in tests:
         fn()

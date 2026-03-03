@@ -107,6 +107,8 @@ from services.task_service import (
     estimate_scraper_total_target as _svc_estimate_scraper_total_target,
     get_scraper_record_path as _svc_get_scraper_record_path,
     is_process_running as _svc_is_process_running,
+    is_scraper_row_completed as _svc_is_scraper_row_completed,
+    is_scraper_row_image_downloaded as _svc_is_scraper_row_image_downloaded,
     list_public_scraper_templates as _svc_list_public_scraper_templates,
     load_public_scraper_template_states as _svc_load_public_scraper_template_states,
     normalize_existing_path as _svc_normalize_existing_path,
@@ -116,6 +118,7 @@ from services.task_service import (
     public_scraper_pause_flag_path as _svc_public_scraper_pause_flag_path,
     read_json_file as _svc_read_json_file,
     read_scraper_backoff_state as _svc_read_scraper_backoff_state,
+    scraper_progress_values_has_error as _svc_scraper_progress_values_has_error,
     save_public_scraper_template_states as _svc_save_public_scraper_template_states,
     retry_requires_crawl_phase as _svc_retry_requires_crawl_phase,
     safe_positive_int as _svc_safe_positive_int,
@@ -1260,19 +1263,11 @@ class D2ILiteApp(BaseWindow):
 
     @staticmethod
     def _is_scraper_row_completed(row: Dict[str, Any]) -> bool:
-        if not isinstance(row, dict):
-            return False
-        ok_tokens = {"√", "✓"}
-        detail_ok = str(row.get("detail", "")).strip() in ok_tokens
-        image_ok = str(row.get("image", "")).strip() in ok_tokens
-        meta_ok = str(row.get("meta", "")).strip() in ok_tokens
-        return detail_ok and image_ok and meta_ok
+        return _svc_is_scraper_row_completed(row)
 
     @staticmethod
     def _is_scraper_row_image_downloaded(row: Dict[str, Any]) -> bool:
-        if not isinstance(row, dict):
-            return False
-        return str(row.get("image", "")).strip() in {"√", "✓"}
+        return _svc_is_scraper_row_image_downloaded(row)
 
     def _update_scraper_progress_group_titles(self, pending_count: int, done_count: int) -> None:
         pending_box = self._scraper_monitor_pending_box
@@ -1406,18 +1401,7 @@ class D2ILiteApp(BaseWindow):
 
     @staticmethod
     def _scraper_progress_values_has_error(values: Tuple[Any, ...]) -> bool:
-        if not isinstance(values, tuple) or len(values) < 6:
-            return False
-        detail = str(values[2] or "").strip()
-        image = str(values[3] or "").strip()
-        meta = str(values[4] or "").strip()
-        reason = str(values[5] or "").strip().lower()
-        if any(mark in {"×", "x", "X", "✗"} for mark in {detail, image, meta}):
-            return True
-        if not reason:
-            return False
-        hints = ("失败", "缺失", "错误", "异常", "待补充", "metadata_", "image_", "audit_missing")
-        return any(token in reason for token in hints)
+        return _svc_scraper_progress_values_has_error(values)
 
     def _collect_selected_scraper_detail_urls(self, table: Optional[ttk.Treeview] = None) -> List[str]:
         urls: List[str] = []

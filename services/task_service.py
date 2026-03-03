@@ -243,7 +243,7 @@ def retry_requires_crawl_phase(
             except Exception:
                 completed = False
         else:
-            completed = str(row.get("meta", "")).strip() in {"√", "✓"}
+            completed = is_scraper_row_completed(row)
         if completed:
             continue
         detail_status = str(row.get("detail", "")).strip()
@@ -285,6 +285,37 @@ def derive_public_task_status(
 
     runtime_state = str(task_entry.get("runtime_state", "")).strip()
     return runtime_state or status
+
+
+def is_scraper_row_completed(row: Dict[str, Any]) -> bool:
+    if not isinstance(row, dict):
+        return False
+    ok_tokens = {"√", "✓"}
+    detail_ok = str(row.get("detail", "")).strip() in ok_tokens
+    image_ok = str(row.get("image", "")).strip() in ok_tokens
+    meta_ok = str(row.get("meta", "")).strip() in ok_tokens
+    return detail_ok and image_ok and meta_ok
+
+
+def is_scraper_row_image_downloaded(row: Dict[str, Any]) -> bool:
+    if not isinstance(row, dict):
+        return False
+    return str(row.get("image", "")).strip() in {"√", "✓"}
+
+
+def scraper_progress_values_has_error(values: Tuple[Any, ...]) -> bool:
+    if not isinstance(values, tuple) or len(values) < 6:
+        return False
+    detail = str(values[2] or "").strip()
+    image = str(values[3] or "").strip()
+    meta = str(values[4] or "").strip()
+    reason = str(values[5] or "").strip().lower()
+    if any(mark in {"×", "x", "X", "✗"} for mark in {detail, image, meta}):
+        return True
+    if not reason:
+        return False
+    hints = ("失败", "缺失", "错误", "异常", "待补充", "metadata_", "image_", "audit_missing")
+    return any(token in reason for token in hints)
 
 
 def collect_scraper_progress_rows(
@@ -558,10 +589,12 @@ def collect_scraper_progress_rows(
             except Exception:
                 row_completed = False
         else:
-            row_completed = (
-                detail_status in ok_tokens
-                and image_status in ok_tokens
-                and meta_status in ok_tokens
+            row_completed = is_scraper_row_completed(
+                {
+                    "detail": detail_status,
+                    "image": image_status,
+                    "meta": meta_status,
+                }
             )
         if row_live_action and (not row_completed):
             if (row_live_action == "正在下载图片") and (image_status not in ok_tokens):
