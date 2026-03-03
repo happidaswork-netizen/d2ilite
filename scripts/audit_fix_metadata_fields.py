@@ -134,6 +134,30 @@ def _normalize_description(text: Any) -> str:
     if not lines:
         return ""
 
+    # Remove structured metadata lines from description body.
+    # These fields are already stored in dedicated metadata fields/UI sections.
+    meta_prefix_re = re.compile(
+        r"^(姓名|英文名|职位|单位|工作地点|邮箱|警号|出生日期|拍摄日期|拍摄时年龄|地区|发布时间|页面标题|详情页|列表页|原图链接|来源)\s*[：:]\s*(.*)$"
+    )
+    section_prefix_re = re.compile(r"^(简介|说明|小传)\s*[：:]\s*(.*)$")
+    filtered_lines: List[str] = []
+    for line in lines:
+        meta_m = meta_prefix_re.match(line)
+        if meta_m:
+            continue
+        sec_m = section_prefix_re.match(line)
+        if sec_m:
+            payload = sec_m.group(2).strip()
+            if payload:
+                filtered_lines.append(payload)
+            continue
+        if line in {"简介", "说明", "小传"}:
+            continue
+        filtered_lines.append(line)
+    lines = filtered_lines
+    if not lines:
+        return ""
+
     def _is_fragment_line(line: str) -> bool:
         token = str(line or "").strip()
         if not token:
@@ -151,11 +175,19 @@ def _normalize_description(text: Any) -> str:
         cur_t = str(cur or "").strip()
         if (not prev_t) or (not cur_t):
             return False
+        if re.fullmatch(r"\d{4}年", prev_t) and re.match(r"^\d{1,2}月", cur_t):
+            return True
+        if re.fullmatch(r".*\d{1,2}月", prev_t) and re.match(r"^\d{1,2}日", cur_t):
+            return True
+        if re.fullmatch(r".*\d{1,2}时", prev_t) and re.match(r"^\d{1,2}分", cur_t):
+            return True
         if _is_fragment_line(cur_t):
             return True
         if re.fullmatch(r"\d{2,4}年", cur_t):
             return True
         if prev_t.endswith(("自", "于", "从", "在", "至", "达", "约", "近", "共", "累计", "超过", "仅", "当日")):
+            return True
+        if (not re.search(r"[。！？!?；;]$", prev_t)) and (not re.match(r"^(该同志|从警|后经|经医院|经抢救|经救治|同年|同月|同日)", cur_t)):
             return True
         return False
 

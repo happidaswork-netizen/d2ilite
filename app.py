@@ -501,44 +501,41 @@ class D2ILiteApp(BaseWindow):
     def _build_ui(self):
         shell = ttk.Frame(self)
         shell.pack(fill=tk.BOTH, expand=True)
-        shell.columnconfigure(0, weight=1)
-        shell.rowconfigure(0, weight=1)
-
-        canvas = tk.Canvas(shell, highlightthickness=0, borderwidth=0)
-        vbar = ttk.Scrollbar(shell, orient=tk.VERTICAL, command=canvas.yview)
-        hbar = ttk.Scrollbar(shell, orient=tk.HORIZONTAL, command=canvas.xview)
-        canvas.configure(yscrollcommand=vbar.set, xscrollcommand=hbar.set)
-        canvas.grid(row=0, column=0, sticky="nsew")
-        vbar.grid(row=0, column=1, sticky="ns")
-        hbar.grid(row=1, column=0, sticky="ew")
-
-        content = ttk.Frame(canvas)
-        window_id = canvas.create_window((0, 0), window=content, anchor="nw")
-        self._main_scroll_canvas = canvas
-        self._main_scroll_host = content
-        self._main_scroll_window_id = int(window_id)
-
-        content.bind("<Configure>", lambda _e: self._schedule_main_scroll_refresh())
-        canvas.bind("<Configure>", self._on_main_canvas_configure)
+        content = ttk.Frame(shell)
+        content.pack(fill=tk.BOTH, expand=True)
+        # 2026-03: 主界面不再套全局 Canvas 滚动壳，避免拖拽分栏/窗口尺寸变化时频繁重排导致闪烁。
+        self._main_scroll_canvas = None
+        self._main_scroll_host = None
+        self._main_scroll_window_id = None
 
         top = ttk.Frame(content, padding=10)
         top.pack(fill=tk.X)
 
-        ttk.Label(top, text="路径:").pack(side=tk.LEFT)
+        top.columnconfigure(0, weight=1)
+
+        path_row = ttk.Frame(top)
+        path_row.grid(row=0, column=0, sticky="ew")
+        path_row.columnconfigure(1, weight=1)
+
+        action_row = ttk.Frame(top)
+        action_row.grid(row=1, column=0, sticky="ew", pady=(8, 0))
+
+        ttk.Label(path_row, text="路径:").grid(row=0, column=0, sticky=tk.W)
         self.path_var = tk.StringVar()
-        path_entry = ttk.Entry(top, textvariable=self.path_var, width=96)
-        path_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=6)
+        path_entry = ttk.Entry(path_row, textvariable=self.path_var, width=96)
+        path_entry.grid(row=0, column=1, sticky="ew", padx=6)
         path_entry.bind("<Return>", lambda _e: self._load_target(self.path_var.get().strip()))
 
-        ttk.Button(top, text="打开图片", command=self._browse_image).pack(side=tk.LEFT, padx=(6, 0))
-        ttk.Button(top, text="打开文件夹", command=self._browse_folder).pack(side=tk.LEFT, padx=6)
-        ttk.Button(top, text="上一张", command=self._goto_prev).pack(side=tk.LEFT, padx=(10, 0))
-        ttk.Button(top, text="下一张", command=self._goto_next).pack(side=tk.LEFT, padx=6)
-        ttk.Button(top, text="刷新", command=self._refresh_current).pack(side=tk.LEFT, padx=6)
-        ttk.Button(top, text="全局设置", command=self._open_global_settings_dialog).pack(side=tk.LEFT, padx=6)
-        ttk.Button(top, text="批量下载器(旧版)", command=self._open_batch_downloader).pack(side=tk.LEFT, padx=(6, 0))
+        ttk.Button(path_row, text="打开图片", command=self._browse_image).grid(row=0, column=2, sticky=tk.W, padx=(6, 0))
+        ttk.Button(path_row, text="打开文件夹", command=self._browse_folder).grid(row=0, column=3, sticky=tk.W, padx=6)
+
+        ttk.Button(action_row, text="上一张", command=self._goto_prev).pack(side=tk.LEFT)
+        ttk.Button(action_row, text="下一张", command=self._goto_next).pack(side=tk.LEFT, padx=6)
+        ttk.Button(action_row, text="刷新", command=self._refresh_current).pack(side=tk.LEFT, padx=6)
+        ttk.Button(action_row, text="全局设置", command=self._open_global_settings_dialog).pack(side=tk.LEFT, padx=6)
+        ttk.Button(action_row, text="批量下载器(旧版)", command=self._open_batch_downloader).pack(side=tk.LEFT, padx=(6, 0))
         ttk.Button(
-            top,
+            action_row,
             text="公共抓取面板",
             command=self._open_public_scraper_panel,
         ).pack(side=tk.LEFT, padx=(6, 0))
@@ -610,8 +607,6 @@ class D2ILiteApp(BaseWindow):
         self._build_snapshot_tab(self.snapshot_tab)
         self._build_advanced_tab(self.adv_tab)
         self._setup_drag_drop(path_entry, self.preview_label, self.right_notebook, self)
-        self._refresh_main_scrollregion()
-
         def _init_main_split() -> None:
             try:
                 total = int(main_pane.winfo_width() or 0)
@@ -660,6 +655,15 @@ class D2ILiteApp(BaseWindow):
     def _build_edit_tab(self, parent):
         wrap = ttk.Frame(parent, padding=10)
         wrap.pack(fill=tk.BOTH, expand=True)
+
+        btns = ttk.Frame(wrap)
+        btns.pack(fill=tk.X, pady=(0, 8))
+        ttk.Button(btns, text="AI自动补全", command=self._ai_autofill_current_metadata).pack(side=tk.LEFT)
+        ttk.Button(btns, text="AI自动小传", command=self._ai_generate_biography_for_current).pack(side=tk.LEFT, padx=6)
+        ttk.Button(btns, text="一键整理键内容", command=self._normalize_current_keys_content).pack(side=tk.LEFT)
+        ttk.Button(btns, text="自动填空(手动)", command=self._apply_autofill_suggestion).pack(side=tk.LEFT, padx=6)
+        ttk.Button(btns, text="保存并下一张", command=self._save_structured_and_next).pack(side=tk.RIGHT)
+        ttk.Button(btns, text="保存元数据", command=self._save_structured).pack(side=tk.RIGHT, padx=6)
 
         sections = ttk.Panedwindow(wrap, orient=tk.VERTICAL)
         sections.pack(fill=tk.BOTH, expand=True)
@@ -791,16 +795,6 @@ class D2ILiteApp(BaseWindow):
             text='值支持普通文本；如需结构化可填 JSON（例如 {"rank":"三级警督"}）',
             bootstyle="secondary",
         ).pack(fill=tk.X, pady=(6, 0))
-
-        btns = ttk.Frame(wrap)
-        btns.pack(fill=tk.X, pady=(10, 0))
-
-        ttk.Button(btns, text="保存元数据", command=self._save_structured).pack(side=tk.RIGHT)
-        ttk.Button(btns, text="保存并下一张", command=self._save_structured_and_next).pack(side=tk.RIGHT, padx=6)
-        ttk.Button(btns, text="AI自动补全", command=self._ai_autofill_current_metadata).pack(side=tk.LEFT)
-        ttk.Button(btns, text="AI自动小传", command=self._ai_generate_biography_for_current).pack(side=tk.LEFT, padx=6)
-        ttk.Button(btns, text="一键整理键内容", command=self._normalize_current_keys_content).pack(side=tk.LEFT)
-        ttk.Button(btns, text="自动填空(手动)", command=self._apply_autofill_suggestion).pack(side=tk.LEFT, padx=6)
 
         hint = "提示：结构化保存会更新 XMP + titi:meta，并保留未知字段。"
         ttk.Label(wrap, text=hint).pack(fill=tk.X, pady=(8, 0))

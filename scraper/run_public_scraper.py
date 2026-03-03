@@ -1297,58 +1297,29 @@ def write_metadata_for_queue_row(
     position_kw = build_position_keyword(position)
     source_host_kw = build_source_host_keyword(detail_url, source_list_url, image_url)
 
-    dynamic_detail_lines: List[str] = []
-    for key, value in extra_fields.items():
-        if key in {"title", "english_name", "location_text", "email_text"}:
-            continue
-        label = str(field_labels.get(key, "")).strip() or humanize_field_label(key)
-        if label:
-            dynamic_detail_lines.append(f"{label}：{value}")
+    # Keep description focused on biography text.
+    # Structured metadata (name/unit/urls/etc.) is already in fixed fields and d2i_profile.
+    desc_sections: List[str] = []
 
-    desc_parts: List[str] = []
-    if title:
-        desc_parts.append(f"姓名：{title}")
-    if english_name:
-        desc_parts.append(f"英文名：{english_name}")
-    if position:
-        desc_parts.append(f"职位：{position}")
-    if unit_text:
-        desc_parts.append(f"单位：{unit_text}")
-    if location_clean:
-        desc_parts.append(f"工作地点：{location_clean}")
-    elif location_text:
-        desc_parts.append(f"工作地点：{location_text}")
-    if email_clean:
-        desc_parts.append(f"邮箱：{email_clean}")
-    elif email_text:
-        desc_parts.append(email_text)
-    if police_id:
-        desc_parts.append(f"警号：{police_id}")
-    if birth_date_norm:
-        desc_parts.append(f"出生日期：{birth_date_norm}")
-    if photo_taken_at:
-        desc_parts.append(f"拍摄日期：{photo_taken_at}")
-    if age_at_photo:
-        desc_parts.append(f"拍摄时年龄：{age_at_photo}岁")
-    if dynamic_detail_lines:
-        desc_parts.extend(dynamic_detail_lines)
-    if detail_url:
-        desc_parts.append(f"详情页：{detail_url}")
-    if source_list_url:
-        desc_parts.append(f"列表页：{source_list_url}")
-    if image_url:
-        desc_parts.append(f"原图链接：{image_url}")
-    if mapped_description:
-        desc_parts.append("说明：")
-        desc_parts.append(mapped_description)
-    if summary:
-        desc_parts.append("简介：")
-        desc_parts.append(summary)
+    def _add_desc_section(text: str) -> None:
+        candidate = _normalize_biography_text(text)
+        if not candidate:
+            return
+        compact = re.sub(r"\s+", "", candidate)
+        for existing in desc_sections:
+            existing_compact = re.sub(r"\s+", "", existing)
+            if compact == existing_compact or compact in existing_compact or existing_compact in compact:
+                return
+        desc_sections.append(candidate)
+
+    _add_desc_section(summary)
+    _add_desc_section(mapped_description)
+    if not desc_sections:
+        _add_desc_section(full_content)
     append_bio_to_desc = bool(getattr(llm_enricher, "append_biography_to_description", True))
     if llm_biography_short and append_bio_to_desc:
-        desc_parts.append("小传：")
-        desc_parts.append(llm_biography_short)
-    rich_description = _normalize_multiline_text("\n".join(desc_parts))
+        _add_desc_section(llm_biography_short)
+    rich_description = _normalize_multiline_text("\n\n".join(desc_sections))
 
     keywords: List[str] = []
 
@@ -1997,6 +1968,68 @@ def _normalize_multiline_text(value: Any) -> str:
     merged = re.sub(r"(\d{1,2})\s*\n\s*日", r"\1日", merged)
     merged = re.sub(r"(\d{1,2})\s*\n\s*号", r"\1号", merged)
     merged = re.sub(r"(\d{1,2})\s*\n\s*次", r"\1次", merged)
+    merged = re.sub(r"(\d{4}年)\s*\n\s*(\d{1,2}月)", r"\1\2", merged)
+    merged = re.sub(r"(\d{1,2}月)\s*\n\s*(\d{1,2}日)", r"\1\2", merged)
+    merged = re.sub(r"(\d{1,2}时)\s*\n\s*(\d{1,2}分)", r"\1\2", merged)
+    merged = re.sub(r"(\d)\s*\n\s*([余名次人辆起])", r"\1\2", merged)
+    merged = re.sub(r"([，。；：,.;:])\s*\n\s*", r"\1", merged)
+    merged = re.sub(r"\n{3,}", "\n\n", merged)
+    return merged.strip()
+
+
+_DESC_META_PREFIX_RE = re.compile(
+    r"^(姓名|英文名|职位|单位|工作地点|邮箱|警号|出生日期|拍摄日期|拍摄时年龄|地区|发布时间|页面标题|详情页|列表页|原图链接|来源)\s*[：:]\s*(.*)$"
+)
+_DESC_SECTION_PREFIX_RE = re.compile(r"^(简介|说明|小传)\s*[：:]\s*(.*)$")
+
+
+def _normalize_biography_text(value: Any) -> str:
+    text = _normalize_multiline_text(value)
+    if not text:
+        return ""
+
+    raw_lines = [ln.strip() for ln in text.split("\n") if ln.strip()]
+    filtered: List[str] = []
+    for line in raw_lines:
+        meta_match = _DESC_META_PREFIX_RE.match(line)
+        if meta_match:
+            continue
+        sec_match = _DESC_SECTION_PREFIX_RE.match(line)
+        if sec_match:
+            payload = sec_match.group(2).strip()
+            if payload:
+                filtered.append(payload)
+            continue
+        if line in {"简介", "说明", "小传"}:
+            continue
+        filtered.append(line)
+
+    if not filtered:
+        return ""
+
+    def _starts_new_para(line: str) -> bool:
+        token = str(line or "").strip()
+        if not token:
+            return False
+        return bool(
+            re.match(
+                r"^(该同志|从警|后经|经医院|经抢救|经救治|同年|同月|同日)",
+                token,
+            )
+        )
+
+    paragraphs: List[str] = []
+    current: List[str] = []
+    for line in filtered:
+        if current and _starts_new_para(line):
+            paragraphs.append("".join(current).strip())
+            current = [line]
+        else:
+            current.append(line)
+    if current:
+        paragraphs.append("".join(current).strip())
+
+    merged = "\n".join([x for x in paragraphs if x])
     merged = re.sub(r"\n{3,}", "\n\n", merged)
     return merged.strip()
 

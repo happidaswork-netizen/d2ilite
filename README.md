@@ -105,6 +105,7 @@ build_exe.bat
 本次公共抓取迭代说明文档（用于后续开发接力）：
 
 - `docs/public_scraper_iteration_2026-02-27.md`
+- `docs/tauri_modernization_checklist_2026-03-04.md`（现代化技术路线与分阶段实施清单）
 
 快速开始：
 
