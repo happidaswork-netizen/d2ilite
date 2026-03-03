@@ -109,6 +109,7 @@ build_exe.bat
 - `docs/phase0_refactor_status_2026-03-04.md`（Phase 0 已落地重构清单与验证结果）
 - `docs/desktop_next_bootstrap_2026-03-04.md`（React/TS 新前端骨架与 Tauri 前置步骤）
 - `docs/desktop_bridge_contract_2026-03-04.md`（Python CLI 桥接协议）
+- `docs/cross_machine_handoff_2026-03-04.md`（跨电脑接力指南：当前进度、拉取方式、自检与启动）
 
 快速开始：
 

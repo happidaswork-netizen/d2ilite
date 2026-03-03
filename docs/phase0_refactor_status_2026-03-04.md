@@ -54,5 +54,5 @@
 ## 下一阶段建议（Phase 0 收尾）
 
 1. 新增 `services/task_orchestration_service.py`，承接抓取任务状态流转与汇总逻辑。
-2. 把 `_collect_scraper_progress_rows` 的纯计算部分进一步下沉。
-3. 为抓取任务状态增加第二套契约测试（JSONL 样本输入 -> UI 视图模型输出）。
+2. 把抓取进度树表选择联动、错误筛选、状态提示整理为 ViewModel 纯函数，继续减薄 `app.py`。
+3. 为任务管理窗口增加第二套契约测试（任务根目录样本 -> 列表行视图模型）。
