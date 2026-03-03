@@ -56,6 +56,16 @@ from metadata_manager import (
     suggest_metadata_fill,
     update_metadata_preserve_others,
 )
+from services.image_service import (
+    list_images_in_folder as _svc_list_images_in_folder,
+    read_image_basic_info as _svc_read_image_basic_info,
+)
+from services.metadata_service import (
+    normalize_http_url as _svc_normalize_http_url,
+    parse_keywords as _svc_parse_keywords,
+    read_raw_with_pyexiv2 as _svc_read_raw_with_pyexiv2,
+    write_raw_with_pyexiv2 as _svc_write_raw_with_pyexiv2,
+)
 
 try:
     from tkinterdnd2 import DND_FILES, TkinterDnD  # type: ignore
@@ -75,7 +85,6 @@ except Exception:
     HAS_PYEXIV2 = False
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff"}
-KEYWORD_SPLIT_RE = re.compile(r"[;,，、\n]+")
 BaseWindow = TkinterDnD.Tk if HAS_TK_DND else tk.Tk
 
 # 从 D2I 复用：常用真实浏览器 UA + 敏感域名策略。
@@ -147,130 +156,23 @@ def _format_value_full(value: Any) -> str:
 
 
 def _list_images_in_folder(folder: str) -> List[str]:
-    folder_abs = os.path.abspath(folder)
-    if not os.path.isdir(folder_abs):
-        return []
-    results: List[str] = []
-    for name in sorted(os.listdir(folder_abs), key=lambda x: x.lower()):
-        path = os.path.join(folder_abs, name)
-        ext = os.path.splitext(name)[1].lower()
-        if os.path.isfile(path) and ext in IMAGE_EXTS:
-            results.append(path)
-    return results
+    return _svc_list_images_in_folder(folder, IMAGE_EXTS)
 
 
 def _parse_keywords(text: str) -> List[str]:
-    raw = str(text or "").strip()
-    if not raw:
-        return []
-    values = [x.strip() for x in KEYWORD_SPLIT_RE.split(raw) if x.strip()]
-    uniq: List[str] = []
-    seen = set()
-    for item in values:
-        key = item.casefold()
-        if key in seen:
-            continue
-        seen.add(key)
-        uniq.append(item)
-    return clean_keywords(uniq)
+    return _svc_parse_keywords(text)
 
 
 def _normalize_http_url(text: Any) -> str:
-    s = str(text or "").replace("\x00", "").strip()
-    if not s:
-        return ""
-
-    m = re.search(r"https?://", s, flags=re.IGNORECASE)
-    if not m:
-        return s
-
-    tail = s[m.start():]
-    m2 = re.search(r"https?://", tail[len(m.group(0)):], flags=re.IGNORECASE)
-    if m2:
-        tail = tail[: len(m.group(0)) + m2.start()]
-
-    for sep in ('"', "'", "<", ">", " ", "\r", "\n", "\t"):
-        idx = tail.find(sep)
-        if idx >= 0:
-            tail = tail[:idx]
-            break
-
-    return tail.strip().rstrip("，,。.;；）)]}>")
+    return _svc_normalize_http_url(text)
 
 
 def _read_image_basic_info(filepath: str) -> Dict[str, Any]:
-    info: Dict[str, Any] = {}
-    try:
-        with Image.open(filepath) as img:
-            info["format"] = img.format
-            info["mode"] = img.mode
-            info["width"] = int(img.size[0])
-            info["height"] = int(img.size[1])
-            if filepath.lower().endswith(".png") and isinstance(getattr(img, "info", None), dict):
-                png_text: Dict[str, Any] = {}
-                for k, v in img.info.items():
-                    if isinstance(v, bytes):
-                        png_text[str(k)] = v.decode("utf-8", errors="ignore")
-                    else:
-                        png_text[str(k)] = v
-                info["png_text"] = png_text
-    except Exception:
-        pass
-    return info
+    return _svc_read_image_basic_info(filepath)
 
 
 def _read_raw_with_pyexiv2(filepath: str) -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any]]:
-    if not HAS_PYEXIV2:
-        return {}, {}, {}
-
-    def _read(path: str) -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any]]:
-        with pyexiv2.Image(path) as img:
-            xmp = img.read_xmp() or {}
-            exif = img.read_exif() or {}
-            try:
-                iptc = img.read_iptc() or {}
-            except Exception:
-                iptc = {}
-            return dict(xmp), dict(exif), dict(iptc)
-
-    def _should_force_temp(path: str) -> bool:
-        p = str(path or "").strip()
-        if not p:
-            return False
-        # pyexiv2 on Windows may hang or fail on non-ASCII/long/UNC paths; prefer a temp ASCII copy.
-        if p.startswith("\\\\"):
-            return True
-        try:
-            p.encode("ascii")
-        except UnicodeEncodeError:
-            return True
-        return len(p) >= 240
-
-    try:
-        if _should_force_temp(filepath):
-            raise RuntimeError("force_temp")
-        return _read(filepath)
-    except Exception as e:
-        err = str(e)
-        if (
-            ("Illegal byte sequence" in err)
-            or ("errno = 42" in err)
-            or ("errno = 2" in err)
-            or ("No such file or directory" in err)
-            or ("Failed to open the data source" in err and os.path.exists(filepath))
-            or (err == "force_temp")
-        ):
-            fd, tmp_path = tempfile.mkstemp(suffix=os.path.splitext(filepath)[1])
-            os.close(fd)
-            try:
-                shutil.copy2(filepath, tmp_path)
-                return _read(tmp_path)
-            finally:
-                try:
-                    os.remove(tmp_path)
-                except Exception:
-                    pass
-        raise
+    return _svc_read_raw_with_pyexiv2(filepath)
 
 
 def _write_raw_with_pyexiv2(
@@ -280,36 +182,12 @@ def _write_raw_with_pyexiv2(
     exif_data: Optional[Dict[str, Any]] = None,
     iptc_data: Optional[Dict[str, Any]] = None,
 ) -> None:
-    if not HAS_PYEXIV2:
-        raise RuntimeError("pyexiv2 未安装，无法执行高级写入")
-
-    def _write(path: str):
-        with pyexiv2.Image(path) as img:
-            if xmp_data is not None:
-                img.modify_xmp(xmp_data)
-            if exif_data is not None:
-                img.modify_exif(exif_data)
-            if iptc_data is not None:
-                img.modify_iptc(iptc_data)
-
-    try:
-        _write(filepath)
-    except Exception as e:
-        err = str(e)
-        if ("Illegal byte sequence" in err) or ("errno = 42" in err):
-            fd, tmp_path = tempfile.mkstemp(suffix=os.path.splitext(filepath)[1])
-            os.close(fd)
-            try:
-                shutil.copy2(filepath, tmp_path)
-                _write(tmp_path)
-                shutil.copy2(tmp_path, filepath)
-                return
-            finally:
-                try:
-                    os.remove(tmp_path)
-                except Exception:
-                    pass
-        raise
+    _svc_write_raw_with_pyexiv2(
+        filepath,
+        xmp_data=xmp_data,
+        exif_data=exif_data,
+        iptc_data=iptc_data,
+    )
 
 
 class KeyValueViewer(ttk.Frame):
