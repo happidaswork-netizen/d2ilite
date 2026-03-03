@@ -287,6 +287,78 @@ def derive_public_task_status(
     return runtime_state or status
 
 
+def summarize_public_task(
+    output_root: Any,
+    *,
+    count_jsonl_rows_fn: Callable[[str], int],
+    entry: Optional[Dict[str, Any]] = None,
+    current_active_root: str = "",
+) -> Dict[str, Any]:
+    root = normalize_public_task_root(output_root)
+    list_rows = safe_positive_int(count_jsonl_rows_fn(os.path.join(root, "raw", "list_records.jsonl")))
+    profile_rows = safe_positive_int(count_jsonl_rows_fn(os.path.join(root, "raw", "profiles.jsonl")))
+    image_rows = safe_positive_int(count_jsonl_rows_fn(os.path.join(root, "downloads", "image_downloads.jsonl")))
+    review_rows = safe_positive_int(count_jsonl_rows_fn(os.path.join(root, "raw", "review_queue.jsonl")))
+    failure_rows = safe_positive_int(count_jsonl_rows_fn(os.path.join(root, "raw", "failures.jsonl")))
+    metadata_ok, metadata_failed = count_latest_metadata_status(root)
+    pending_rows = max(0, int(profile_rows) - int(metadata_ok))
+
+    status = derive_public_task_status(
+        root=root,
+        entry=entry if isinstance(entry, dict) else None,
+        current_active_root=normalize_public_task_root(current_active_root),
+        pause_flag_exists=os.path.exists(public_scraper_pause_flag_path(root)),
+        backoff_state=read_scraper_backoff_state(root),
+        profile_rows=profile_rows,
+        pending_rows=pending_rows,
+        metadata_failed=metadata_failed,
+        activity_total=(list_rows + profile_rows + image_rows + review_rows + failure_rows + metadata_ok + metadata_failed),
+    )
+
+    mt_candidates: List[float] = []
+    for candidate in [
+        os.path.join(root, "state", "runtime_config.json"),
+        os.path.join(root, "crawl_record.json"),
+        os.path.join(root, "reports", "reconcile_report.json"),
+        os.path.join(root, "reports", "gui_public_scraper.log"),
+    ]:
+        try:
+            if os.path.exists(candidate):
+                mt_candidates.append(os.path.getmtime(candidate))
+        except Exception:
+            continue
+    if mt_candidates:
+        updated_at = datetime.fromtimestamp(max(mt_candidates)).strftime("%Y-%m-%d %H:%M:%S")
+    else:
+        updated_at = "-"
+
+    return {
+        "root": root,
+        "task": os.path.basename(root) or root,
+        "status": status,
+        "profiles": profile_rows,
+        "images": image_rows,
+        "metadata_ok": metadata_ok,
+        "pending": pending_rows,
+        "review": review_rows,
+        "failures": failure_rows,
+        "updated_at": updated_at,
+    }
+
+
+def sort_public_task_summaries(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    data = list(rows or [])
+    data.sort(
+        key=lambda item: (
+            0 if str(item.get("status", "")).startswith("运行中") else 1,
+            0 if "暂停" in str(item.get("status", "")) else 1,
+            str(item.get("updated_at", "")),
+        ),
+        reverse=True,
+    )
+    return data
+
+
 def is_scraper_row_completed(row: Dict[str, Any]) -> bool:
     if not isinstance(row, dict):
         return False

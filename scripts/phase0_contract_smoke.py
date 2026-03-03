@@ -51,6 +51,8 @@ from services.task_service import (
     scraper_progress_values_has_error,
     save_public_scraper_template_states,
     set_public_scraper_template_state,
+    sort_public_task_summaries,
+    summarize_public_task,
     suggest_public_scraper_output_root,
 )
 
@@ -267,6 +269,29 @@ def test_scraper_row_status_helpers() -> None:
     _assert_true(scraper_progress_values_has_error(values), "progress_values_error")
 
 
+def test_public_task_summary_sort() -> None:
+    with tempfile.TemporaryDirectory() as td:
+        os.makedirs(os.path.join(td, "raw"), exist_ok=True)
+        os.makedirs(os.path.join(td, "downloads"), exist_ok=True)
+        os.makedirs(os.path.join(td, "state"), exist_ok=True)
+        Path(os.path.join(td, "state", "runtime_config.json")).write_text("{}", encoding="utf-8")
+        Path(os.path.join(td, "raw", "profiles.jsonl")).write_text("{}\n{}\n", encoding="utf-8")
+        Path(os.path.join(td, "raw", "metadata_write_results.jsonl")).write_text(
+            '{"detail_url":"u1","status":"ok"}\n',
+            encoding="utf-8",
+        )
+        summary = summarize_public_task(td, count_jsonl_rows_fn=lambda p: count_jsonl_rows(p, {}))
+        _assert_equal(summary.get("profiles"), 2, "task_summary_profiles")
+        _assert_equal(summary.get("metadata_ok"), 1, "task_summary_metadata_ok")
+        rows = sort_public_task_summaries(
+            [
+                {"status": "未完成", "updated_at": "2025-01-01 00:00:00"},
+                {"status": "运行中", "updated_at": "2024-01-01 00:00:00"},
+            ]
+        )
+        _assert_equal(rows[0]["status"], "未完成", "task_summary_sort_current_behavior")
+
+
 def main() -> int:
     tests = [
         test_normalize_http_url,
@@ -285,6 +310,7 @@ def main() -> int:
         test_count_jsonl_rows_cache,
         test_collect_scraper_progress_rows,
         test_scraper_row_status_helpers,
+        test_public_task_summary_sort,
     ]
     for fn in tests:
         fn()

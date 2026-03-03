@@ -102,7 +102,6 @@ from services.task_service import (
     count_jsonl_rows as _svc_count_jsonl_rows,
     count_latest_metadata_status as _svc_count_latest_metadata_status,
     default_public_tasks_root as _svc_default_public_tasks_root,
-    derive_public_task_status as _svc_derive_public_task_status,
     discover_public_task_roots as _svc_discover_public_task_roots,
     estimate_scraper_total_target as _svc_estimate_scraper_total_target,
     get_scraper_record_path as _svc_get_scraper_record_path,
@@ -120,9 +119,11 @@ from services.task_service import (
     read_scraper_backoff_state as _svc_read_scraper_backoff_state,
     scraper_progress_values_has_error as _svc_scraper_progress_values_has_error,
     save_public_scraper_template_states as _svc_save_public_scraper_template_states,
+    sort_public_task_summaries as _svc_sort_public_task_summaries,
     retry_requires_crawl_phase as _svc_retry_requires_crawl_phase,
     safe_positive_int as _svc_safe_positive_int,
     set_public_scraper_template_state as _svc_set_public_scraper_template_state,
+    summarize_public_task as _svc_summarize_public_task,
     suggest_public_scraper_output_root as _svc_suggest_public_scraper_output_root,
 )
 from services.viewer_load_service import (
@@ -1920,59 +1921,13 @@ class D2ILiteApp(BaseWindow):
         return _svc_count_latest_metadata_status(output_root)
 
     def _summarize_public_task(self, output_root: str) -> Dict[str, Any]:
-        root = os.path.abspath(str(output_root or "").strip())
-        list_rows = self._count_jsonl_rows(os.path.join(root, "raw", "list_records.jsonl"))
-        profile_rows = self._count_jsonl_rows(os.path.join(root, "raw", "profiles.jsonl"))
-        image_rows = self._count_jsonl_rows(os.path.join(root, "downloads", "image_downloads.jsonl"))
-        review_rows = self._count_jsonl_rows(os.path.join(root, "raw", "review_queue.jsonl"))
-        failure_rows = self._count_jsonl_rows(os.path.join(root, "raw", "failures.jsonl"))
-        metadata_ok, metadata_failed = self._count_latest_metadata_status(root)
-        pending_rows = max(0, int(profile_rows) - int(metadata_ok))
-
-        entry = self._public_scraper_tasks.get(root)
-        current_active_root = self._normalize_public_task_root(self._public_scraper_active_task_root or self._public_scraper_output_root)
-        backoff = self._read_scraper_backoff_state(root)
-        status = _svc_derive_public_task_status(
-            root=root,
-            entry=entry if isinstance(entry, dict) else None,
-            current_active_root=current_active_root,
-            pause_flag_exists=os.path.exists(self._public_scraper_pause_flag_path(root)),
-            backoff_state=backoff,
-            profile_rows=profile_rows,
-            pending_rows=pending_rows,
-            metadata_failed=metadata_failed,
-            activity_total=(list_rows + profile_rows + image_rows + review_rows + failure_rows + metadata_ok + metadata_failed),
+        root = self._normalize_public_task_root(output_root)
+        return _svc_summarize_public_task(
+            root,
+            count_jsonl_rows_fn=self._count_jsonl_rows,
+            entry=self._public_scraper_tasks.get(root),
+            current_active_root=self._public_scraper_active_task_root or self._public_scraper_output_root,
         )
-
-        mt_candidates: List[float] = []
-        for candidate in [
-            os.path.join(root, "state", "runtime_config.json"),
-            os.path.join(root, "crawl_record.json"),
-            os.path.join(root, "reports", "reconcile_report.json"),
-            os.path.join(root, "reports", "gui_public_scraper.log"),
-        ]:
-            try:
-                if os.path.exists(candidate):
-                    mt_candidates.append(os.path.getmtime(candidate))
-            except Exception:
-                continue
-        if mt_candidates:
-            updated_at = datetime.fromtimestamp(max(mt_candidates)).strftime("%Y-%m-%d %H:%M:%S")
-        else:
-            updated_at = "-"
-
-        return {
-            "root": root,
-            "task": os.path.basename(root) or root,
-            "status": status,
-            "profiles": profile_rows,
-            "images": image_rows,
-            "metadata_ok": metadata_ok,
-            "pending": pending_rows,
-            "review": review_rows,
-            "failures": failure_rows,
-            "updated_at": updated_at,
-        }
 
     def _on_public_task_manager_close(self):
         win = self._public_task_manager_window
@@ -1995,14 +1950,7 @@ class D2ILiteApp(BaseWindow):
         base_root = str(base_var.get() or "").strip()
         roots = self._discover_public_task_roots(base_root)
         rows = [self._summarize_public_task(root) for root in roots]
-        rows.sort(
-            key=lambda item: (
-                0 if str(item.get("status", "")).startswith("运行中") else 1,
-                0 if "暂停" in str(item.get("status", "")) else 1,
-                str(item.get("updated_at", "")),
-            ),
-            reverse=True,
-        )
+        rows = _svc_sort_public_task_summaries(rows)
         try:
             tree.delete(*tree.get_children())
         except Exception:
