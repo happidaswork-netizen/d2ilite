@@ -406,7 +406,7 @@ class D2ILiteApp(BaseWindow):
         self.style = ttk.Style("flatly")
         self.title("D2I Lite - 本地看图与元数据")
         self.geometry("1580x940")
-        self.minsize(1200, 760)
+        self.minsize(980, 620)
 
         self._app_settings: Dict[str, Any] = self._load_app_settings()
         self._global_settings_window: Optional[tk.Toplevel] = None
@@ -482,6 +482,14 @@ class D2ILiteApp(BaseWindow):
         self._scraper_row_opening: bool = False
         self._scraper_task_tree: Optional[ttk.Treeview] = None
         self._scraper_task_status_var: Optional[tk.StringVar] = None
+        self._edit_llm_busy: bool = False
+        self._llm_progress_var: Optional[tk.StringVar] = None
+        self._llm_progress_bar: Optional[Any] = None
+        self._llm_progress_reset_after: Optional[str] = None
+        self._main_scroll_canvas: Optional[tk.Canvas] = None
+        self._main_scroll_host: Optional[ttk.Frame] = None
+        self._main_scroll_window_id: Optional[int] = None
+        self._main_scroll_refresh_after: Optional[str] = None
 
         self._build_ui()
         self._setup_edit_shortcuts_and_menu()
@@ -491,7 +499,29 @@ class D2ILiteApp(BaseWindow):
             self._load_target(start_target)
 
     def _build_ui(self):
-        top = ttk.Frame(self, padding=10)
+        shell = ttk.Frame(self)
+        shell.pack(fill=tk.BOTH, expand=True)
+        shell.columnconfigure(0, weight=1)
+        shell.rowconfigure(0, weight=1)
+
+        canvas = tk.Canvas(shell, highlightthickness=0, borderwidth=0)
+        vbar = ttk.Scrollbar(shell, orient=tk.VERTICAL, command=canvas.yview)
+        hbar = ttk.Scrollbar(shell, orient=tk.HORIZONTAL, command=canvas.xview)
+        canvas.configure(yscrollcommand=vbar.set, xscrollcommand=hbar.set)
+        canvas.grid(row=0, column=0, sticky="nsew")
+        vbar.grid(row=0, column=1, sticky="ns")
+        hbar.grid(row=1, column=0, sticky="ew")
+
+        content = ttk.Frame(canvas)
+        window_id = canvas.create_window((0, 0), window=content, anchor="nw")
+        self._main_scroll_canvas = canvas
+        self._main_scroll_host = content
+        self._main_scroll_window_id = int(window_id)
+
+        content.bind("<Configure>", lambda _e: self._schedule_main_scroll_refresh())
+        canvas.bind("<Configure>", self._on_main_canvas_configure)
+
+        top = ttk.Frame(content, padding=10)
         top.pack(fill=tk.X)
 
         ttk.Label(top, text="路径:").pack(side=tk.LEFT)
@@ -513,7 +543,7 @@ class D2ILiteApp(BaseWindow):
             command=self._open_public_scraper_panel,
         ).pack(side=tk.LEFT, padx=(6, 0))
 
-        info_bar = ttk.Frame(self, padding=(10, 0, 10, 8))
+        info_bar = ttk.Frame(content, padding=(10, 0, 10, 8))
         info_bar.pack(fill=tk.X)
 
         self.position_var = tk.StringVar(value="0 / 0")
@@ -525,10 +555,15 @@ class D2ILiteApp(BaseWindow):
         self.status_var = tk.StringVar(value="就绪")
         ttk.Label(info_bar, textvariable=self.status_var).pack(side=tk.LEFT)
 
+        self._llm_progress_var = tk.StringVar(value="AI: 空闲")
+        ttk.Label(info_bar, textvariable=self._llm_progress_var, bootstyle="secondary").pack(side=tk.RIGHT, padx=(8, 0))
+        self._llm_progress_bar = ttk.Progressbar(info_bar, mode="indeterminate", length=100)
+        self._llm_progress_bar.pack(side=tk.RIGHT, padx=(10, 0))
+
         dnd_text = "拖拽打开: 已启用" if HAS_TK_DND else "拖拽打开: 未启用（安装 tkinterdnd2）"
         ttk.Label(info_bar, text=dnd_text).pack(side=tk.RIGHT)
 
-        main_pane = ttk.Panedwindow(self, orient=tk.HORIZONTAL)
+        main_pane = ttk.Panedwindow(content, orient=tk.HORIZONTAL)
         main_pane.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
 
         left = ttk.Labelframe(main_pane, text="图片预览", padding=8)
@@ -575,13 +610,69 @@ class D2ILiteApp(BaseWindow):
         self._build_snapshot_tab(self.snapshot_tab)
         self._build_advanced_tab(self.adv_tab)
         self._setup_drag_drop(path_entry, self.preview_label, self.right_notebook, self)
+        self._refresh_main_scrollregion()
+
+        def _init_main_split() -> None:
+            try:
+                total = int(main_pane.winfo_width() or 0)
+                if total > 900:
+                    main_pane.sashpos(0, int(total * 0.42))
+            except Exception:
+                pass
+
+        self.after(120, _init_main_split)
+
+    def _schedule_main_scroll_refresh(self, delay_ms: int = 36) -> None:
+        if self._main_scroll_refresh_after:
+            try:
+                self.after_cancel(self._main_scroll_refresh_after)
+            except Exception:
+                pass
+        self._main_scroll_refresh_after = self.after(max(1, int(delay_ms)), self._refresh_main_scrollregion)
+
+    def _refresh_main_scrollregion(self):
+        self._main_scroll_refresh_after = None
+        canvas = self._main_scroll_canvas
+        if canvas is None:
+            return
+        try:
+            bbox = canvas.bbox("all")
+            if bbox:
+                canvas.configure(scrollregion=bbox)
+        except Exception:
+            pass
+
+    def _on_main_canvas_configure(self, event):
+        canvas = self._main_scroll_canvas
+        host = self._main_scroll_host
+        window_id = self._main_scroll_window_id
+        if canvas is None or host is None or window_id is None:
+            return
+        try:
+            req_width = int(host.winfo_reqwidth() or 0)
+            view_width = int(getattr(event, "width", 0) or 0)
+            target_width = view_width if req_width <= view_width else req_width
+            canvas.itemconfigure(window_id, width=target_width)
+        except Exception:
+            pass
+        self._schedule_main_scroll_refresh()
 
     def _build_edit_tab(self, parent):
         wrap = ttk.Frame(parent, padding=10)
         wrap.pack(fill=tk.BOTH, expand=True)
 
-        form = ttk.Frame(wrap)
-        form.pack(fill=tk.X)
+        sections = ttk.Panedwindow(wrap, orient=tk.VERTICAL)
+        sections.pack(fill=tk.BOTH, expand=True)
+
+        basic_box = ttk.Labelframe(sections, text="基础字段", padding=8)
+        desc_box = ttk.Labelframe(sections, text="描述", padding=6)
+        extra_box = ttk.Labelframe(sections, text="扩展字段（自适应）", padding=6)
+        sections.add(basic_box, weight=3)
+        sections.add(desc_box, weight=4)
+        sections.add(extra_box, weight=5)
+
+        form = ttk.Frame(basic_box)
+        form.pack(fill=tk.BOTH, expand=True)
 
         self.edit_vars: Dict[str, tk.StringVar] = {
             "title": tk.StringVar(),
@@ -638,18 +729,12 @@ class D2ILiteApp(BaseWindow):
                 ttk.Button(tail, text="直连修复", command=self._repair_from_image_url).pack(side=tk.LEFT, padx=(4, 0))
 
         form.columnconfigure(1, weight=1)
-
-        desc_box = ttk.Labelframe(wrap, text="描述", padding=6)
-        desc_box.pack(fill=tk.BOTH, expand=True, pady=(10, 0))
-
-        self.desc_text = tk.Text(desc_box, height=8, wrap=tk.WORD)
+        self.desc_text = tk.Text(desc_box, wrap=tk.WORD)
         desc_scroll = ttk.Scrollbar(desc_box, orient=tk.VERTICAL, command=self.desc_text.yview)
         self.desc_text.configure(yscrollcommand=desc_scroll.set)
         self.desc_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         desc_scroll.pack(side=tk.RIGHT, fill=tk.Y)
 
-        extra_box = ttk.Labelframe(wrap, text="扩展字段（自适应）", padding=6)
-        extra_box.pack(fill=tk.BOTH, expand=False, pady=(8, 0))
         self.extra_profile_rows: List[Dict[str, Any]] = []
         self.extra_profile_rows_frame: Optional[Any] = None
         self.extra_profile_rows_canvas: Optional[Any] = None
@@ -681,7 +766,7 @@ class D2ILiteApp(BaseWindow):
 
         rows_wrap = ttk.Frame(extra_box)
         rows_wrap.pack(fill=tk.BOTH, expand=True, pady=(4, 0))
-        rows_canvas = tk.Canvas(rows_wrap, highlightthickness=0, borderwidth=0, height=150)
+        rows_canvas = tk.Canvas(rows_wrap, highlightthickness=0, borderwidth=0)
         rows_scroll = ttk.Scrollbar(rows_wrap, orient=tk.VERTICAL, command=rows_canvas.yview)
         rows_canvas.configure(yscrollcommand=rows_scroll.set)
         rows_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
@@ -712,10 +797,24 @@ class D2ILiteApp(BaseWindow):
 
         ttk.Button(btns, text="保存元数据", command=self._save_structured).pack(side=tk.RIGHT)
         ttk.Button(btns, text="保存并下一张", command=self._save_structured_and_next).pack(side=tk.RIGHT, padx=6)
+        ttk.Button(btns, text="AI自动补全", command=self._ai_autofill_current_metadata).pack(side=tk.LEFT)
+        ttk.Button(btns, text="AI自动小传", command=self._ai_generate_biography_for_current).pack(side=tk.LEFT, padx=6)
+        ttk.Button(btns, text="一键整理键内容", command=self._normalize_current_keys_content).pack(side=tk.LEFT)
         ttk.Button(btns, text="自动填空(手动)", command=self._apply_autofill_suggestion).pack(side=tk.LEFT, padx=6)
 
         hint = "提示：结构化保存会更新 XMP + titi:meta，并保留未知字段。"
         ttk.Label(wrap, text=hint).pack(fill=tk.X, pady=(8, 0))
+
+        def _init_edit_split() -> None:
+            try:
+                total = int(sections.winfo_height() or 0)
+                if total > 420:
+                    sections.sashpos(0, int(total * 0.33))
+                    sections.sashpos(1, int(total * 0.62))
+            except Exception:
+                pass
+
+        self.after(120, _init_edit_split)
 
     def _build_snapshot_tab(self, parent):
         wrap = ttk.Frame(parent, padding=10)
@@ -2945,6 +3044,37 @@ class D2ILiteApp(BaseWindow):
     def _set_status(self, text: str):
         self.status_var.set(str(text or ""))
         self.update_idletasks()
+
+    def _set_llm_progress(self, running: bool, text: str = "") -> None:
+        label = self._llm_progress_var
+        bar = self._llm_progress_bar
+        if label is not None:
+            if text:
+                label.set(str(text))
+            else:
+                label.set("AI: 运行中" if running else "AI: 空闲")
+        if bar is not None:
+            try:
+                if running:
+                    bar.start(10)
+                else:
+                    bar.stop()
+            except Exception:
+                pass
+
+    def _schedule_llm_progress_idle_reset(self, delay_ms: int = 1800) -> None:
+        if self._llm_progress_reset_after:
+            try:
+                self.after_cancel(self._llm_progress_reset_after)
+            except Exception:
+                pass
+
+        def _reset() -> None:
+            self._llm_progress_reset_after = None
+            if not self._edit_llm_busy:
+                self._set_llm_progress(False, "AI: 空闲")
+
+        self._llm_progress_reset_after = self.after(max(100, int(delay_ms)), _reset)
 
     def _mark_all_tab_data_dirty(self):
         self._snapshot_dirty = True
@@ -7125,6 +7255,545 @@ class D2ILiteApp(BaseWindow):
 
         self._set_status("自动填空完成（仅填空，不覆盖现有值）")
         messagebox.showinfo("完成", f"已填充字段: {', '.join(applied)}")
+
+    @staticmethod
+    def _normalize_single_line_text(value: Any) -> str:
+        raw = str(value or "").replace("\x00", " ").strip()
+        return re.sub(r"\s+", " ", raw).strip()
+
+    @classmethod
+    def _normalize_multiline_editor_text(cls, value: Any) -> str:
+        text = str(value or "").replace("\r\n", "\n").replace("\r", "\n")
+        if not text:
+            return ""
+        lines: List[str] = []
+        prev_blank = False
+        for raw_line in text.split("\n"):
+            line = cls._normalize_single_line_text(raw_line)
+            if line:
+                lines.append(line)
+                prev_blank = False
+            else:
+                if lines and (not prev_blank):
+                    lines.append("")
+                prev_blank = True
+        while lines and (not lines[-1]):
+            lines.pop()
+        return "\n".join(lines).strip()
+
+    @classmethod
+    def _normalize_gender_text(cls, value: Any) -> str:
+        raw = cls._normalize_single_line_text(value)
+        if not raw:
+            return ""
+        lowered = raw.lower()
+        if lowered in {"male", "m", "man", "男性"} or raw == "男":
+            return "男"
+        if lowered in {"female", "f", "woman", "女性"} or raw == "女":
+            return "女"
+        return raw
+
+    @classmethod
+    def _normalize_profile_for_editor(cls, value: Any) -> Any:
+        if isinstance(value, dict):
+            out: Dict[str, Any] = {}
+            for raw_k, raw_v in value.items():
+                key = cls._normalize_single_line_text(raw_k)
+                if not key:
+                    continue
+                cleaned = cls._normalize_profile_for_editor(raw_v)
+                if cleaned in (None, "", [], {}):
+                    continue
+                out[key] = cleaned
+            return out
+        if isinstance(value, list):
+            out_list: List[Any] = []
+            for item in value:
+                cleaned = cls._normalize_profile_for_editor(item)
+                if cleaned in (None, "", [], {}):
+                    continue
+                out_list.append(cleaned)
+            return out_list
+        if isinstance(value, str):
+            text = cls._normalize_multiline_editor_text(value)
+            if (not text) or ("\n" in text):
+                return text
+            if ("http://" in text.lower()) or ("https://" in text.lower()):
+                normalized_url = _normalize_http_url(text)
+                if normalized_url.lower().startswith(("http://", "https://")):
+                    return normalized_url
+            return text
+        return value
+
+    @staticmethod
+    def _extract_json_payload_from_llm(raw_text: Any) -> Dict[str, Any]:
+        text = str(raw_text or "").strip()
+        if not text:
+            return {}
+        try:
+            parsed = json.loads(text)
+            return parsed if isinstance(parsed, dict) else {}
+        except Exception:
+            pass
+
+        fenced = re.findall(r"```(?:json)?\s*(\{[\s\S]*?\})\s*```", text, flags=re.IGNORECASE)
+        for block in fenced:
+            try:
+                parsed = json.loads(block)
+                if isinstance(parsed, dict):
+                    return parsed
+            except Exception:
+                continue
+
+        left = text.find("{")
+        right = text.rfind("}")
+        if left >= 0 and right > left:
+            snippet = text[left : right + 1]
+            try:
+                parsed = json.loads(snippet)
+                return parsed if isinstance(parsed, dict) else {}
+            except Exception:
+                return {}
+        return {}
+
+    def _collect_editor_llm_config(self) -> Dict[str, Any]:
+        if (not HAS_LLM_CLIENT) or (OpenAICompatibleClient is None):
+            raise RuntimeError("当前环境缺少 LLM 客户端依赖（requests）。")
+        llm_cfg = self._get_global_llm_settings()
+        api_base = str(llm_cfg.get("api_base", "")).strip()
+        if callable(normalize_api_base):
+            try:
+                api_base = normalize_api_base(api_base)
+            except Exception:
+                api_base = api_base.rstrip("/")
+        else:
+            api_base = api_base.rstrip("/")
+        model = str(llm_cfg.get("model", "")).strip()
+        api_key = str(llm_cfg.get("api_key", "")).strip()
+        try:
+            timeout_seconds = max(5, int(llm_cfg.get("timeout_seconds", 45)))
+        except Exception:
+            timeout_seconds = 45
+        try:
+            max_retries = max(1, int(llm_cfg.get("max_retries", 2)))
+        except Exception:
+            max_retries = 2
+        try:
+            temperature = float(llm_cfg.get("temperature", 0.1))
+        except Exception:
+            temperature = 0.1
+
+        if not api_base:
+            raise RuntimeError("未配置 API Base。请先在【全局设置】里填写。")
+        if not model:
+            raise RuntimeError("未配置模型名称。请先在【全局设置】里填写 Model。")
+        return {
+            "api_base": api_base,
+            "api_key": api_key,
+            "model": model,
+            "timeout_seconds": timeout_seconds,
+            "max_retries": max_retries,
+            "temperature": temperature,
+        }
+
+    def _run_edit_llm_job(
+        self,
+        *,
+        running_text: str,
+        failed_title: str,
+        worker,
+        on_success,
+    ) -> None:
+        if self._edit_llm_busy:
+            messagebox.showinfo("提示", "已有 LLM 任务在执行，请稍候。")
+            return
+        self._edit_llm_busy = True
+        self._set_status(running_text)
+        progress_text = re.sub(r"^(?:ai|AI)\s*[:：]?\s*", "", str(running_text or "").strip())
+        self._set_llm_progress(True, f"AI: {progress_text or '运行中'}")
+
+        import threading
+
+        def _thread_worker() -> None:
+            error = ""
+            result: Any = None
+            try:
+                result = worker()
+            except Exception as exc:
+                error = str(exc) or exc.__class__.__name__
+
+            def _done() -> None:
+                self._edit_llm_busy = False
+                self._set_llm_progress(False, "AI: 已结束")
+                if error:
+                    self._set_status("LLM 操作失败")
+                    messagebox.showerror(failed_title, error)
+                    self._schedule_llm_progress_idle_reset()
+                    return
+                try:
+                    on_success(result)
+                except Exception as exc:
+                    self._set_status("LLM 结果应用失败")
+                    messagebox.showerror(failed_title, str(exc))
+                finally:
+                    self._schedule_llm_progress_idle_reset()
+
+            try:
+                self.after(0, _done)
+            except Exception:
+                _done()
+
+        threading.Thread(target=_thread_worker, daemon=True).start()
+
+    def _build_editor_llm_input(self, adaptive_fields: Dict[str, Any]) -> Dict[str, Any]:
+        info_profile: Dict[str, Any] = {}
+        if isinstance(self._last_info, ImageMetadataInfo) and isinstance(getattr(self._last_info, "titi_json", None), dict):
+            prof_raw = (self._last_info.titi_json or {}).get("d2i_profile")
+            if isinstance(prof_raw, dict):
+                info_profile = dict(prof_raw)
+        return {
+            "title": self._normalize_single_line_text(self.edit_vars["title"].get()),
+            "person": self._normalize_single_line_text(self.edit_vars["person"].get()),
+            "gender": self._normalize_gender_text(self.edit_vars["gender"].get()),
+            "position": self._normalize_single_line_text(self.edit_vars["position"].get()),
+            "city": self._normalize_single_line_text(self.edit_vars["city"].get()),
+            "source": _normalize_http_url(self.edit_vars["source"].get()),
+            "image_url": _normalize_http_url(self.edit_vars["image_url"].get()),
+            "keywords": _parse_keywords(self.edit_vars["keywords"].get()),
+            "description": self._normalize_multiline_editor_text(self.desc_text.get("1.0", tk.END)),
+            "adaptive_fields": adaptive_fields if isinstance(adaptive_fields, dict) else {},
+            "profile_from_file": info_profile,
+        }
+
+    def _ai_autofill_current_metadata(self):
+        if not self.current_path:
+            messagebox.showinfo("提示", "请先打开一张图片")
+            return
+        try:
+            adaptive = self._collect_adaptive_profile_fields()
+        except Exception as e:
+            messagebox.showerror("格式错误", str(e))
+            return
+
+        try:
+            llm_cfg = self._collect_editor_llm_config()
+        except Exception as e:
+            messagebox.showerror("AI自动补全", str(e))
+            return
+
+        input_payload = self._build_editor_llm_input(self._normalize_profile_for_editor(adaptive))
+
+        def _worker() -> Dict[str, Any]:
+            client = OpenAICompatibleClient(
+                api_base=str(llm_cfg["api_base"]),
+                api_key=str(llm_cfg["api_key"]),
+                timeout_seconds=int(llm_cfg["timeout_seconds"]),
+                max_retries=int(llm_cfg["max_retries"]),
+            )
+            messages = [
+                {
+                    "role": "system",
+                    "content": (
+                        "你是图片元数据补全助手。只能基于输入内容，不得编造。"
+                        "输出必须是 JSON 对象，不要额外文字。"
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": json.dumps(
+                        {
+                            "task": "补全缺失字段（尽量留空不确定项），并返回可合并的扩展字段。",
+                            "constraints": {
+                                "no_guess": True,
+                                "gender_only": ["男", "女", ""],
+                                "keywords_max": 8,
+                                "leave_unknown_empty": True,
+                            },
+                            "output_schema": {
+                                "title": "string",
+                                "person": "string",
+                                "gender": "string",
+                                "position": "string",
+                                "city": "string",
+                                "source": "string",
+                                "image_url": "string",
+                                "description": "string",
+                                "keywords": ["string"],
+                                "extra_fields": {"key": "value"},
+                            },
+                            "input": input_payload,
+                        },
+                        ensure_ascii=False,
+                    ),
+                },
+            ]
+            response = client.chat_completions(
+                model=str(llm_cfg["model"]),
+                messages=messages,
+                temperature=float(llm_cfg["temperature"]),
+                stream=False,
+            )
+            content = client.extract_first_message_content(response)
+            payload = self._extract_json_payload_from_llm(content)
+            if not payload:
+                raise RuntimeError("模型返回不是有效 JSON。")
+            return payload
+
+        self._run_edit_llm_job(
+            running_text="AI 自动补全中...",
+            failed_title="AI自动补全",
+            worker=_worker,
+            on_success=self._apply_ai_autofill_result,
+        )
+
+    def _apply_ai_autofill_result(self, payload: Any) -> None:
+        result = payload if isinstance(payload, dict) else {}
+        if not result:
+            messagebox.showinfo("AI自动补全", "模型未返回可用结果。")
+            self._set_status("AI 自动补全无变更")
+            return
+
+        applied: List[str] = []
+
+        def _set_if_empty(key: str, value: Any, *, is_url: bool = False, gender: bool = False) -> None:
+            var = self.edit_vars.get(key)
+            if var is None:
+                return
+            if str(var.get() or "").strip():
+                return
+            text = (
+                self._normalize_gender_text(value)
+                if gender
+                else self._normalize_single_line_text(value)
+            )
+            if is_url:
+                text = _normalize_http_url(text)
+            if not text:
+                return
+            var.set(text)
+            applied.append(key)
+
+        _set_if_empty("title", result.get("title"))
+        _set_if_empty("person", result.get("person"))
+        _set_if_empty("gender", result.get("gender"), gender=True)
+        _set_if_empty("position", result.get("position"))
+        _set_if_empty("city", result.get("city"))
+        _set_if_empty("source", result.get("source"), is_url=True)
+        _set_if_empty("image_url", result.get("image_url"), is_url=True)
+
+        if not str(self.edit_vars["keywords"].get() or "").strip():
+            keywords = result.get("keywords")
+            if isinstance(keywords, list):
+                normalized = clean_keywords([self._normalize_single_line_text(x) for x in keywords if str(x or "").strip()])
+                if normalized:
+                    self.edit_vars["keywords"].set(", ".join(normalized))
+                    applied.append("keywords")
+
+        if not str(self.desc_text.get("1.0", tk.END).strip() or "").strip():
+            desc_text = self._normalize_multiline_editor_text(result.get("description", ""))
+            if desc_text:
+                self.desc_text.delete("1.0", tk.END)
+                self.desc_text.insert("1.0", desc_text)
+                applied.append("description")
+
+        extra_fields = result.get("extra_fields")
+        if isinstance(extra_fields, dict):
+            current = self._collect_adaptive_profile_fields()
+            merged = self._normalize_profile_for_editor(current)
+            if not isinstance(merged, dict):
+                merged = {}
+            extra_added = 0
+            for raw_k, raw_v in extra_fields.items():
+                key = self._normalize_single_line_text(raw_k)
+                if not key:
+                    continue
+                if key in merged and merged.get(key) not in (None, "", [], {}):
+                    continue
+                value = self._normalize_profile_for_editor(raw_v)
+                if value in (None, "", [], {}):
+                    continue
+                merged[key] = value
+                extra_added += 1
+            if extra_added:
+                self._render_adaptive_profile_rows(merged)
+                applied.append(f"extra_fields({extra_added})")
+
+        if not applied:
+            self._set_status("AI 自动补全完成（无可应用字段）")
+            messagebox.showinfo("AI自动补全", "模型返回了结果，但当前字段已有值或结果为空。")
+            return
+
+        self._set_status("AI 自动补全完成")
+        messagebox.showinfo("AI自动补全", f"已更新：{', '.join(applied)}")
+
+    def _ai_generate_biography_for_current(self):
+        if not self.current_path:
+            messagebox.showinfo("提示", "请先打开一张图片")
+            return
+        try:
+            adaptive = self._collect_adaptive_profile_fields()
+        except Exception as e:
+            messagebox.showerror("格式错误", str(e))
+            return
+
+        try:
+            llm_cfg = self._collect_editor_llm_config()
+        except Exception as e:
+            messagebox.showerror("AI自动小传", str(e))
+            return
+
+        input_payload = self._build_editor_llm_input(self._normalize_profile_for_editor(adaptive))
+
+        def _worker() -> Dict[str, Any]:
+            client = OpenAICompatibleClient(
+                api_base=str(llm_cfg["api_base"]),
+                api_key=str(llm_cfg["api_key"]),
+                timeout_seconds=int(llm_cfg["timeout_seconds"]),
+                max_retries=int(llm_cfg["max_retries"]),
+            )
+            messages = [
+                {
+                    "role": "system",
+                    "content": (
+                        "你是人物小传生成助手。只能基于输入文本，不得编造。"
+                        "输出必须是 JSON 对象，不要额外文字。"
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": json.dumps(
+                        {
+                            "task": "生成一段简洁中文人物小传，适合写入元数据字段 biography_short。",
+                            "constraints": {
+                                "no_guess": True,
+                                "max_chars": 220,
+                                "style": "客观简洁",
+                            },
+                            "output_schema": {
+                                "biography_short": "string",
+                            },
+                            "input": input_payload,
+                        },
+                        ensure_ascii=False,
+                    ),
+                },
+            ]
+            response = client.chat_completions(
+                model=str(llm_cfg["model"]),
+                messages=messages,
+                temperature=float(llm_cfg["temperature"]),
+                stream=False,
+            )
+            content = client.extract_first_message_content(response)
+            payload = self._extract_json_payload_from_llm(content)
+            if not payload:
+                raise RuntimeError("模型返回不是有效 JSON。")
+            return payload
+
+        self._run_edit_llm_job(
+            running_text="AI 小传生成中...",
+            failed_title="AI自动小传",
+            worker=_worker,
+            on_success=self._apply_ai_biography_result,
+        )
+
+    def _apply_ai_biography_result(self, payload: Any) -> None:
+        result = payload if isinstance(payload, dict) else {}
+        bio = self._normalize_single_line_text(result.get("biography_short", ""))
+        if not bio:
+            self._set_status("AI 小传生成完成（无结果）")
+            messagebox.showinfo("AI自动小传", "模型未返回有效小传。")
+            return
+        if len(bio) > 260:
+            bio = bio[:257] + "..."
+
+        current = self._collect_adaptive_profile_fields()
+        merged = self._normalize_profile_for_editor(current)
+        if not isinstance(merged, dict):
+            merged = {}
+        merged["biography_short"] = bio
+        self._render_adaptive_profile_rows(merged)
+
+        old_desc = str(self.desc_text.get("1.0", tk.END) or "").strip()
+        trimmed = re.sub(r"\n?小传：[\s\S]*$", "", old_desc).strip()
+        new_desc = (f"{trimmed}\n小传：\n{bio}" if trimmed else f"小传：\n{bio}").strip()
+        self.desc_text.delete("1.0", tk.END)
+        self.desc_text.insert("1.0", new_desc)
+
+        self._set_status("AI 小传生成完成")
+        messagebox.showinfo("AI自动小传", "已写入 biography_short，并同步到描述中的“小传”段。")
+
+    def _normalize_current_keys_content(self):
+        if not self.current_path:
+            messagebox.showinfo("提示", "请先打开一张图片")
+            return
+        try:
+            current_profile = self._collect_adaptive_profile_fields()
+        except Exception as e:
+            messagebox.showerror("整理失败", str(e))
+            return
+
+        changed: List[str] = []
+
+        def _set_var_if_changed(key: str, value: str) -> None:
+            var = self.edit_vars.get(key)
+            if var is None:
+                return
+            old = str(var.get() or "")
+            if old == value:
+                return
+            var.set(value)
+            changed.append(key)
+
+        _set_var_if_changed("title", self._normalize_single_line_text(self.edit_vars["title"].get()))
+        _set_var_if_changed("person", self._normalize_single_line_text(self.edit_vars["person"].get()))
+        _set_var_if_changed("gender", self._normalize_gender_text(self.edit_vars["gender"].get()))
+        _set_var_if_changed("position", self._normalize_single_line_text(self.edit_vars["position"].get()))
+        _set_var_if_changed("city", self._normalize_single_line_text(self.edit_vars["city"].get()))
+        _set_var_if_changed("source", _normalize_http_url(self.edit_vars["source"].get()))
+        _set_var_if_changed("image_url", _normalize_http_url(self.edit_vars["image_url"].get()))
+        _set_var_if_changed("titi_asset_id", self._normalize_single_line_text(self.edit_vars["titi_asset_id"].get()))
+        _set_var_if_changed("titi_world_id", self._normalize_single_line_text(self.edit_vars["titi_world_id"].get()))
+
+        old_kw = str(self.edit_vars["keywords"].get() or "")
+        new_kw = ", ".join(_parse_keywords(old_kw))
+        if old_kw != new_kw:
+            self.edit_vars["keywords"].set(new_kw)
+            changed.append("keywords")
+
+        old_desc = str(self.desc_text.get("1.0", tk.END) or "").strip()
+        new_desc = self._normalize_multiline_editor_text(old_desc)
+        if old_desc != new_desc:
+            self.desc_text.delete("1.0", tk.END)
+            self.desc_text.insert("1.0", new_desc)
+            changed.append("description")
+
+        normalized_profile = self._normalize_profile_for_editor(current_profile)
+        normalized_profile = self._prune_empty_profile_values(normalized_profile)
+        if not isinstance(normalized_profile, dict):
+            normalized_profile = {}
+        current_keys = [str(k).strip() for k in current_profile.keys() if str(k).strip()] if isinstance(current_profile, dict) else []
+        target_keys: List[str] = []
+        if normalized_profile:
+            if "police_id" in normalized_profile:
+                target_keys.append("police_id")
+            for key in sorted([str(k).strip() for k in normalized_profile.keys() if str(k).strip()]):
+                if key == "police_id":
+                    continue
+                target_keys.append(key)
+        before_json = _safe_json_dumps(current_profile)
+        after_json = _safe_json_dumps(normalized_profile)
+        if (before_json != after_json) or (current_keys != target_keys):
+            self._render_adaptive_profile_rows(normalized_profile)
+            changed.append("extra_fields")
+
+        if not changed:
+            self._set_status("一键整理完成（无变更）")
+            messagebox.showinfo("一键整理", "当前内容已经是规范状态。")
+            return
+
+        self._set_status("一键整理完成")
+        messagebox.showinfo("一键整理", f"已整理：{', '.join(changed)}")
 
     def _render_preview(self, path: str):
         try:
