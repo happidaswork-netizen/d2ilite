@@ -62,6 +62,16 @@ body {
   gap: 8px;
 }
 
+.path-input {
+  min-width: min(480px, 100%);
+  flex: 1 1 420px;
+  border: 1px solid var(--line);
+  background: #fff;
+  color: var(--text);
+  border-radius: 10px;
+  padding: 8px 10px;
+}
+
 button {
   border: 1px solid var(--line);
   background: var(--surface-soft);
@@ -124,6 +134,40 @@ button.primary {
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
+}
+
+.list-wrap {
+  min-height: 180px;
+  max-height: 300px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 8px;
+  background: var(--surface-soft);
+}
+
+.image-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 6px;
+  width: 100%;
+}
+
+.item-btn {
+  width: 100%;
+  text-align: left;
+}
+
+.item-btn.active {
+  background: var(--accent-soft);
+  border-color: #bdd9f2;
+}
+
+.empty-list {
+  color: var(--muted);
+  font-size: 13px;
 }
 
 .editor {
@@ -217,4 +261,3 @@ button.primary {
     grid-template-columns: 1fr;
   }
 }
-

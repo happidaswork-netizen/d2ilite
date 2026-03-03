@@ -34,3 +34,17 @@ npm run dev
 2. 将前端页面通过 Tauri 壳运行。
 3. 接入 Python 服务层桥接（先走命令行/HTTP，本地回环）。
 
+## 一键脚本
+
+已提供引导脚本：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\bootstrap_tauri2.ps1
+```
+
+功能：
+
+1. 检查 `node/npm`。
+2. 检查 `cargo`（缺失则提示安装命令）。
+3. 安装 `@tauri-apps/cli`。
+4. 初始化 `src-tauri`（若不存在）。
