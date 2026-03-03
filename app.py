@@ -98,6 +98,7 @@ from services.settings_service import (
     save_app_settings as _svc_save_app_settings,
 )
 from services.task_service import (
+    count_jsonl_rows as _svc_count_jsonl_rows,
     count_latest_metadata_status as _svc_count_latest_metadata_status,
     default_public_tasks_root as _svc_default_public_tasks_root,
     derive_public_task_status as _svc_derive_public_task_status,
@@ -4264,45 +4265,7 @@ class D2ILiteApp(BaseWindow):
         self._public_scraper_manual_paused = False
 
     def _count_jsonl_rows(self, path: str) -> int:
-        if not path or (not os.path.exists(path)):
-            return 0
-        try:
-            stat = os.stat(path)
-        except Exception:
-            return 0
-
-        cache_key = os.path.abspath(path)
-        cached = self._jsonl_count_cache.get(cache_key)
-        if (
-            isinstance(cached, tuple)
-            and len(cached) == 3
-            and cached[0] == stat.st_size
-            and cached[1] == stat.st_mtime
-        ):
-            try:
-                return int(cached[2])
-            except Exception:
-                pass
-
-        count = 0
-        try:
-            # Fast path: count newline bytes (JSONL files should not contain empty lines).
-            with open(path, "rb") as f:
-                while True:
-                    chunk = f.read(1024 * 1024)
-                    if not chunk:
-                        break
-                    count += chunk.count(b"\n")
-            if stat.st_size > 0:
-                with open(path, "rb") as f:
-                    f.seek(-1, os.SEEK_END)
-                    if f.read(1) != b"\n":
-                        count += 1
-        except Exception:
-            count = 0
-
-        self._jsonl_count_cache[cache_key] = (stat.st_size, stat.st_mtime, count)
-        return count
+        return _svc_count_jsonl_rows(path, self._jsonl_count_cache)
 
     def _update_public_scraper_progress(self):
         output_root = self._public_scraper_output_root

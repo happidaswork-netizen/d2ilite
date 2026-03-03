@@ -34,6 +34,7 @@ from services.scraper_monitor_service import (
 )
 from services.settings_service import load_app_settings, save_app_settings
 from services.task_service import (
+    count_jsonl_rows,
     count_latest_metadata_status,
     default_public_tasks_root,
     derive_public_task_status,
@@ -214,6 +215,17 @@ def test_template_state_services() -> None:
         _assert_true(out_root.endswith(os.path.join("data", "public_archive", "site_demo")), "suggest_output_root")
 
 
+def test_count_jsonl_rows_cache() -> None:
+    with tempfile.TemporaryDirectory() as td:
+        path = os.path.join(td, "rows.jsonl")
+        Path(path).write_text('{"a":1}\n{"b":2}\n', encoding="utf-8")
+        cache = {}
+        first = count_jsonl_rows(path, cache)
+        second = count_jsonl_rows(path, cache)
+        _assert_equal(first, 2, "count_jsonl_rows_first")
+        _assert_equal(second, 2, "count_jsonl_rows_cached")
+
+
 def main() -> int:
     tests = [
         test_normalize_http_url,
@@ -229,6 +241,7 @@ def main() -> int:
         test_estimate_total_target_and_metadata_status,
         test_retry_requires_crawl_phase_and_status,
         test_template_state_services,
+        test_count_jsonl_rows_cache,
     ]
     for fn in tests:
         fn()

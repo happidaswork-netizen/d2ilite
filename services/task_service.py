@@ -96,6 +96,35 @@ def count_jsonl_rows_no_cache(path: Any) -> int:
     return max(0, int(count))
 
 
+def count_jsonl_rows(path: Any, cache: Optional[Dict[str, Tuple[int, float, int]]] = None) -> int:
+    text = str(path or "").strip()
+    if (not text) or (not os.path.exists(text)):
+        return 0
+    try:
+        stat = os.stat(text)
+    except Exception:
+        return 0
+
+    cache_key = os.path.abspath(text)
+    if isinstance(cache, dict):
+        cached = cache.get(cache_key)
+        if (
+            isinstance(cached, tuple)
+            and len(cached) == 3
+            and cached[0] == stat.st_size
+            and cached[1] == stat.st_mtime
+        ):
+            try:
+                return int(cached[2])
+            except Exception:
+                pass
+
+    count = count_jsonl_rows_no_cache(text)
+    if isinstance(cache, dict):
+        cache[cache_key] = (stat.st_size, stat.st_mtime, count)
+    return count
+
+
 def estimate_scraper_total_target(
     output_root: Any,
     *,
