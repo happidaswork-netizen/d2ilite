@@ -25,7 +25,7 @@
 
 3. 新增契约冒烟脚本：
    - `scripts/phase0_contract_smoke.py`
-   - 执行命令：`python scripts/phase0_contract_smoke.py`（当前 14 项）
+   - 执行命令：`python scripts/phase0_contract_smoke.py`（当前 15 项）
 
 4. 新增任务服务能力并接入 `app.py`：
    - 路径与文件工具：`normalize_existing_path`、`read_json_file`、`safe_positive_int`
@@ -34,19 +34,20 @@
    - 模板状态管理：模板目录、模板状态读写、模板列表排序
    - 运行时工具：`normalize_public_task_root`、`is_process_running`、`public_scraper_pause_flag_path`
    - 计数与缓存：`count_jsonl_rows`（含缓存命中逻辑）
+   - 进度行聚合：`collect_scraper_progress_rows`（列表/详情/图片/元数据/复核/失败日志聚合）
 
 ## 验证结果
 
 1. `python -m py_compile app.py` 通过。
 2. `python -m py_compile services/*.py`（逐文件）通过。
-3. `python scripts/phase0_contract_smoke.py` 通过（14 项）。
+3. `python scripts/phase0_contract_smoke.py` 通过（15 项）。
 4. `python -c "import app; print('ok')"` 通过。
 
 ## 当前边界
 
 1. `app.py` 仍保留 UI 控制流和事件绑定（符合 Phase 0 目标）。
 2. 抓取面板中的 UI 事件编排（按钮行为、窗口切换）仍主要在 `app.py`。
-3. 抓取进度行组装与树表渲染相关逻辑仍在 `app.py`，下一轮继续下沉。
+3. 抓取进度树表渲染与选择交互仍在 `app.py`，下一轮继续下沉为前端 ViewModel。
 
 ## 下一阶段建议（Phase 0 收尾）
 

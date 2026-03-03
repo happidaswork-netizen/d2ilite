@@ -9,7 +9,12 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
-from services.scraper_monitor_service import read_jsonl_rows
+from services.scraper_monitor_service import (
+    humanize_scraper_reason,
+    merge_status_reason,
+    normalize_person_key,
+    read_jsonl_rows,
+)
 
 
 @dataclass
@@ -280,6 +285,310 @@ def derive_public_task_status(
 
     runtime_state = str(task_entry.get("runtime_state", "")).strip()
     return runtime_state or status
+
+
+def collect_scraper_progress_rows(
+    output_root: Any,
+    *,
+    max_rows: int = 3000,
+    read_jsonl_rows_fn: Optional[Callable[..., List[Dict[str, Any]]]] = None,
+    read_json_file_fn: Optional[Callable[[str], Dict[str, Any]]] = None,
+    normalize_existing_path_fn: Optional[Callable[[Any], str]] = None,
+    extract_live_actions_fn: Optional[Callable[[str], Any]] = None,
+    is_row_completed_fn: Optional[Callable[[Dict[str, Any]], bool]] = None,
+) -> List[Dict[str, str]]:
+    root = normalize_public_task_root(output_root)
+    if not root:
+        return []
+
+    read_jsonl = read_jsonl_rows_fn or read_jsonl_rows
+    read_json = read_json_file_fn or read_json_file
+    normalize_existing = normalize_existing_path_fn or normalize_existing_path
+    max_rows = max(1, int(max_rows or 3000))
+
+    list_path = os.path.join(root, "raw", "list_records.jsonl")
+    profile_path = os.path.join(root, "raw", "profiles.jsonl")
+    manifest_path = os.path.join(root, "downloads", "image_downloads.jsonl")
+    metadata_queue_path = os.path.join(root, "raw", "metadata_queue.jsonl")
+    metadata_result_path = os.path.join(root, "raw", "metadata_write_results.jsonl")
+    review_path = os.path.join(root, "raw", "review_queue.jsonl")
+    failures_path = os.path.join(root, "raw", "failures.jsonl")
+    image_url_index_path = os.path.join(root, "state", "image_url_index.json")
+    image_sha_index_path = os.path.join(root, "state", "image_sha_index.json")
+
+    image_url_index_raw = read_json(image_url_index_path)
+    image_sha_index_raw = read_json(image_sha_index_path)
+    image_url_index: Dict[str, str] = {}
+    image_sha_index: Dict[str, str] = {}
+    if isinstance(image_url_index_raw, dict):
+        for k, v in image_url_index_raw.items():
+            kk = str(k or "").strip()
+            vv = str(v or "").strip()
+            if kk and vv:
+                image_url_index[kk] = vv
+    if isinstance(image_sha_index_raw, dict):
+        for k, v in image_sha_index_raw.items():
+            kk = str(k or "").strip()
+            vv = normalize_existing(v)
+            if kk and vv:
+                image_sha_index[kk] = vv
+
+    rows: List[Dict[str, Any]] = []
+    detail_index: Dict[str, int] = {}
+    detail_seen: set[str] = set()
+
+    def _append_row(name: str, detail_url: str) -> int:
+        idx = len(rows) + 1
+        row = {
+            "idx": str(idx),
+            "name": str(name or "").strip() or f"未命名_{idx}",
+            "detail_url": str(detail_url or "").strip(),
+            "detail": "…",
+            "image": "…",
+            "meta": "…",
+            "reason": "",
+            "image_path": "",
+            "_has_image_url": False,
+            "_image_url": "",
+        }
+        rows.append(row)
+        if row["detail_url"]:
+            detail_index[row["detail_url"]] = len(rows) - 1
+        return len(rows) - 1
+
+    for item in read_jsonl(list_path, max_rows=max_rows * 2):
+        name = str(item.get("name", "")).strip()
+        detail_url = str(item.get("detail_url", "")).strip()
+        if detail_url and detail_url in detail_seen:
+            continue
+        if detail_url:
+            detail_seen.add(detail_url)
+        row_pos = _append_row(name, detail_url)
+        if not detail_url:
+            rows[row_pos]["detail"] = "×"
+            rows[row_pos]["image"] = "-"
+            rows[row_pos]["meta"] = "-"
+            merge_status_reason(rows[row_pos], "列表缺少详情链接")
+        if len(rows) >= max_rows:
+            break
+
+    for item in read_jsonl(profile_path, max_rows=max_rows * 2):
+        detail_url = str(item.get("detail_url", "")).strip()
+        if not detail_url:
+            continue
+        row_pos = detail_index.get(detail_url)
+        if row_pos is None:
+            row_pos = _append_row(str(item.get("name", "")).strip(), detail_url)
+        row = rows[row_pos]
+        if (not str(row.get("name", "")).strip()) and str(item.get("name", "")).strip():
+            row["name"] = str(item.get("name", "")).strip()
+        row["detail"] = "√"
+        image_url = str(item.get("image_url", "")).strip()
+        row["_has_image_url"] = bool(image_url)
+        if image_url:
+            row["_image_url"] = image_url
+        if not image_url and row["image"] != "√":
+            row["image"] = "×"
+            merge_status_reason(row, "详情缺少图片链接")
+        if len(rows) >= max_rows and detail_url not in detail_index:
+            break
+
+    for item in read_jsonl(manifest_path, max_rows=max_rows * 3):
+        detail_url = str(item.get("detail_url", "")).strip()
+        if not detail_url:
+            continue
+        row_pos = detail_index.get(detail_url)
+        if row_pos is None:
+            row_pos = _append_row(str(item.get("name", "")).strip(), detail_url)
+        row = rows[row_pos]
+        row["image"] = "√"
+        candidate = normalize_existing(item.get("named_path")) or normalize_existing(item.get("saved_path"))
+        if candidate:
+            row["image_path"] = candidate
+
+    for item in read_jsonl(metadata_queue_path, max_rows=max_rows * 3):
+        detail_url = str(item.get("detail_url", "")).strip()
+        if not detail_url:
+            continue
+        row_pos = detail_index.get(detail_url)
+        if row_pos is None:
+            row_pos = _append_row(str(item.get("name", "")).strip(), detail_url)
+        candidate = normalize_existing(item.get("local_image_path"))
+        if candidate:
+            rows[row_pos]["image_path"] = candidate
+            rows[row_pos]["image"] = "√"
+        image_url_q = str(item.get("image_url", "")).strip()
+        if image_url_q and (not rows[row_pos].get("_image_url")):
+            rows[row_pos]["_image_url"] = image_url_q
+            rows[row_pos]["_has_image_url"] = True
+
+    meta_summary: Dict[str, Dict[str, Any]] = {}
+    for item in read_jsonl(metadata_result_path, max_rows=max_rows * 3):
+        detail_url = str(item.get("detail_url", "")).strip()
+        if not detail_url:
+            continue
+        state = meta_summary.get(detail_url)
+        if state is None:
+            state = {"ok": False, "failed": False, "error": "", "output_path": ""}
+            meta_summary[detail_url] = state
+
+        status = str(item.get("status", "")).strip().lower()
+        if status == "ok":
+            state["ok"] = True
+            candidate = normalize_existing(item.get("output_path"))
+            if candidate:
+                state["output_path"] = candidate
+            continue
+        if status:
+            state["failed"] = True
+            err = str(item.get("error", "")).strip() or f"元数据失败({status})"
+            if err:
+                state["error"] = err
+
+    for detail_url, state in meta_summary.items():
+        row_pos = detail_index.get(detail_url)
+        if row_pos is None:
+            row_pos = _append_row("", detail_url)
+        row = rows[row_pos]
+        if state.get("ok"):
+            row["meta"] = "√"
+            candidate = str(state.get("output_path", "")).strip()
+            if candidate:
+                row["image_path"] = candidate
+                row["image"] = "√"
+        elif state.get("failed"):
+            row["meta"] = "×"
+            merge_status_reason(row, str(state.get("error", "")).strip() or "元数据写入失败")
+
+    for item in read_jsonl(review_path, max_rows=max_rows * 3):
+        reason = str(item.get("reason", "")).strip()
+        detail_url = str(item.get("detail_url", "")).strip()
+        if not detail_url:
+            record = item.get("record")
+            if isinstance(record, dict):
+                detail_url = str(record.get("detail_url", "")).strip()
+        if not detail_url:
+            continue
+        row_pos = detail_index.get(detail_url)
+        if row_pos is None:
+            row_pos = _append_row("", detail_url)
+        row = rows[row_pos]
+        lower_reason = reason.lower()
+        if lower_reason.startswith("image_"):
+            if row["image"] != "√":
+                row["image"] = "×"
+            elif lower_reason != "image_ok":
+                continue
+        if lower_reason.startswith("metadata_"):
+            if row["meta"] != "√":
+                row["meta"] = "×"
+            elif not lower_reason.startswith("audit_missing_metadata_fields"):
+                continue
+        if "missing_required_fields" in lower_reason and row["detail"] != "√":
+            row["detail"] = "×"
+        merge_status_reason(row, reason)
+
+    for item in read_jsonl(failures_path, max_rows=max_rows * 3):
+        url = str(item.get("url", "")).strip()
+        if not url:
+            continue
+        row_pos = detail_index.get(url)
+        if row_pos is None:
+            continue
+        row = rows[row_pos]
+        context = item.get("context")
+        phase = str((context or {}).get("phase", "")).strip().lower() if isinstance(context, dict) else ""
+        if phase == "detail":
+            row["detail"] = "×"
+        merge_status_reason(row, str(item.get("reason", "")).strip())
+
+    for row in rows:
+        if str(row.get("image", "")).strip() == "√":
+            continue
+        existing_path = normalize_existing(row.get("image_path", ""))
+        if existing_path:
+            row["image_path"] = existing_path
+            row["image"] = "√"
+            continue
+        image_url = str(row.get("_image_url", "")).strip()
+        if not image_url:
+            continue
+        sha = image_url_index.get(image_url, "")
+        if not sha:
+            continue
+        candidate = image_sha_index.get(sha, "")
+        if candidate:
+            row["image_path"] = candidate
+            row["image"] = "√"
+
+    live_by_person: Dict[str, str] = {}
+    if extract_live_actions_fn is not None:
+        try:
+            live_result = extract_live_actions_fn(root)
+            if isinstance(live_result, tuple) and len(live_result) >= 1 and isinstance(live_result[0], dict):
+                live_by_person = live_result[0]
+        except Exception:
+            live_by_person = {}
+
+    output: List[Dict[str, str]] = []
+    ok_tokens = {"√", "✓"}
+    for row in rows[:max_rows]:
+        detail_status = str(row.get("detail", ""))
+        image_status = str(row.get("image", ""))
+        meta_status = str(row.get("meta", ""))
+        if detail_status == "√" and row.get("_has_image_url") and image_status == "…":
+            image_status = "⌛"
+        if image_status == "√" and meta_status == "…":
+            meta_status = "⌛"
+        reason_text = humanize_scraper_reason(str(row.get("reason", "")).strip())
+
+        row_name = str(row.get("name", "")).strip()
+        row_live_action = live_by_person.get(normalize_person_key(row_name), "")
+        if is_row_completed_fn is not None:
+            try:
+                row_completed = bool(
+                    is_row_completed_fn(
+                        {
+                            "detail": detail_status,
+                            "image": image_status,
+                            "meta": meta_status,
+                        }
+                    )
+                )
+            except Exception:
+                row_completed = False
+        else:
+            row_completed = (
+                detail_status in ok_tokens
+                and image_status in ok_tokens
+                and meta_status in ok_tokens
+            )
+        if row_live_action and (not row_completed):
+            if (row_live_action == "正在下载图片") and (image_status not in ok_tokens):
+                image_status = "⌛"
+            elif (row_live_action == "正在写入元数据") and (meta_status not in ok_tokens):
+                meta_status = "⌛"
+            elif (row_live_action == "正在抓取详情页") and (detail_status not in ok_tokens):
+                detail_status = "⌛"
+            if reason_text:
+                if not reason_text.startswith(row_live_action):
+                    reason_text = f"{row_live_action} | {reason_text}"
+            else:
+                reason_text = row_live_action
+
+        output.append(
+            {
+                "idx": str(row.get("idx", "")),
+                "name": row_name,
+                "detail": detail_status,
+                "image": image_status,
+                "meta": meta_status,
+                "reason": reason_text,
+                "detail_url": str(row.get("detail_url", "")).strip(),
+                "image_path": str(row.get("image_path", "")).strip(),
+            }
+        )
+    return output
 
 
 def suggest_public_scraper_output_root(app_file: Any, site_name: Any) -> str:

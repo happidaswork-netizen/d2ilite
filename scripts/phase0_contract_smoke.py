@@ -34,6 +34,7 @@ from services.scraper_monitor_service import (
 )
 from services.settings_service import load_app_settings, save_app_settings
 from services.task_service import (
+    collect_scraper_progress_rows,
     count_jsonl_rows,
     count_latest_metadata_status,
     default_public_tasks_root,
@@ -226,6 +227,35 @@ def test_count_jsonl_rows_cache() -> None:
         _assert_equal(second, 2, "count_jsonl_rows_cached")
 
 
+def test_collect_scraper_progress_rows() -> None:
+    with tempfile.TemporaryDirectory() as td:
+        os.makedirs(os.path.join(td, "raw"), exist_ok=True)
+        os.makedirs(os.path.join(td, "downloads"), exist_ok=True)
+        os.makedirs(os.path.join(td, "state"), exist_ok=True)
+        Path(os.path.join(td, "raw", "list_records.jsonl")).write_text(
+            '{"name":"张三","detail_url":"https://d/1"}\n',
+            encoding="utf-8",
+        )
+        Path(os.path.join(td, "raw", "profiles.jsonl")).write_text(
+            '{"name":"张三","detail_url":"https://d/1","image_url":"https://img/1.jpg"}\n',
+            encoding="utf-8",
+        )
+        Path(os.path.join(td, "downloads", "image_downloads.jsonl")).write_text(
+            '{"name":"张三","detail_url":"https://d/1","saved_path":"X:/not-exists.jpg"}\n',
+            encoding="utf-8",
+        )
+        Path(os.path.join(td, "raw", "metadata_write_results.jsonl")).write_text(
+            '{"detail_url":"https://d/1","status":"ok"}\n',
+            encoding="utf-8",
+        )
+        rows = collect_scraper_progress_rows(td, max_rows=20)
+        _assert_equal(len(rows), 1, "collect_rows_count")
+        row = rows[0]
+        _assert_equal(row.get("name"), "张三", "collect_row_name")
+        _assert_equal(row.get("detail"), "√", "collect_row_detail")
+        _assert_equal(row.get("meta"), "√", "collect_row_meta")
+
+
 def main() -> int:
     tests = [
         test_normalize_http_url,
@@ -242,6 +272,7 @@ def main() -> int:
         test_retry_requires_crawl_phase_and_status,
         test_template_state_services,
         test_count_jsonl_rows_cache,
+        test_collect_scraper_progress_rows,
     ]
     for fn in tests:
         fn()
