@@ -12,7 +12,7 @@
    - `services/viewer_load_service.py`
    - `services/runtime_service.py`
    - `services/settings_service.py`
-   - `services/task_service.py`（骨架）
+   - `services/task_service.py`（任务编排核心逻辑）
 
 2. `app.py` 已完成对以下能力的服务化接入：
    - 图片列表扫描与基础信息读取
@@ -25,20 +25,27 @@
 
 3. 新增契约冒烟脚本：
    - `scripts/phase0_contract_smoke.py`
-   - 执行命令：`python scripts/phase0_contract_smoke.py`（当前 9 项）
+   - 执行命令：`python scripts/phase0_contract_smoke.py`（当前 13 项）
+
+4. 新增任务服务能力并接入 `app.py`：
+   - 路径与文件工具：`normalize_existing_path`、`read_json_file`、`safe_positive_int`
+   - 抓取任务工具：`estimate_scraper_total_target`、`retry_requires_crawl_phase`
+   - 任务发现与状态：`discover_public_task_roots`、`count_latest_metadata_status`、`derive_public_task_status`
+   - 模板状态管理：模板目录、模板状态读写、模板列表排序
+   - 运行时工具：`normalize_public_task_root`、`is_process_running`、`public_scraper_pause_flag_path`
 
 ## 验证结果
 
 1. `python -m py_compile app.py` 通过。
 2. `python -m py_compile services/*.py`（逐文件）通过。
-3. `python scripts/phase0_contract_smoke.py` 通过（8 项）。
+3. `python scripts/phase0_contract_smoke.py` 通过（13 项）。
 4. `python -c "import app; print('ok')"` 通过。
 
 ## 当前边界
 
 1. `app.py` 仍保留 UI 控制流和事件绑定（符合 Phase 0 目标）。
-2. 抓取面板中的流程编排（任务生命周期控制）仍主要在 `app.py`。
-3. `task_service.py` 当前仅提供状态模型，下一轮扩展为任务编排服务。
+2. 抓取面板中的 UI 事件编排（按钮行为、窗口切换）仍主要在 `app.py`。
+3. 抓取进度行组装与树表渲染相关逻辑仍在 `app.py`，下一轮继续下沉。
 
 ## 下一阶段建议（Phase 0 收尾）
 

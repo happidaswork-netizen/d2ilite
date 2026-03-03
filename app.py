@@ -97,6 +97,29 @@ from services.settings_service import (
     load_app_settings as _svc_load_app_settings,
     save_app_settings as _svc_save_app_settings,
 )
+from services.task_service import (
+    count_latest_metadata_status as _svc_count_latest_metadata_status,
+    default_public_tasks_root as _svc_default_public_tasks_root,
+    derive_public_task_status as _svc_derive_public_task_status,
+    discover_public_task_roots as _svc_discover_public_task_roots,
+    estimate_scraper_total_target as _svc_estimate_scraper_total_target,
+    get_scraper_record_path as _svc_get_scraper_record_path,
+    is_process_running as _svc_is_process_running,
+    list_public_scraper_templates as _svc_list_public_scraper_templates,
+    load_public_scraper_template_states as _svc_load_public_scraper_template_states,
+    normalize_existing_path as _svc_normalize_existing_path,
+    normalize_public_task_root as _svc_normalize_public_task_root,
+    public_scraper_template_state_path as _svc_public_scraper_template_state_path,
+    public_scraper_templates_dir as _svc_public_scraper_templates_dir,
+    public_scraper_pause_flag_path as _svc_public_scraper_pause_flag_path,
+    read_json_file as _svc_read_json_file,
+    read_scraper_backoff_state as _svc_read_scraper_backoff_state,
+    save_public_scraper_template_states as _svc_save_public_scraper_template_states,
+    retry_requires_crawl_phase as _svc_retry_requires_crawl_phase,
+    safe_positive_int as _svc_safe_positive_int,
+    set_public_scraper_template_state as _svc_set_public_scraper_template_state,
+    suggest_public_scraper_output_root as _svc_suggest_public_scraper_output_root,
+)
 from services.viewer_load_service import (
     load_metadata_snapshot as _svc_load_metadata_snapshot,
     load_preview_image as _svc_load_preview_image,
@@ -1206,72 +1229,21 @@ class D2ILiteApp(BaseWindow):
 
     @staticmethod
     def _normalize_existing_path(path_value: Any) -> str:
-        path = str(path_value or "").strip()
-        if not path:
-            return ""
-        try:
-            normalized = os.path.abspath(path)
-        except Exception:
-            normalized = path
-        return normalized if os.path.isfile(normalized) else ""
+        return _svc_normalize_existing_path(path_value)
 
     @staticmethod
     def _read_json_file(path: str) -> Dict[str, Any]:
-        if (not path) or (not os.path.exists(path)):
-            return {}
-        try:
-            with open(path, "r", encoding="utf-8", errors="ignore") as f:
-                payload = json.load(f)
-            return payload if isinstance(payload, dict) else {}
-        except Exception:
-            return {}
+        return _svc_read_json_file(path)
 
     @staticmethod
     def _safe_int(value: Any) -> int:
-        try:
-            num = int(value)
-            return num if num > 0 else 0
-        except Exception:
-            return 0
+        return _svc_safe_positive_int(value)
 
     def _estimate_scraper_total_target(self, output_root: str) -> int:
-        if not output_root:
-            return 0
-        candidates: List[int] = []
-
-        crawl_report = self._read_json_file(os.path.join(output_root, "reports", "crawl_report.json"))
-        if crawl_report:
-            metrics = crawl_report.get("metrics_this_run")
-            if isinstance(metrics, dict):
-                candidates.append(self._safe_int(metrics.get("detail_requests_enqueued")))
-            totals = crawl_report.get("totals_on_disk")
-            if isinstance(totals, dict):
-                candidates.append(self._safe_int(totals.get("profiles")))
-
-        seen_detail_urls: set[str] = set()
-        list_path = os.path.join(output_root, "raw", "list_records.jsonl")
-        if os.path.exists(list_path):
-            try:
-                with open(list_path, "r", encoding="utf-8", errors="ignore") as f:
-                    for line in f:
-                        raw = line.strip()
-                        if not raw:
-                            continue
-                        try:
-                            obj = json.loads(raw)
-                        except Exception:
-                            continue
-                        if not isinstance(obj, dict):
-                            continue
-                        detail_url = str(obj.get("detail_url", "")).strip()
-                        if detail_url:
-                            seen_detail_urls.add(detail_url)
-            except Exception:
-                pass
-        candidates.append(len(seen_detail_urls))
-        candidates.append(self._count_jsonl_rows(os.path.join(output_root, "raw", "profiles.jsonl")))
-        candidates.append(self._count_jsonl_rows(os.path.join(output_root, "downloads", "image_downloads.jsonl")))
-        return max(candidates) if candidates else 0
+        return _svc_estimate_scraper_total_target(
+            output_root,
+            count_jsonl_rows_fn=self._count_jsonl_rows,
+        )
 
     def _collect_scraper_progress_rows(self, output_root: str, max_rows: int = 3000) -> List[Dict[str, str]]:
         list_path = os.path.join(output_root, "raw", "list_records.jsonl")
@@ -2187,34 +2159,15 @@ class D2ILiteApp(BaseWindow):
 
     @staticmethod
     def _get_scraper_record_path(output_root: str) -> str:
-        if not output_root:
-            return ""
-        path = os.path.join(output_root, "crawl_record.json")
-        return path if os.path.exists(path) else ""
+        return _svc_get_scraper_record_path(output_root)
 
     @staticmethod
     def _read_scraper_backoff_state(output_root: str) -> Dict[str, str]:
-        if not output_root:
-            return {"blocked_until": "", "blocked_reason": ""}
-        path = os.path.join(output_root, "state", "backoff_state.json")
-        if not os.path.exists(path):
-            return {"blocked_until": "", "blocked_reason": ""}
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                payload = json.load(f)
-            if not isinstance(payload, dict):
-                return {"blocked_until": "", "blocked_reason": ""}
-            return {
-                "blocked_until": str(payload.get("blocked_until", "")).strip(),
-                "blocked_reason": str(payload.get("blocked_reason", "")).strip(),
-            }
-        except Exception:
-            return {"blocked_until": "", "blocked_reason": ""}
+        return _svc_read_scraper_backoff_state(output_root)
 
     @staticmethod
     def _default_public_tasks_root() -> str:
-        app_dir = os.path.dirname(__file__)
-        return os.path.abspath(os.path.join(app_dir, "data", "public_archive"))
+        return _svc_default_public_tasks_root(__file__)
 
     def _retry_requires_crawl_phase(self, output_root: str) -> bool:
         root = str(output_root or "").strip()
@@ -2224,43 +2177,16 @@ class D2ILiteApp(BaseWindow):
             rows = self._collect_scraper_progress_rows(root, max_rows=20000)
         except Exception:
             return False
-        for row in rows:
-            if self._is_scraper_row_completed(row):
-                continue
-            detail_status = str(row.get("detail", "")).strip()
-            # If detail page was not completed, retry must include crawl phase.
-            if detail_status not in {"√", "✓"}:
-                return True
-        return False
+        return _svc_retry_requires_crawl_phase(
+            rows,
+            is_row_completed_fn=self._is_scraper_row_completed,
+        )
 
     def _discover_public_task_roots(self, base_root: str) -> List[str]:
-        base = os.path.abspath(str(base_root or "").strip())
-        if (not base) or (not os.path.isdir(base)):
-            return []
-        roots: List[str] = []
-        for root, dirs, _files in os.walk(base):
-            runtime_cfg = os.path.join(root, "state", "runtime_config.json")
-            if os.path.exists(runtime_cfg):
-                roots.append(os.path.abspath(root))
-                dirs[:] = []
-                continue
-            dirs[:] = [d for d in dirs if d not in {"raw", "downloads", "reports", "state", "__pycache__"}]
-        uniq = sorted({os.path.abspath(x) for x in roots})
-        return uniq
+        return _svc_discover_public_task_roots(base_root)
 
     def _count_latest_metadata_status(self, output_root: str) -> Tuple[int, int]:
-        path = os.path.join(output_root, "raw", "metadata_write_results.jsonl")
-        latest: Dict[str, str] = {}
-        for row in self._read_jsonl_rows(path, max_rows=0):
-            if not isinstance(row, dict):
-                continue
-            detail_url = str(row.get("detail_url", "")).strip()
-            if not detail_url:
-                continue
-            latest[detail_url] = str(row.get("status", "")).strip().lower()
-        ok_count = sum(1 for status in latest.values() if status == "ok")
-        fail_count = sum(1 for status in latest.values() if status and status != "ok")
-        return ok_count, fail_count
+        return _svc_count_latest_metadata_status(output_root)
 
     def _summarize_public_task(self, output_root: str) -> Dict[str, Any]:
         root = os.path.abspath(str(output_root or "").strip())
@@ -2272,25 +2198,20 @@ class D2ILiteApp(BaseWindow):
         metadata_ok, metadata_failed = self._count_latest_metadata_status(root)
         pending_rows = max(0, int(profile_rows) - int(metadata_ok))
 
-        status = "初始化"
         entry = self._public_scraper_tasks.get(root)
-        running_in_session = isinstance(entry, dict) and self._is_process_running(entry.get("proc"))
         current_active_root = self._normalize_public_task_root(self._public_scraper_active_task_root or self._public_scraper_output_root)
-        if running_in_session:
-            paused = bool(entry.get("manual_paused", False))
-            status = "手动暂停(当前)" if (paused and current_active_root == root) else ("手动暂停" if paused else "运行中")
-        elif os.path.exists(self._public_scraper_pause_flag_path(root)):
-            status = "手动暂停"
-        else:
-            backoff = self._read_scraper_backoff_state(root)
-            if str(backoff.get("blocked_until", "")).strip():
-                status = "风控暂停"
-            elif profile_rows > 0 and pending_rows == 0 and metadata_failed == 0:
-                status = "已完成"
-            elif (list_rows + profile_rows + image_rows + review_rows + failure_rows + metadata_ok + metadata_failed) > 0:
-                status = "未完成"
-            elif isinstance(entry, dict):
-                status = str(entry.get("runtime_state", "")).strip() or status
+        backoff = self._read_scraper_backoff_state(root)
+        status = _svc_derive_public_task_status(
+            root=root,
+            entry=entry if isinstance(entry, dict) else None,
+            current_active_root=current_active_root,
+            pause_flag_exists=os.path.exists(self._public_scraper_pause_flag_path(root)),
+            backoff_state=backoff,
+            profile_rows=profile_rows,
+            pending_rows=pending_rows,
+            metadata_failed=metadata_failed,
+            activity_total=(list_rows + profile_rows + image_rows + review_rows + failure_rows + metadata_ok + metadata_failed),
+        )
 
         mt_candidates: List[float] = []
         for candidate in [
@@ -4038,11 +3959,11 @@ class D2ILiteApp(BaseWindow):
 
     @staticmethod
     def _normalize_public_task_root(output_root: str) -> str:
-        return os.path.abspath(str(output_root or "").strip()) if str(output_root or "").strip() else ""
+        return _svc_normalize_public_task_root(output_root)
 
     @staticmethod
     def _is_process_running(proc: Any) -> bool:
-        return bool(proc and (proc.poll() is None))
+        return _svc_is_process_running(proc)
 
     def _is_any_public_scraper_running(self) -> bool:
         for entry in self._public_scraper_tasks.values():
@@ -4307,10 +4228,7 @@ class D2ILiteApp(BaseWindow):
 
     @staticmethod
     def _public_scraper_pause_flag_path(output_root: str) -> str:
-        root = os.path.abspath(str(output_root or "").strip())
-        if not root:
-            return ""
-        return os.path.join(root, "state", "manual_pause.flag")
+        return _svc_public_scraper_pause_flag_path(output_root)
 
     def _set_public_scraper_manual_pause_flag(self, output_root: str, paused: bool) -> bool:
         flag_path = self._public_scraper_pause_flag_path(output_root)
@@ -4424,117 +4342,26 @@ class D2ILiteApp(BaseWindow):
         self._refresh_scraper_monitor_panel()
 
     def _suggest_public_scraper_output_root(self, start_url: str) -> str:
-        app_dir = os.path.dirname(__file__)
         site_name = self._guess_public_site_name(start_url)
-        return os.path.abspath(os.path.join(app_dir, "data", "public_archive", site_name))
+        return _svc_suggest_public_scraper_output_root(__file__, site_name)
 
     def _public_scraper_templates_dir(self) -> str:
-        path = os.path.join(os.path.dirname(__file__), "scraper", "templates")
-        os.makedirs(path, exist_ok=True)
-        return path
+        return _svc_public_scraper_templates_dir(__file__)
 
     def _public_scraper_template_state_path(self) -> str:
-        state_dir = os.path.join(os.path.dirname(__file__), "scraper", "state")
-        os.makedirs(state_dir, exist_ok=True)
-        return os.path.join(state_dir, "template_run_state.json")
+        return _svc_public_scraper_template_state_path(__file__)
 
     def _load_public_scraper_template_states(self) -> Dict[str, Dict[str, str]]:
-        path = self._public_scraper_template_state_path()
-        if not os.path.exists(path):
-            return {}
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                payload = json.load(f)
-            if not isinstance(payload, dict):
-                return {}
-            templates_obj = payload.get("templates")
-            if not isinstance(templates_obj, dict):
-                return {}
-            states: Dict[str, Dict[str, str]] = {}
-            for key, value in templates_obj.items():
-                abs_key = os.path.abspath(str(key or "").strip())
-                if not abs_key:
-                    continue
-                if isinstance(value, dict):
-                    status = str(value.get("status", "")).strip().lower()
-                    updated_at = str(value.get("updated_at", "")).strip()
-                    states[abs_key] = {"status": status, "updated_at": updated_at}
-                else:
-                    status = str(value or "").strip().lower()
-                    if status:
-                        states[abs_key] = {"status": status, "updated_at": ""}
-            return states
-        except Exception:
-            return {}
+        return _svc_load_public_scraper_template_states(__file__)
 
     def _save_public_scraper_template_states(self, states: Dict[str, Dict[str, str]]) -> None:
-        normalized: Dict[str, Dict[str, str]] = {}
-        for key, value in dict(states or {}).items():
-            abs_key = os.path.abspath(str(key or "").strip())
-            if not abs_key:
-                continue
-            status = str((value or {}).get("status", "")).strip().lower()
-            updated_at = str((value or {}).get("updated_at", "")).strip()
-            if not status:
-                continue
-            normalized[abs_key] = {
-                "status": status,
-                "updated_at": updated_at or datetime.now().isoformat(timespec="seconds"),
-            }
-        payload = {
-            "updated_at": datetime.now().isoformat(timespec="seconds"),
-            "templates": normalized,
-        }
-        path = self._public_scraper_template_state_path()
-        try:
-            with open(path, "w", encoding="utf-8") as f:
-                json.dump(payload, f, ensure_ascii=False, indent=2)
-        except Exception:
-            pass
+        _svc_save_public_scraper_template_states(__file__, states)
 
     def _set_public_scraper_template_state(self, template_path: str, status: str) -> None:
-        path = os.path.abspath(str(template_path or "").strip())
-        status_text = str(status or "").strip().lower()
-        if (not path) or (not status_text):
-            return
-        states = self._load_public_scraper_template_states()
-        states[path] = {
-            "status": status_text,
-            "updated_at": datetime.now().isoformat(timespec="seconds"),
-        }
-        self._save_public_scraper_template_states(states)
+        _svc_set_public_scraper_template_state(__file__, template_path, status)
 
     def _list_public_scraper_templates(self) -> List[Tuple[str, str]]:
-        unfinished_pairs: List[Tuple[str, str]] = []
-        done_pairs: List[Tuple[str, str]] = []
-        templates_dir = self._public_scraper_templates_dir()
-        root_dir = os.path.dirname(__file__)
-        template_states = self._load_public_scraper_template_states()
-
-        seen: set[str] = set()
-        for folder in [templates_dir, os.path.join(root_dir, "scraper")]:
-            if not os.path.isdir(folder):
-                continue
-            for name in sorted(os.listdir(folder), key=lambda x: x.lower()):
-                if not name.lower().endswith(".json"):
-                    continue
-                full = os.path.abspath(os.path.join(folder, name))
-                if full in seen:
-                    continue
-                seen.add(full)
-                if name.lower() == "template_run_state.json":
-                    continue
-                if "config." not in name.lower() and folder != templates_dir:
-                    continue
-                rel = os.path.relpath(full, root_dir)
-                raw_status = str((template_states.get(full, {}) or {}).get("status", "")).strip().lower()
-                is_done = raw_status in {"done", "completed", "finished", "success"}
-                label = f"{'已完成' if is_done else '未完成'} | {rel}"
-                if is_done:
-                    done_pairs.append((label, full))
-                else:
-                    unfinished_pairs.append((label, full))
-        return unfinished_pairs + done_pairs
+        return _svc_list_public_scraper_templates(__file__)
 
     def _save_generated_template(self, start_url: str, runtime_config: Dict[str, Any]) -> str:
         payload = json.loads(json.dumps(runtime_config, ensure_ascii=False))

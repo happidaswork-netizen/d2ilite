@@ -33,6 +33,21 @@ from services.scraper_monitor_service import (
     write_jsonl_rows,
 )
 from services.settings_service import load_app_settings, save_app_settings
+from services.task_service import (
+    count_latest_metadata_status,
+    default_public_tasks_root,
+    derive_public_task_status,
+    discover_public_task_roots,
+    estimate_scraper_total_target,
+    list_public_scraper_templates,
+    load_public_scraper_template_states,
+    public_scraper_template_state_path,
+    public_scraper_templates_dir,
+    retry_requires_crawl_phase,
+    save_public_scraper_template_states,
+    set_public_scraper_template_state,
+    suggest_public_scraper_output_root,
+)
 
 
 def _assert_equal(actual, expected, label: str) -> None:
@@ -112,6 +127,93 @@ def test_settings_rw() -> None:
         _assert_equal(str(data.get("llm", {}).get("model", "")), "gpt-x", "settings_model")
 
 
+def test_task_discovery_and_root_defaults() -> None:
+    base = default_public_tasks_root(__file__)
+    _assert_true(base.endswith(os.path.join("data", "public_archive")), "default_task_root_suffix")
+    with tempfile.TemporaryDirectory() as td:
+        task_root = os.path.join(td, "task_a")
+        os.makedirs(os.path.join(task_root, "state"), exist_ok=True)
+        with open(os.path.join(task_root, "state", "runtime_config.json"), "w", encoding="utf-8") as f:
+            f.write("{}")
+        roots = discover_public_task_roots(td)
+        _assert_equal(roots, [os.path.abspath(task_root)], "discover_task_roots")
+
+
+def test_estimate_total_target_and_metadata_status() -> None:
+    with tempfile.TemporaryDirectory() as td:
+        os.makedirs(os.path.join(td, "reports"), exist_ok=True)
+        os.makedirs(os.path.join(td, "raw"), exist_ok=True)
+        os.makedirs(os.path.join(td, "downloads"), exist_ok=True)
+        with open(os.path.join(td, "reports", "crawl_report.json"), "w", encoding="utf-8") as f:
+            f.write('{"metrics_this_run":{"detail_requests_enqueued":12},"totals_on_disk":{"profiles":9}}')
+        with open(os.path.join(td, "raw", "list_records.jsonl"), "w", encoding="utf-8") as f:
+            f.write('{"detail_url":"https://a/1"}\n')
+            f.write('{"detail_url":"https://a/2"}\n')
+            f.write('{"detail_url":"https://a/2"}\n')
+        with open(os.path.join(td, "raw", "profiles.jsonl"), "w", encoding="utf-8") as f:
+            f.write("{}\n{}\n{}\n")
+        with open(os.path.join(td, "downloads", "image_downloads.jsonl"), "w", encoding="utf-8") as f:
+            f.write("{}\n{}\n{}\n{}\n{}\n")
+        with open(os.path.join(td, "raw", "metadata_write_results.jsonl"), "w", encoding="utf-8") as f:
+            f.write('{"detail_url":"u1","status":"failed"}\n')
+            f.write('{"detail_url":"u1","status":"ok"}\n')
+            f.write('{"detail_url":"u2","status":"error"}\n')
+        _assert_equal(estimate_scraper_total_target(td), 12, "estimate_total_target")
+        _assert_equal(count_latest_metadata_status(td), (1, 1), "latest_metadata_status")
+
+
+def test_retry_requires_crawl_phase_and_status() -> None:
+    rows = [
+        {"detail": "√", "meta": "√"},
+        {"detail": "x", "meta": "…"},
+    ]
+    _assert_true(retry_requires_crawl_phase(rows), "retry_requires_crawl")
+    done_rows = [{"detail": "√", "meta": "√"}]
+    _assert_equal(retry_requires_crawl_phase(done_rows), False, "retry_not_required")
+    class _RunningProc:
+        def poll(self):
+            return None
+
+    status = derive_public_task_status(
+        root="r1",
+        entry={"manual_paused": True, "proc": _RunningProc()},
+        current_active_root="r1",
+        pause_flag_exists=False,
+        backoff_state={"blocked_until": "", "blocked_reason": ""},
+        profile_rows=3,
+        pending_rows=3,
+        metadata_failed=0,
+        activity_total=5,
+    )
+    _assert_equal(status, "手动暂停(当前)", "derive_task_status")
+
+
+def test_template_state_services() -> None:
+    with tempfile.TemporaryDirectory() as td:
+        app_file = os.path.join(td, "app.py")
+        Path(app_file).write_text("# smoke\n", encoding="utf-8")
+        templates_dir = public_scraper_templates_dir(app_file)
+        state_path = public_scraper_template_state_path(app_file)
+        _assert_true(templates_dir.endswith(os.path.join("scraper", "templates")), "templates_dir_suffix")
+        _assert_true(state_path.endswith(os.path.join("scraper", "state", "template_run_state.json")), "state_path_suffix")
+        custom_tpl = os.path.join(templates_dir, "demo.json")
+        Path(custom_tpl).write_text("{}", encoding="utf-8")
+        scraper_tpl = os.path.join(td, "scraper", "config.sample.json")
+        os.makedirs(os.path.dirname(scraper_tpl), exist_ok=True)
+        Path(scraper_tpl).write_text("{}", encoding="utf-8")
+        save_public_scraper_template_states(app_file, {custom_tpl: {"status": "done", "updated_at": ""}})
+        set_public_scraper_template_state(app_file, scraper_tpl, "pending")
+        states = load_public_scraper_template_states(app_file)
+        _assert_equal(states[os.path.abspath(custom_tpl)]["status"], "done", "template_state_done")
+        _assert_equal(states[os.path.abspath(scraper_tpl)]["status"], "pending", "template_state_pending")
+        pairs = list_public_scraper_templates(app_file)
+        found = {os.path.abspath(path) for _label, path in pairs}
+        _assert_true(os.path.abspath(custom_tpl) in found, "list_templates_custom")
+        _assert_true(os.path.abspath(scraper_tpl) in found, "list_templates_builtin")
+        out_root = suggest_public_scraper_output_root(app_file, "site_demo")
+        _assert_true(out_root.endswith(os.path.join("data", "public_archive", "site_demo")), "suggest_output_root")
+
+
 def main() -> int:
     tests = [
         test_normalize_http_url,
@@ -123,6 +225,10 @@ def main() -> int:
         test_build_structured_payload,
         test_read_image_basic_info,
         test_settings_rw,
+        test_task_discovery_and_root_defaults,
+        test_estimate_total_target_and_metadata_status,
+        test_retry_requires_crawl_phase_and_status,
+        test_template_state_services,
     ]
     for fn in tests:
         fn()
