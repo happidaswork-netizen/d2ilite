@@ -13,6 +13,7 @@
    - `services/runtime_service.py`
    - `services/settings_service.py`
    - `services/task_service.py`（任务编排核心逻辑）
+   - `services/task_orchestration_service.py`（任务动作参数编排）
 
 2. `app.py` 已完成对以下能力的服务化接入：
    - 图片列表扫描与基础信息读取
@@ -43,6 +44,7 @@
    - 进度统计与文案：`summarize_scraper_progress_rows`、`build_public_scraper_progress_text`
    - 任务动作参数编排：`build_continue_start_existing_task_args`、`build_retry_start_existing_task_args`、`build_rewrite_metadata_start_existing_task_args`、`continue_action_for_active_entry`
    - 任务管理视图渲染：`public_task_summary_to_tree_values`、`public_task_manager_status_text`
+   - 任务动作编排模块独立：`task_orchestration_service.py`（从 `task_service.py` 拆分）
 
 ## 验证结果
 

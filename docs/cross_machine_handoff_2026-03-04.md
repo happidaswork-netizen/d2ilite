@@ -17,8 +17,9 @@
 当前结论：
 
 1. `app.py` 已显著减薄，任务统计/模板状态/进度聚合等纯逻辑已经下沉到 `services/task_service.py`。
-2. `desktop-next` 已可通过 `scripts/desktop_bridge_cli.py` 读写图片元数据（桥接协议已稳定）。
-3. 代码可在当前分支直接继续迭代，不需要从旧版本重新开始。
+2. 任务“继续/重试/重写元数据”的参数编排已独立到 `services/task_orchestration_service.py`。
+3. `desktop-next` 已可通过 `scripts/desktop_bridge_cli.py` 读写图片元数据（桥接协议已稳定）。
+4. 代码可在当前分支直接继续迭代，不需要从旧版本重新开始。
 
 ## 2. 跨电脑继续开发（最小步骤）
 

@@ -99,13 +99,9 @@ from services.settings_service import (
 )
 from services.task_service import (
     build_scraper_task_view_rows as _svc_build_scraper_task_view_rows,
-    build_continue_start_existing_task_args as _svc_build_continue_start_existing_task_args,
     build_public_scraper_progress_text as _svc_build_public_scraper_progress_text,
-    build_retry_start_existing_task_args as _svc_build_retry_start_existing_task_args,
-    build_rewrite_metadata_start_existing_task_args as _svc_build_rewrite_metadata_start_existing_task_args,
     collect_detail_urls_from_progress_values as _svc_collect_detail_urls_from_progress_values,
     collect_scraper_progress_rows as _svc_collect_scraper_progress_rows,
-    continue_action_for_active_entry as _svc_continue_action_for_active_entry,
     count_jsonl_rows as _svc_count_jsonl_rows,
     count_latest_metadata_status as _svc_count_latest_metadata_status,
     default_public_tasks_root as _svc_default_public_tasks_root,
@@ -134,7 +130,6 @@ from services.task_service import (
     save_public_scraper_template_states as _svc_save_public_scraper_template_states,
     set_public_scraper_manual_pause_flag as _svc_set_public_scraper_manual_pause_flag,
     split_scraper_progress_rows as _svc_split_scraper_progress_rows,
-    retry_started_status_text as _svc_retry_started_status_text,
     summarize_scraper_progress_rows as _svc_summarize_scraper_progress_rows,
     sort_public_task_summaries as _svc_sort_public_task_summaries,
     retry_requires_crawl_phase as _svc_retry_requires_crawl_phase,
@@ -144,6 +139,13 @@ from services.task_service import (
     set_public_scraper_template_state as _svc_set_public_scraper_template_state,
     summarize_public_task as _svc_summarize_public_task,
     suggest_public_scraper_output_root as _svc_suggest_public_scraper_output_root,
+)
+from services.task_orchestration_service import (
+    build_continue_start_existing_task_args as _svc_build_continue_start_existing_task_args,
+    build_retry_start_existing_task_args as _svc_build_retry_start_existing_task_args,
+    build_rewrite_metadata_start_existing_task_args as _svc_build_rewrite_metadata_start_existing_task_args,
+    continue_action_for_active_entry as _svc_continue_action_for_active_entry,
+    retry_started_status_text as _svc_retry_started_status_text,
 )
 from services.viewer_load_service import (
     load_metadata_snapshot as _svc_load_metadata_snapshot,
@@ -4986,8 +4988,7 @@ class D2ILiteApp(BaseWindow):
                 return
 
         if not selected:
-            app_dir = os.path.dirname(__file__)
-            initial_dir = self._public_scraper_output_root or os.path.join(app_dir, "data", "public_archive")
+            initial_dir = self._public_scraper_output_root or self._default_public_tasks_root()
             selected = filedialog.askdirectory(
                 parent=self,
                 title="选择要继续的任务目录（可在当前任务运行时并行启动）",
@@ -5014,9 +5015,8 @@ class D2ILiteApp(BaseWindow):
             messagebox.showinfo("提示", "当前任务正在运行，请先暂停后再重试失败项。", parent=self)
             return
 
-        app_dir = os.path.dirname(__file__)
         active_root = self._normalize_public_task_root(self._public_scraper_active_task_root or self._public_scraper_output_root)
-        initial_dir = active_root or os.path.join(app_dir, "data", "public_archive")
+        initial_dir = active_root or self._default_public_tasks_root()
         selected = active_root or filedialog.askdirectory(
             parent=self,
             title="选择要重试失败项的任务目录",

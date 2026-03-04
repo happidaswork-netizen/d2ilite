@@ -33,15 +33,18 @@ from services.scraper_monitor_service import (
     write_jsonl_rows,
 )
 from services.settings_service import load_app_settings, save_app_settings
-from services.task_service import (
-    build_scraper_task_view_rows,
+from services.task_orchestration_service import (
     build_continue_start_existing_task_args,
-    build_public_scraper_progress_text,
     build_retry_start_existing_task_args,
     build_rewrite_metadata_start_existing_task_args,
+    continue_action_for_active_entry,
+    retry_started_status_text,
+)
+from services.task_service import (
+    build_scraper_task_view_rows,
+    build_public_scraper_progress_text,
     collect_detail_urls_from_progress_values,
     collect_scraper_progress_rows,
-    continue_action_for_active_entry,
     count_jsonl_rows,
     count_latest_metadata_status,
     dedupe_progress_values,
@@ -72,7 +75,6 @@ from services.task_service import (
     summarize_public_task,
     suggest_public_scraper_output_root,
     task_entry_status_text,
-    retry_started_status_text,
 )
 
 
@@ -439,9 +441,18 @@ def test_task_orchestration_argument_helpers() -> None:
         def poll(self):
             return None
 
-    action1 = continue_action_for_active_entry({"proc": _RunningProc(), "manual_paused": True})
-    action2 = continue_action_for_active_entry({"proc": _RunningProc(), "manual_paused": False})
-    action3 = continue_action_for_active_entry({"proc": None})
+    action1 = continue_action_for_active_entry(
+        {"proc": _RunningProc(), "manual_paused": True},
+        is_process_running_fn=lambda p: bool(p and p.poll() is None),
+    )
+    action2 = continue_action_for_active_entry(
+        {"proc": _RunningProc(), "manual_paused": False},
+        is_process_running_fn=lambda p: bool(p and p.poll() is None),
+    )
+    action3 = continue_action_for_active_entry(
+        {"proc": None},
+        is_process_running_fn=lambda p: bool(p and p.poll() is None),
+    )
     _assert_equal(action1, "resume_paused", "continue_action_paused")
     _assert_equal(action2, "already_running", "continue_action_running")
     _assert_equal(action3, "start_new", "continue_action_start")
