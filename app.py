@@ -120,10 +120,12 @@ from services.task_service import (
     public_scraper_pause_flag_path as _svc_public_scraper_pause_flag_path,
     read_json_file as _svc_read_json_file,
     read_scraper_backoff_state as _svc_read_scraper_backoff_state,
+    parse_task_root_from_values as _svc_parse_task_root_from_values,
     scraper_progress_row_to_table_values as _svc_scraper_progress_row_to_table_values,
     scraper_progress_snapshot as _svc_scraper_progress_snapshot,
     scraper_progress_values_has_error as _svc_scraper_progress_values_has_error,
     save_public_scraper_template_states as _svc_save_public_scraper_template_states,
+    set_public_scraper_manual_pause_flag as _svc_set_public_scraper_manual_pause_flag,
     split_scraper_progress_rows as _svc_split_scraper_progress_rows,
     sort_public_task_summaries as _svc_sort_public_task_summaries,
     retry_requires_crawl_phase as _svc_retry_requires_crawl_phase,
@@ -1956,9 +1958,7 @@ class D2ILiteApp(BaseWindow):
             if not selected:
                 return ""
             values = tuple(tree.item(selected[0], "values") or ())
-            if len(values) < 10:
-                return ""
-            return os.path.abspath(str(values[9] or "").strip())
+            return _svc_parse_task_root_from_values(values, root_index=9)
         except Exception:
             return ""
 
@@ -3824,9 +3824,11 @@ class D2ILiteApp(BaseWindow):
             if not selected:
                 return
             values = tuple(tree.item(selected[0], "values") or ())
-            if len(values) < 4:
-                return
-            root = self._normalize_public_task_root(values[3])
+            root = _svc_parse_task_root_from_values(
+                values,
+                root_index=3,
+                normalize_root_fn=self._normalize_public_task_root,
+            )
             if not root:
                 return
             current = self._normalize_public_task_root(self._public_scraper_active_task_root or self._public_scraper_output_root)
@@ -3841,28 +3843,14 @@ class D2ILiteApp(BaseWindow):
         return _svc_public_scraper_pause_flag_path(output_root)
 
     def _set_public_scraper_manual_pause_flag(self, output_root: str, paused: bool) -> bool:
-        flag_path = self._public_scraper_pause_flag_path(output_root)
-        if not flag_path:
+        ok = _svc_set_public_scraper_manual_pause_flag(output_root, paused)
+        if not ok:
             return False
-        try:
-            if paused:
-                os.makedirs(os.path.dirname(flag_path), exist_ok=True)
-                payload = {
-                    "paused": True,
-                    "updated_at": datetime.now().isoformat(timespec="seconds"),
-                }
-                with open(flag_path, "w", encoding="utf-8") as f:
-                    json.dump(payload, f, ensure_ascii=False, indent=2)
-            else:
-                if os.path.exists(flag_path):
-                    os.remove(flag_path)
-            root = self._normalize_public_task_root(output_root)
-            entry = self._public_scraper_tasks.get(root)
-            if isinstance(entry, dict):
-                entry["manual_paused"] = bool(paused)
-            return True
-        except Exception:
-            return False
+        root = self._normalize_public_task_root(output_root)
+        entry = self._public_scraper_tasks.get(root)
+        if isinstance(entry, dict):
+            entry["manual_paused"] = bool(paused)
+        return True
 
     def _clear_public_scraper_manual_pause_flag(self):
         output_root = str(self._public_scraper_output_root or "").strip()

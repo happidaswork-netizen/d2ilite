@@ -39,6 +39,7 @@
    - 任务摘要与排序：`summarize_public_task`、`sort_public_task_summaries`
    - 进度表视图模型：`split_scraper_progress_rows`、`scraper_progress_snapshot`、`scraper_progress_row_to_table_values`、`collect_detail_urls_from_progress_values`、`dedupe_progress_values`
    - 任务面板视图模型：`task_entry_status_text`、`reconcile_task_entry_runtime_state`、`build_scraper_task_view_rows`
+   - 任务选择与暂停标记：`parse_task_root_from_values`、`set_public_scraper_manual_pause_flag`
 
 ## 验证结果
 

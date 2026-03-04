@@ -48,6 +48,7 @@ from services.task_service import (
     is_scraper_row_image_downloaded,
     list_public_scraper_templates,
     load_public_scraper_template_states,
+    parse_task_root_from_values,
     public_scraper_template_state_path,
     public_scraper_templates_dir,
     retry_requires_crawl_phase,
@@ -56,6 +57,7 @@ from services.task_service import (
     scraper_progress_snapshot,
     scraper_progress_values_has_error,
     save_public_scraper_template_states,
+    set_public_scraper_manual_pause_flag,
     set_public_scraper_template_state,
     split_scraper_progress_rows,
     sort_public_task_summaries,
@@ -367,6 +369,18 @@ def test_task_view_model_helpers() -> None:
     _assert_equal(running_count, 1, "task_view_running_count")
     _assert_equal(len(rows), 3, "task_view_row_count")
     _assert_true(bool(rows[0].get("running")), "task_view_running_first")
+
+    root = parse_task_root_from_values(("运行中", "123", "task", "C:/task_a"), root_index=3)
+    _assert_true(root.endswith("task_a"), "parse_task_root")
+
+    with tempfile.TemporaryDirectory() as td:
+        ok1 = set_public_scraper_manual_pause_flag(td, True)
+        _assert_true(ok1, "set_pause_flag_true")
+        flag_path = os.path.join(td, "state", "manual_pause.flag")
+        _assert_true(os.path.exists(flag_path), "pause_flag_exists")
+        ok2 = set_public_scraper_manual_pause_flag(td, False)
+        _assert_true(ok2, "set_pause_flag_false")
+        _assert_equal(os.path.exists(flag_path), False, "pause_flag_removed")
 
 
 def main() -> int:

@@ -44,6 +44,27 @@ def public_scraper_pause_flag_path(output_root: Any) -> str:
     return os.path.join(root, "state", "manual_pause.flag")
 
 
+def set_public_scraper_manual_pause_flag(output_root: Any, paused: bool) -> bool:
+    flag_path = public_scraper_pause_flag_path(output_root)
+    if not flag_path:
+        return False
+    try:
+        if paused:
+            os.makedirs(os.path.dirname(flag_path), exist_ok=True)
+            payload = {
+                "paused": True,
+                "updated_at": datetime.now().isoformat(timespec="seconds"),
+            }
+            with open(flag_path, "w", encoding="utf-8") as f:
+                json.dump(payload, f, ensure_ascii=False, indent=2)
+        else:
+            if os.path.exists(flag_path):
+                os.remove(flag_path)
+        return True
+    except Exception:
+        return False
+
+
 def normalize_existing_path(path_value: Any) -> str:
     path = str(path_value or "").strip()
     if not path:
@@ -573,6 +594,20 @@ def dedupe_progress_values(values_list: Iterable[Tuple[Any, ...]]) -> List[Tuple
         seen.add(values)
         output.append(values)
     return output
+
+
+def parse_task_root_from_values(
+    values: Any,
+    *,
+    root_index: int,
+    normalize_root_fn: Optional[Callable[[Any], str]] = None,
+) -> str:
+    if not isinstance(values, tuple):
+        return ""
+    if root_index < 0 or len(values) <= root_index:
+        return ""
+    normalize_root = normalize_root_fn or normalize_public_task_root
+    return normalize_root(values[root_index])
 
 
 def collect_scraper_progress_rows(
