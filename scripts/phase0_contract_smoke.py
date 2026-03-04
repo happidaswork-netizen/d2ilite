@@ -35,9 +35,13 @@ from services.scraper_monitor_service import (
 from services.settings_service import load_app_settings, save_app_settings
 from services.task_service import (
     build_scraper_task_view_rows,
+    build_continue_start_existing_task_args,
     build_public_scraper_progress_text,
+    build_retry_start_existing_task_args,
+    build_rewrite_metadata_start_existing_task_args,
     collect_detail_urls_from_progress_values,
     collect_scraper_progress_rows,
+    continue_action_for_active_entry,
     count_jsonl_rows,
     count_latest_metadata_status,
     dedupe_progress_values,
@@ -66,6 +70,7 @@ from services.task_service import (
     summarize_public_task,
     suggest_public_scraper_output_root,
     task_entry_status_text,
+    retry_started_status_text,
 )
 
 
@@ -408,6 +413,38 @@ def test_public_scraper_progress_text_helpers() -> None:
     _assert_true("发现:2/4" in text, "progress_text_discover_part")
 
 
+def test_task_orchestration_argument_helpers() -> None:
+    continue_args = build_continue_start_existing_task_args(
+        {"mode": "browser", "auto_fallback": False, "disable_page_images": False}
+    )
+    _assert_equal(continue_args["skip_crawl"], False, "continue_args_skip_crawl")
+    _assert_equal(continue_args["mode_override"], "browser", "continue_args_mode")
+
+    retry_args = build_retry_start_existing_task_args(True, {"mode": "requests_jsl"})
+    _assert_equal(retry_args["skip_crawl"], False, "retry_args_need_crawl")
+    _assert_equal(retry_args["runtime_state"], "继续运行中", "retry_args_runtime_need_crawl")
+    _assert_equal(retry_started_status_text(True), "重试任务已启动（自动包含详情重抓）", "retry_status_need_crawl")
+
+    retry_args2 = build_retry_start_existing_task_args(False, {"mode": "requests_jsl"})
+    _assert_equal(retry_args2["skip_crawl"], True, "retry_args_skip_crawl")
+    _assert_equal(retry_args2["runtime_state"], "失败重试中", "retry_args_runtime_skip_crawl")
+
+    rewrite_args = build_rewrite_metadata_start_existing_task_args()
+    _assert_equal(rewrite_args["skip_images"], True, "rewrite_args_skip_images")
+    _assert_equal(rewrite_args["runtime_state"], "元数据重写中", "rewrite_args_runtime")
+
+    class _RunningProc:
+        def poll(self):
+            return None
+
+    action1 = continue_action_for_active_entry({"proc": _RunningProc(), "manual_paused": True})
+    action2 = continue_action_for_active_entry({"proc": _RunningProc(), "manual_paused": False})
+    action3 = continue_action_for_active_entry({"proc": None})
+    _assert_equal(action1, "resume_paused", "continue_action_paused")
+    _assert_equal(action2, "already_running", "continue_action_running")
+    _assert_equal(action3, "start_new", "continue_action_start")
+
+
 def main() -> int:
     tests = [
         test_normalize_http_url,
@@ -430,6 +467,7 @@ def main() -> int:
         test_public_task_summary_sort,
         test_task_view_model_helpers,
         test_public_scraper_progress_text_helpers,
+        test_task_orchestration_argument_helpers,
     ]
     for fn in tests:
         fn()

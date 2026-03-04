@@ -99,9 +99,13 @@ from services.settings_service import (
 )
 from services.task_service import (
     build_scraper_task_view_rows as _svc_build_scraper_task_view_rows,
+    build_continue_start_existing_task_args as _svc_build_continue_start_existing_task_args,
     build_public_scraper_progress_text as _svc_build_public_scraper_progress_text,
+    build_retry_start_existing_task_args as _svc_build_retry_start_existing_task_args,
+    build_rewrite_metadata_start_existing_task_args as _svc_build_rewrite_metadata_start_existing_task_args,
     collect_detail_urls_from_progress_values as _svc_collect_detail_urls_from_progress_values,
     collect_scraper_progress_rows as _svc_collect_scraper_progress_rows,
+    continue_action_for_active_entry as _svc_continue_action_for_active_entry,
     count_jsonl_rows as _svc_count_jsonl_rows,
     count_latest_metadata_status as _svc_count_latest_metadata_status,
     default_public_tasks_root as _svc_default_public_tasks_root,
@@ -128,6 +132,7 @@ from services.task_service import (
     save_public_scraper_template_states as _svc_save_public_scraper_template_states,
     set_public_scraper_manual_pause_flag as _svc_set_public_scraper_manual_pause_flag,
     split_scraper_progress_rows as _svc_split_scraper_progress_rows,
+    retry_started_status_text as _svc_retry_started_status_text,
     summarize_scraper_progress_rows as _svc_summarize_scraper_progress_rows,
     sort_public_task_summaries as _svc_sort_public_task_summaries,
     retry_requires_crawl_phase as _svc_retry_requires_crawl_phase,
@@ -1971,28 +1976,26 @@ class D2ILiteApp(BaseWindow):
             return
         self._set_active_public_scraper_task(root, refresh=False)
         active_entry = self._public_scraper_tasks.get(os.path.abspath(root))
-        if isinstance(active_entry, dict) and self._is_process_running(active_entry.get("proc")):
-            if bool(active_entry.get("manual_paused", False)):
-                self._continue_public_scraper_from_gui()
-            else:
-                messagebox.showinfo("提示", "该任务已在运行中。", parent=self)
+        action = _svc_continue_action_for_active_entry(
+            active_entry if isinstance(active_entry, dict) else None,
+            is_process_running_fn=self._is_process_running,
+        )
+        if action == "resume_paused":
+            self._continue_public_scraper_from_gui()
+            self._refresh_public_task_manager_list()
+            return
+        if action == "already_running":
+            messagebox.showinfo("提示", "该任务已在运行中。", parent=self)
             self._refresh_public_task_manager_list()
             return
         continue_opts = self._show_public_scraper_continue_options_dialog(root)
         if not continue_opts:
             self._set_status("已取消继续任务")
             return
+        start_kwargs = _svc_build_continue_start_existing_task_args(continue_opts)
         ok = self._start_public_scraper_from_existing_task(
             output_root=root,
-            skip_crawl=False,
-            skip_images=False,
-            skip_metadata=False,
-            show_success_dialog=True,
-            success_title="继续任务",
-            runtime_state="继续运行中",
-            mode_override=str(continue_opts.get("mode", "")),
-            auto_fallback_override=bool(continue_opts.get("auto_fallback", True)),
-            disable_page_images_override=bool(continue_opts.get("disable_page_images", True)),
+            **start_kwargs,
         )
         if ok:
             self._refresh_public_task_manager_list()
@@ -2004,25 +2007,17 @@ class D2ILiteApp(BaseWindow):
             return
         self._set_active_public_scraper_task(root, refresh=False)
         need_crawl = self._retry_requires_crawl_phase(root)
-        skip_crawl = (not need_crawl)
         retry_opts = self._show_public_scraper_continue_options_dialog(root)
         if not retry_opts:
             self._set_status("已取消失败重试")
             return
+        start_kwargs = _svc_build_retry_start_existing_task_args(need_crawl, retry_opts)
         ok = self._start_public_scraper_from_existing_task(
             output_root=root,
-            skip_crawl=skip_crawl,
-            skip_images=False,
-            skip_metadata=False,
-            show_success_dialog=True,
-            success_title=("重试失败（含详情重抓）" if need_crawl else "重试失败"),
-            runtime_state=("继续运行中" if need_crawl else "失败重试中"),
-            mode_override=str(retry_opts.get("mode", "")),
-            auto_fallback_override=bool(retry_opts.get("auto_fallback", True)),
-            disable_page_images_override=bool(retry_opts.get("disable_page_images", True)),
+            **start_kwargs,
         )
         if ok:
-            self._set_status("重试任务已启动（自动包含详情重抓）" if need_crawl else "重试任务已启动（失败优先）")
+            self._set_status(_svc_retry_started_status_text(need_crawl))
             self._refresh_public_task_manager_list()
 
     def _rewrite_selected_public_task_metadata(self):
@@ -2031,14 +2026,10 @@ class D2ILiteApp(BaseWindow):
             messagebox.showinfo("提示", "请先在任务列表中选择一个任务。", parent=self)
             return
         self._set_active_public_scraper_task(root, refresh=False)
+        start_kwargs = _svc_build_rewrite_metadata_start_existing_task_args()
         ok = self._start_public_scraper_from_existing_task(
             output_root=root,
-            skip_crawl=True,
-            skip_images=True,
-            skip_metadata=False,
-            show_success_dialog=True,
-            success_title="重写元数据",
-            runtime_state="元数据重写中",
+            **start_kwargs,
         )
         if ok:
             self._refresh_public_task_manager_list()
@@ -5021,17 +5012,10 @@ class D2ILiteApp(BaseWindow):
             self._set_status("已取消继续任务")
             return
 
+        start_kwargs = _svc_build_continue_start_existing_task_args(continue_opts)
         self._start_public_scraper_from_existing_task(
             output_root=selected,
-            skip_crawl=False,
-            skip_images=False,
-            skip_metadata=False,
-            show_success_dialog=True,
-            success_title="继续任务",
-            runtime_state="继续运行中",
-            mode_override=str(continue_opts.get("mode", "")),
-            auto_fallback_override=bool(continue_opts.get("auto_fallback", True)),
-            disable_page_images_override=bool(continue_opts.get("disable_page_images", True)),
+            **start_kwargs,
         )
 
     def _retry_public_scraper_from_gui(self):
@@ -5059,18 +5043,10 @@ class D2ILiteApp(BaseWindow):
 
         self._set_active_public_scraper_task(selected, refresh=False)
         need_crawl = self._retry_requires_crawl_phase(selected)
-        skip_crawl = (not need_crawl)
+        start_kwargs = _svc_build_retry_start_existing_task_args(need_crawl, retry_opts)
         self._start_public_scraper_from_existing_task(
             output_root=selected,
-            skip_crawl=skip_crawl,
-            skip_images=False,
-            skip_metadata=False,
-            show_success_dialog=True,
-            success_title=("重试失败（含详情重抓）" if need_crawl else "重试失败"),
-            runtime_state=("继续运行中" if need_crawl else "失败重试中"),
-            mode_override=str(retry_opts.get("mode", "")),
-            auto_fallback_override=bool(retry_opts.get("auto_fallback", True)),
-            disable_page_images_override=bool(retry_opts.get("disable_page_images", True)),
+            **start_kwargs,
         )
 
     def _pause_public_scraper_from_gui(self):
