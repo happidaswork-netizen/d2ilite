@@ -492,6 +492,26 @@ def sort_public_task_summaries(rows: List[Dict[str, Any]]) -> List[Dict[str, Any
     return data
 
 
+def public_task_summary_to_tree_values(row: Dict[str, Any]) -> Tuple[str, str, str, str, str, str, str, str, str, str]:
+    data = row if isinstance(row, dict) else {}
+    return (
+        str(data.get("status", "")),
+        str(data.get("task", "")),
+        str(data.get("profiles", 0)),
+        str(data.get("images", 0)),
+        str(data.get("metadata_ok", 0)),
+        str(data.get("pending", 0)),
+        str(data.get("review", 0)),
+        str(data.get("failures", 0)),
+        str(data.get("updated_at", "")),
+        str(data.get("root", "")),
+    )
+
+
+def public_task_manager_status_text(task_count: int) -> str:
+    return f"任务数: {max(0, int(task_count or 0))}"
+
+
 def is_scraper_row_completed(row: Dict[str, Any]) -> bool:
     if not isinstance(row, dict):
         return False

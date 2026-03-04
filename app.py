@@ -126,6 +126,8 @@ from services.task_service import (
     read_json_file as _svc_read_json_file,
     read_scraper_backoff_state as _svc_read_scraper_backoff_state,
     parse_task_root_from_values as _svc_parse_task_root_from_values,
+    public_task_manager_status_text as _svc_public_task_manager_status_text,
+    public_task_summary_to_tree_values as _svc_public_task_summary_to_tree_values,
     scraper_progress_row_to_table_values as _svc_scraper_progress_row_to_table_values,
     scraper_progress_snapshot as _svc_scraper_progress_snapshot,
     scraper_progress_values_has_error as _svc_scraper_progress_values_has_error,
@@ -1937,22 +1939,11 @@ class D2ILiteApp(BaseWindow):
         except Exception:
             pass
         for row in rows:
-            values = (
-                str(row.get("status", "")),
-                str(row.get("task", "")),
-                str(row.get("profiles", 0)),
-                str(row.get("images", 0)),
-                str(row.get("metadata_ok", 0)),
-                str(row.get("pending", 0)),
-                str(row.get("review", 0)),
-                str(row.get("failures", 0)),
-                str(row.get("updated_at", "")),
-                str(row.get("root", "")),
-            )
+            values = _svc_public_task_summary_to_tree_values(row)
             tree.insert("", tk.END, values=values)
         if status_var is not None:
             try:
-                status_var.set(f"任务数: {len(rows)}")
+                status_var.set(_svc_public_task_manager_status_text(len(rows)))
             except Exception:
                 pass
 

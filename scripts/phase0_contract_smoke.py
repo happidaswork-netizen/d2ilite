@@ -54,6 +54,8 @@ from services.task_service import (
     list_public_scraper_templates,
     load_public_scraper_template_states,
     parse_task_root_from_values,
+    public_task_manager_status_text,
+    public_task_summary_to_tree_values,
     public_scraper_template_state_path,
     public_scraper_templates_dir,
     retry_requires_crawl_phase,
@@ -445,6 +447,26 @@ def test_task_orchestration_argument_helpers() -> None:
     _assert_equal(action3, "start_new", "continue_action_start")
 
 
+def test_public_task_manager_view_helpers() -> None:
+    values = public_task_summary_to_tree_values(
+        {
+            "status": "运行中",
+            "task": "任务A",
+            "profiles": 10,
+            "images": 8,
+            "metadata_ok": 7,
+            "pending": 3,
+            "review": 1,
+            "failures": 2,
+            "updated_at": "2026-03-04 10:00:00",
+            "root": "D:/x",
+        }
+    )
+    _assert_equal(values[0], "运行中", "task_manager_values_status")
+    _assert_equal(values[9], "D:/x", "task_manager_values_root")
+    _assert_equal(public_task_manager_status_text(12), "任务数: 12", "task_manager_status_text")
+
+
 def main() -> int:
     tests = [
         test_normalize_http_url,
@@ -468,6 +490,7 @@ def main() -> int:
         test_task_view_model_helpers,
         test_public_scraper_progress_text_helpers,
         test_task_orchestration_argument_helpers,
+        test_public_task_manager_view_helpers,
     ]
     for fn in tests:
         fn()
