@@ -38,6 +38,8 @@ from services.task_orchestration_service import (
     build_retry_start_existing_task_args,
     build_rewrite_metadata_start_existing_task_args,
     continue_action_for_active_entry,
+    decide_task_exit_outcome,
+    pick_next_active_root,
     retry_started_status_text,
 )
 from services.task_service import (
@@ -460,6 +462,51 @@ def test_task_orchestration_argument_helpers() -> None:
     _assert_equal(action3, "start_new", "continue_action_start")
 
 
+def test_task_exit_and_active_root_helpers() -> None:
+    done = decide_task_exit_outcome(
+        0,
+        is_active=True,
+        named_dir="D:/out",
+        active_template_path="D:/tpl.json",
+        record_path="D:/out/crawl_record.json",
+    )
+    _assert_equal(done["runtime_state"], "已完成", "exit_done_runtime")
+    _assert_equal(done["template_state"], "done", "exit_done_template_state")
+    _assert_equal(done["dialog_kind"], "info", "exit_done_dialog_kind")
+
+    backoff = decide_task_exit_outcome(
+        2,
+        is_active=True,
+        active_template_path="D:/tpl.json",
+        blocked_until="2026-03-05T12:00:00",
+        blocked_reason="suspected_block_consecutive",
+    )
+    _assert_equal(backoff["runtime_state"], "已暂停(风控等待)", "exit_backoff_runtime")
+    _assert_equal(backoff["template_state"], "pending", "exit_backoff_template_state")
+
+    failed = decide_task_exit_outcome(
+        3,
+        is_active=True,
+        active_template_path="D:/tpl.json",
+        log_path="D:/out/gui_public_scraper.log",
+    )
+    _assert_equal(failed["runtime_state"], "异常结束(3)", "exit_failed_runtime")
+    _assert_equal(failed["dialog_kind"], "warning", "exit_failed_dialog_kind")
+
+    class _RunningProc:
+        def poll(self):
+            return None
+
+    tasks = {
+        "A": {"proc": None},
+        "B": {"proc": _RunningProc()},
+    }
+    next_root = pick_next_active_root("", tasks, is_process_running_fn=lambda p: bool(p and p.poll() is None))
+    _assert_equal(next_root, "B", "pick_next_active_running")
+    next_root2 = pick_next_active_root("C", tasks, is_process_running_fn=lambda p: bool(p and p.poll() is None))
+    _assert_equal(next_root2, "C", "pick_next_active_keep_current")
+
+
 def test_public_task_manager_view_helpers() -> None:
     values = public_task_summary_to_tree_values(
         {
@@ -513,6 +560,7 @@ def main() -> int:
         test_task_view_model_helpers,
         test_public_scraper_progress_text_helpers,
         test_task_orchestration_argument_helpers,
+        test_task_exit_and_active_root_helpers,
         test_public_task_manager_view_helpers,
     ]
     for fn in tests:

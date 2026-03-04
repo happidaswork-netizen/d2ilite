@@ -147,6 +147,8 @@ from services.task_orchestration_service import (
     build_retry_start_existing_task_args as _svc_build_retry_start_existing_task_args,
     build_rewrite_metadata_start_existing_task_args as _svc_build_rewrite_metadata_start_existing_task_args,
     continue_action_for_active_entry as _svc_continue_action_for_active_entry,
+    decide_task_exit_outcome as _svc_decide_task_exit_outcome,
+    pick_next_active_root as _svc_pick_next_active_root,
     retry_started_status_text as _svc_retry_started_status_text,
 )
 from services.viewer_load_service import (
@@ -5115,58 +5117,35 @@ class D2ILiteApp(BaseWindow):
         task["updated_at_ts"] = time.time()
 
         is_active = self._normalize_public_task_root(self._public_scraper_active_task_root or self._public_scraper_output_root) == root_abs
-        if code == 0:
-            task["runtime_state"] = "已完成"
-            if active_template_path:
-                self._set_public_scraper_template_state(active_template_path, "done")
-            if is_active:
-                self._set_status("抓取任务完成")
-                if named_dir:
-                    record_path = self._get_scraper_record_path(root_abs)
-                    tail_msg = f"\n\n抓取记录：\n{record_path}" if record_path else ""
-                    messagebox.showinfo(
-                        "完成",
-                        "抓取任务已完成。\n\n"
-                        f"最终图片目录：\n{named_dir}{tail_msg}",
-                        parent=self,
-                    )
-        elif code == 2:
-            backoff = self._read_scraper_backoff_state(root_abs)
-            blocked_until = backoff.get("blocked_until", "")
-            blocked_reason = backoff.get("blocked_reason", "")
-            task["runtime_state"] = "已暂停(风控等待)"
-            if active_template_path:
-                self._set_public_scraper_template_state(active_template_path, "pending")
-            if is_active:
-                self._set_status("抓取任务已暂停，等待 backoff 后继续")
-                detail_lines = ["抓取任务已自动暂停（风控 backoff）。"]
-                if blocked_until:
-                    detail_lines.append(f"恢复时间：{blocked_until}")
-                if blocked_reason:
-                    detail_lines.append(f"原因：{blocked_reason}")
-                reason_lower = blocked_reason.lower()
-                if "suspected_block_consecutive" in reason_lower:
-                    detail_lines.append("提示：检测到连续提取失败，建议先手动打开目标网页检查是否触发风控或页面结构变化。")
-                detail_lines.append("")
-                detail_lines.append("当前进度已归档，可在稍后点击“继续任务”。")
-                messagebox.showinfo("任务已暂停", "\n".join(detail_lines), parent=self)
-        else:
-            task["runtime_state"] = f"异常结束({code})"
-            if active_template_path:
-                self._set_public_scraper_template_state(active_template_path, "pending")
-            if is_active:
-                self._set_status("抓取任务异常结束")
-                record_path = self._get_scraper_record_path(root_abs)
-                detail = (
-                    f"抓取任务异常结束，退出码：{code}\n\n抓取记录：\n{record_path}"
-                    if record_path
-                    else f"抓取任务异常结束，退出码：{code}\n\n运行日志：\n{log_path}"
-                )
-                messagebox.showwarning(
-                    "任务结束",
-                    detail,
-                    parent=self,
-                )
+        backoff = self._read_scraper_backoff_state(root_abs) if int(code) == 2 else {"blocked_until": "", "blocked_reason": ""}
+        outcome = _svc_decide_task_exit_outcome(
+            int(code),
+            is_active=is_active,
+            named_dir=named_dir,
+            active_template_path=active_template_path,
+            log_path=log_path,
+            record_path=self._get_scraper_record_path(root_abs),
+            blocked_until=str(backoff.get("blocked_until", "")),
+            blocked_reason=str(backoff.get("blocked_reason", "")),
+        )
+        task["runtime_state"] = str(outcome.get("runtime_state", "")).strip() or task.get("runtime_state", "")
+
+        template_state = str(outcome.get("template_state", "")).strip()
+        if active_template_path and template_state:
+            self._set_public_scraper_template_state(active_template_path, template_state)
+
+        status_text = str(outcome.get("status_text", "")).strip()
+        if is_active and status_text:
+            self._set_status(status_text)
+
+        dialog_kind = str(outcome.get("dialog_kind", "")).strip().lower()
+        dialog_title = str(outcome.get("dialog_title", "")).strip()
+        dialog_message = str(outcome.get("dialog_message", "")).strip()
+        if is_active and dialog_kind and dialog_title and dialog_message:
+            if dialog_kind == "warning":
+                messagebox.showwarning(dialog_title, dialog_message, parent=self)
+            else:
+                messagebox.showinfo(dialog_title, dialog_message, parent=self)
 
         self._public_scraper_tasks[root_abs] = task
 
@@ -5188,17 +5167,12 @@ class D2ILiteApp(BaseWindow):
                 continue
             self._handle_public_scraper_task_exit(root, entry, int(code))
 
-        active_root = self._normalize_public_task_root(self._public_scraper_active_task_root or self._public_scraper_output_root)
-        if (not active_root) and self._public_scraper_tasks:
-            for root, entry in self._public_scraper_tasks.items():
-                if isinstance(entry, dict) and self._is_process_running(entry.get("proc")):
-                    active_root = root
-                    break
-            if not active_root:
-                try:
-                    active_root = next(iter(self._public_scraper_tasks.keys()))
-                except Exception:
-                    active_root = ""
+        current_active_root = self._normalize_public_task_root(self._public_scraper_active_task_root or self._public_scraper_output_root)
+        active_root = _svc_pick_next_active_root(
+            current_active_root,
+            self._public_scraper_tasks,
+            is_process_running_fn=self._is_process_running,
+        )
         self._set_active_public_scraper_task(active_root, refresh=False)
 
         if self._is_process_running(self._public_scraper_proc):
