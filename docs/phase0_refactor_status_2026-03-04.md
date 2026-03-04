@@ -37,7 +37,7 @@
    - 进度行聚合：`collect_scraper_progress_rows`（列表/详情/图片/元数据/复核/失败日志聚合）
    - 行状态判定：`is_scraper_row_completed`、`is_scraper_row_image_downloaded`、`scraper_progress_values_has_error`
    - 任务摘要与排序：`summarize_public_task`、`sort_public_task_summaries`
-   - 进度表视图模型：`split_scraper_progress_rows`、`scraper_progress_snapshot`、`scraper_progress_row_to_table_values`、`collect_detail_urls_from_progress_values`
+   - 进度表视图模型：`split_scraper_progress_rows`、`scraper_progress_snapshot`、`scraper_progress_row_to_table_values`、`collect_detail_urls_from_progress_values`、`dedupe_progress_values`
 
 ## 验证结果
 

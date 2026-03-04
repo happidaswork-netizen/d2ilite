@@ -111,6 +111,7 @@ from services.task_service import (
     is_scraper_row_image_downloaded as _svc_is_scraper_row_image_downloaded,
     list_public_scraper_templates as _svc_list_public_scraper_templates,
     load_public_scraper_template_states as _svc_load_public_scraper_template_states,
+    dedupe_progress_values as _svc_dedupe_progress_values,
     normalize_existing_path as _svc_normalize_existing_path,
     normalize_public_task_root as _svc_normalize_public_task_root,
     public_scraper_template_state_path as _svc_public_scraper_template_state_path,
@@ -1362,7 +1363,6 @@ class D2ILiteApp(BaseWindow):
     def _collect_selected_scraper_progress_values(self, table: Optional[ttk.Treeview] = None) -> List[Tuple[Any, ...]]:
         values_list: List[Tuple[Any, ...]] = []
         tables = [table] if table is not None else self._iter_scraper_progress_tables()
-        seen: set[Tuple[Any, ...]] = set()
         for t in tables:
             if t is None:
                 continue
@@ -1375,13 +1375,8 @@ class D2ILiteApp(BaseWindow):
                     values = tuple(t.item(row_id, "values") or ())
                 except Exception:
                     continue
-                if not values:
-                    continue
-                if values in seen:
-                    continue
-                seen.add(values)
                 values_list.append(values)
-        return values_list
+        return _svc_dedupe_progress_values(values_list)
 
     @staticmethod
     def _scraper_progress_values_has_error(values: Tuple[Any, ...]) -> bool:

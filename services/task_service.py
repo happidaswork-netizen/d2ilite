@@ -450,6 +450,19 @@ def collect_detail_urls_from_progress_values(values_list: Iterable[Tuple[Any, ..
     return urls
 
 
+def dedupe_progress_values(values_list: Iterable[Tuple[Any, ...]]) -> List[Tuple[Any, ...]]:
+    output: List[Tuple[Any, ...]] = []
+    seen: set[Tuple[Any, ...]] = set()
+    for values in list(values_list or []):
+        if not isinstance(values, tuple) or (not values):
+            continue
+        if values in seen:
+            continue
+        seen.add(values)
+        output.append(values)
+    return output
+
+
 def collect_scraper_progress_rows(
     output_root: Any,
     *,

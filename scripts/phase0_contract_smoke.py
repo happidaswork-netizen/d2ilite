@@ -38,6 +38,7 @@ from services.task_service import (
     collect_scraper_progress_rows,
     count_jsonl_rows,
     count_latest_metadata_status,
+    dedupe_progress_values,
     default_public_tasks_root,
     derive_public_task_status,
     discover_public_task_roots,
@@ -293,6 +294,15 @@ def test_scraper_progress_view_helpers() -> None:
         ]
     )
     _assert_equal(urls, ["u1", "u2"], "collect_detail_urls")
+    uniq = dedupe_progress_values(
+        [
+            ("1", "甲"),
+            ("1", "甲"),
+            tuple(),
+            ("2", "乙"),
+        ]
+    )
+    _assert_equal(uniq, [("1", "甲"), ("2", "乙")], "dedupe_progress_values")
 
 
 def test_public_task_summary_sort() -> None:
