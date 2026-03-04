@@ -610,6 +610,73 @@ def parse_task_root_from_values(
     return normalize_root(values[root_index])
 
 
+def summarize_scraper_progress_rows(
+    rows: Iterable[Dict[str, Any]],
+    *,
+    is_row_completed_fn: Optional[Callable[[Dict[str, Any]], bool]] = None,
+    is_row_image_downloaded_fn: Optional[Callable[[Dict[str, Any]], bool]] = None,
+) -> Dict[str, int]:
+    items = [row for row in list(rows or []) if isinstance(row, dict)]
+    completed_fn = is_row_completed_fn or is_scraper_row_completed
+    downloaded_fn = is_row_image_downloaded_fn or is_scraper_row_image_downloaded
+    completed_rows = 0
+    downloaded_rows = 0
+    for row in items:
+        try:
+            if completed_fn(row):
+                completed_rows += 1
+        except Exception:
+            pass
+        try:
+            if downloaded_fn(row):
+                downloaded_rows += 1
+        except Exception:
+            pass
+    return {
+        "discovered_rows": len(items),
+        "downloaded_rows": max(0, int(downloaded_rows)),
+        "completed_rows": max(0, int(completed_rows)),
+    }
+
+
+def build_public_scraper_progress_text(
+    *,
+    discovered_rows: int,
+    downloaded_rows: int,
+    completed_rows: int,
+    total_target: int,
+    list_rows: int,
+    profile_rows: int,
+    image_rows: int,
+    metadata_rows: int,
+) -> str:
+    discovered_rows = max(0, int(discovered_rows))
+    downloaded_rows = max(0, int(downloaded_rows))
+    completed_rows = max(0, int(completed_rows))
+    total_target = max(0, int(total_target))
+    list_rows = max(0, int(list_rows))
+    profile_rows = max(0, int(profile_rows))
+    image_rows = max(0, int(image_rows))
+    metadata_rows = max(0, int(metadata_rows))
+
+    discovered_pct = (discovered_rows / total_target * 100.0) if total_target > 0 else 0.0
+    download_target = max(discovered_rows, 0)
+    download_pct = (downloaded_rows / download_target * 100.0) if download_target > 0 else 0.0
+    if download_pct > 100.0:
+        download_pct = 100.0
+
+    return (
+        "抓取中 "
+        f"下载:{downloaded_rows}/{download_target}({download_pct:.1f}%) "
+        f"发现:{discovered_rows}/{total_target}({discovered_pct:.1f}%) "
+        f"完成:{completed_rows} "
+        f"列表:{list_rows} "
+        f"详情:{profile_rows} "
+        f"图片:{image_rows} "
+        f"元数据:{metadata_rows}"
+    )
+
+
 def collect_scraper_progress_rows(
     output_root: Any,
     *,

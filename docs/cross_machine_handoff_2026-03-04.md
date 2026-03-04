@@ -58,7 +58,7 @@ python scripts\bridge_cli_smoke.py
 
 预期：
 
-1. `phase0_contract_smoke` 通过（当前为 `19 tests`）。
+1. `phase0_contract_smoke` 通过（当前为 `20 tests`）。
 2. `bridge_cli_smoke` 通过。
 
 ## 4. 运行方式

@@ -35,6 +35,7 @@ from services.scraper_monitor_service import (
 from services.settings_service import load_app_settings, save_app_settings
 from services.task_service import (
     build_scraper_task_view_rows,
+    build_public_scraper_progress_text,
     collect_detail_urls_from_progress_values,
     collect_scraper_progress_rows,
     count_jsonl_rows,
@@ -61,6 +62,7 @@ from services.task_service import (
     set_public_scraper_template_state,
     split_scraper_progress_rows,
     sort_public_task_summaries,
+    summarize_scraper_progress_rows,
     summarize_public_task,
     suggest_public_scraper_output_root,
     task_entry_status_text,
@@ -383,6 +385,29 @@ def test_task_view_model_helpers() -> None:
         _assert_equal(os.path.exists(flag_path), False, "pause_flag_removed")
 
 
+def test_public_scraper_progress_text_helpers() -> None:
+    rows = [
+        {"detail": "√", "image": "√", "meta": "√"},
+        {"detail": "√", "image": "×", "meta": "…"},
+    ]
+    summary = summarize_scraper_progress_rows(rows)
+    _assert_equal(summary["discovered_rows"], 2, "progress_summary_discovered")
+    _assert_equal(summary["completed_rows"], 1, "progress_summary_completed")
+    _assert_equal(summary["downloaded_rows"], 1, "progress_summary_downloaded")
+    text = build_public_scraper_progress_text(
+        discovered_rows=2,
+        downloaded_rows=1,
+        completed_rows=1,
+        total_target=4,
+        list_rows=5,
+        profile_rows=3,
+        image_rows=2,
+        metadata_rows=1,
+    )
+    _assert_true("下载:1/2" in text, "progress_text_download_part")
+    _assert_true("发现:2/4" in text, "progress_text_discover_part")
+
+
 def main() -> int:
     tests = [
         test_normalize_http_url,
@@ -404,6 +429,7 @@ def main() -> int:
         test_scraper_progress_view_helpers,
         test_public_task_summary_sort,
         test_task_view_model_helpers,
+        test_public_scraper_progress_text_helpers,
     ]
     for fn in tests:
         fn()

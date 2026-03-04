@@ -99,6 +99,7 @@ from services.settings_service import (
 )
 from services.task_service import (
     build_scraper_task_view_rows as _svc_build_scraper_task_view_rows,
+    build_public_scraper_progress_text as _svc_build_public_scraper_progress_text,
     collect_detail_urls_from_progress_values as _svc_collect_detail_urls_from_progress_values,
     collect_scraper_progress_rows as _svc_collect_scraper_progress_rows,
     count_jsonl_rows as _svc_count_jsonl_rows,
@@ -127,6 +128,7 @@ from services.task_service import (
     save_public_scraper_template_states as _svc_save_public_scraper_template_states,
     set_public_scraper_manual_pause_flag as _svc_set_public_scraper_manual_pause_flag,
     split_scraper_progress_rows as _svc_split_scraper_progress_rows,
+    summarize_scraper_progress_rows as _svc_summarize_scraper_progress_rows,
     sort_public_task_summaries as _svc_sort_public_task_summaries,
     retry_requires_crawl_phase as _svc_retry_requires_crawl_phase,
     safe_positive_int as _svc_safe_positive_int,
@@ -3870,29 +3872,29 @@ class D2ILiteApp(BaseWindow):
             self._refresh_scraper_monitor_panel()
             return
         rows = self._collect_scraper_progress_rows(output_root)
-        completed_rows = sum(1 for row in rows if self._is_scraper_row_completed(row))
-        downloaded_rows = sum(1 for row in rows if self._is_scraper_row_image_downloaded(row))
-        discovered_rows = len(rows)
+        summary = _svc_summarize_scraper_progress_rows(
+            rows,
+            is_row_completed_fn=self._is_scraper_row_completed,
+            is_row_image_downloaded_fn=self._is_scraper_row_image_downloaded,
+        )
+        completed_rows = int(summary.get("completed_rows", 0))
+        downloaded_rows = int(summary.get("downloaded_rows", 0))
+        discovered_rows = int(summary.get("discovered_rows", 0))
         total_target = max(len(rows), self._estimate_scraper_total_target(output_root), self._scraper_monitor_total_hint)
         self._scraper_monitor_total_hint = total_target
-        discovered_pct = (discovered_rows / total_target * 100.0) if total_target > 0 else 0.0
-        download_target = max(discovered_rows, 0)
-        download_pct = (downloaded_rows / download_target * 100.0) if download_target > 0 else 0.0
-        if download_pct > 100.0:
-            download_pct = 100.0
         list_rows = self._count_jsonl_rows(os.path.join(output_root, "raw", "list_records.jsonl"))
         profile_rows = self._count_jsonl_rows(os.path.join(output_root, "raw", "profiles.jsonl"))
         image_rows = self._count_jsonl_rows(os.path.join(output_root, "downloads", "image_downloads.jsonl"))
         metadata_rows = self._count_jsonl_rows(os.path.join(output_root, "raw", "metadata_write_results.jsonl"))
-        text = (
-            "抓取中 "
-            f"下载:{downloaded_rows}/{download_target}({download_pct:.1f}%) "
-            f"发现:{discovered_rows}/{total_target}({discovered_pct:.1f}%) "
-            f"完成:{completed_rows} "
-            f"列表:{list_rows} "
-            f"详情:{profile_rows} "
-            f"图片:{image_rows} "
-            f"元数据:{metadata_rows}"
+        text = _svc_build_public_scraper_progress_text(
+            discovered_rows=discovered_rows,
+            downloaded_rows=downloaded_rows,
+            completed_rows=completed_rows,
+            total_target=total_target,
+            list_rows=list_rows,
+            profile_rows=profile_rows,
+            image_rows=image_rows,
+            metadata_rows=metadata_rows,
         )
         if text != self._public_scraper_last_progress_text:
             self._public_scraper_last_progress_text = text
