@@ -34,6 +34,7 @@ from services.scraper_monitor_service import (
 )
 from services.settings_service import load_app_settings, save_app_settings
 from services.task_service import (
+    build_scraper_task_view_rows,
     collect_detail_urls_from_progress_values,
     collect_scraper_progress_rows,
     count_jsonl_rows,
@@ -50,6 +51,7 @@ from services.task_service import (
     public_scraper_template_state_path,
     public_scraper_templates_dir,
     retry_requires_crawl_phase,
+    reconcile_task_entry_runtime_state,
     scraper_progress_row_to_table_values,
     scraper_progress_snapshot,
     scraper_progress_values_has_error,
@@ -59,6 +61,7 @@ from services.task_service import (
     sort_public_task_summaries,
     summarize_public_task,
     suggest_public_scraper_output_root,
+    task_entry_status_text,
 )
 
 
@@ -328,6 +331,44 @@ def test_public_task_summary_sort() -> None:
         _assert_equal(rows[0]["status"], "未完成", "task_summary_sort_current_behavior")
 
 
+def test_task_view_model_helpers() -> None:
+    class _RunningProc:
+        pid = 12345
+
+        def poll(self):
+            return None
+
+    class _StoppedProc:
+        pid = 999
+
+        def poll(self):
+            return 0
+
+    running_entry = {"proc": _RunningProc(), "manual_paused": False, "runtime_state": "运行中"}
+    _assert_equal(task_entry_status_text(running_entry), "运行中", "task_entry_status_running")
+
+    paused_entry = {"proc": _StoppedProc(), "manual_paused": True, "runtime_state": "运行中"}
+    reconcile_task_entry_runtime_state(paused_entry)
+    _assert_equal(str(paused_entry.get("runtime_state", "")), "已暂停(手动)", "task_entry_reconcile_paused")
+
+    finished_entry = {"proc": _StoppedProc(), "manual_paused": False, "runtime_state": "运行中", "last_exit_code": 0}
+    reconcile_task_entry_runtime_state(finished_entry)
+    _assert_equal(str(finished_entry.get("runtime_state", "")), "已完成", "task_entry_reconcile_finished")
+
+    tasks = {
+        "C:/task_a": {"proc": _RunningProc(), "manual_paused": False, "runtime_state": "运行中", "started_at": 10},
+        "C:/task_b": {"proc": None, "manual_paused": False, "runtime_state": "已完成", "started_at": 20},
+    }
+    rows, running_count = build_scraper_task_view_rows(
+        tasks,
+        active_root="C:/task_c",
+        active_entry_if_missing={"proc": None, "runtime_state": "任务浏览", "manual_paused": False},
+    )
+    _assert_equal(running_count, 1, "task_view_running_count")
+    _assert_equal(len(rows), 3, "task_view_row_count")
+    _assert_true(bool(rows[0].get("running")), "task_view_running_first")
+
+
 def main() -> int:
     tests = [
         test_normalize_http_url,
@@ -348,6 +389,7 @@ def main() -> int:
         test_scraper_row_status_helpers,
         test_scraper_progress_view_helpers,
         test_public_task_summary_sort,
+        test_task_view_model_helpers,
     ]
     for fn in tests:
         fn()

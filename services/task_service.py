@@ -346,6 +346,118 @@ def summarize_public_task(
     }
 
 
+def task_entry_status_text(
+    entry: Dict[str, Any],
+    *,
+    is_process_running_fn: Optional[Callable[[Any], bool]] = None,
+) -> str:
+    if not isinstance(entry, dict):
+        return "未知"
+    is_running = is_process_running_fn or is_process_running
+    proc = entry.get("proc")
+    if is_running(proc):
+        return "手动暂停" if bool(entry.get("manual_paused", False)) else "运行中"
+    text = str(entry.get("runtime_state", "")).strip()
+    return text or "空闲"
+
+
+def reconcile_task_entry_runtime_state(
+    entry: Dict[str, Any],
+    *,
+    is_process_running_fn: Optional[Callable[[Any], bool]] = None,
+) -> None:
+    if not isinstance(entry, dict):
+        return
+    is_running = is_process_running_fn or is_process_running
+    proc = entry.get("proc")
+    if is_running(proc):
+        return
+    entry["proc"] = None
+    running_like_states = {"运行中", "继续运行中", "失败重试中", "元数据重写中"}
+    current_state = str(entry.get("runtime_state", "")).strip()
+    if bool(entry.get("manual_paused", False)):
+        entry["runtime_state"] = "已暂停(手动)"
+        return
+    if current_state in running_like_states:
+        exit_code = entry.get("last_exit_code")
+        if isinstance(exit_code, int):
+            if exit_code == 0:
+                entry["runtime_state"] = "已完成"
+            elif exit_code == 2:
+                entry["runtime_state"] = "已暂停(风控等待)"
+            else:
+                entry["runtime_state"] = f"异常结束({exit_code})"
+        else:
+            entry["runtime_state"] = "已停止(待继续)"
+
+
+def build_scraper_task_view_rows(
+    public_scraper_tasks: Dict[str, Any],
+    *,
+    active_root: str,
+    active_entry_if_missing: Optional[Dict[str, Any]] = None,
+    normalize_root_fn: Optional[Callable[[Any], str]] = None,
+    is_process_running_fn: Optional[Callable[[Any], bool]] = None,
+    reconcile_entry_fn: Optional[Callable[[Dict[str, Any]], None]] = None,
+    status_text_fn: Optional[Callable[[Dict[str, Any]], str]] = None,
+) -> Tuple[List[Dict[str, Any]], int]:
+    normalize_root = normalize_root_fn or normalize_public_task_root
+    is_running = is_process_running_fn or is_process_running
+
+    items: List[Tuple[str, Dict[str, Any]]] = []
+    for root, entry in dict(public_scraper_tasks or {}).items():
+        normalized_root = normalize_root(root)
+        task_entry = entry if isinstance(entry, dict) else {}
+        if reconcile_entry_fn is not None:
+            try:
+                reconcile_entry_fn(task_entry)
+            except Exception:
+                pass
+        else:
+            reconcile_task_entry_runtime_state(task_entry, is_process_running_fn=is_running)
+        items.append((normalized_root, task_entry))
+
+    normalized_active_root = normalize_root(active_root)
+    if normalized_active_root and (normalized_active_root not in {x[0] for x in items}):
+        fallback = active_entry_if_missing if isinstance(active_entry_if_missing, dict) else {}
+        items.append((normalized_active_root, dict(fallback)))
+
+    items.sort(
+        key=lambda pair: (
+            0 if is_running(pair[1].get("proc")) else 1,
+            -float(pair[1].get("started_at") or 0.0),
+            pair[0],
+        )
+    )
+
+    rows: List[Dict[str, Any]] = []
+    running_count = 0
+    for root, entry in items:
+        proc = entry.get("proc")
+        running = is_running(proc)
+        if running:
+            running_count += 1
+        pid_text = str(getattr(proc, "pid", "-")) if running else "-"
+        if status_text_fn is not None:
+            try:
+                status_text = str(status_text_fn(entry) or "").strip() or "空闲"
+            except Exception:
+                status_text = task_entry_status_text(entry, is_process_running_fn=is_running)
+        else:
+            status_text = task_entry_status_text(entry, is_process_running_fn=is_running)
+        rows.append(
+            {
+                "root": root,
+                "status_text": status_text,
+                "pid_text": pid_text,
+                "task_name": os.path.basename(root) or root,
+                "running": running,
+            }
+        )
+
+    return rows, running_count
+
+
 def sort_public_task_summaries(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     data = list(rows or [])
     data.sort(

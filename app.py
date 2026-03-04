@@ -98,6 +98,7 @@ from services.settings_service import (
     save_app_settings as _svc_save_app_settings,
 )
 from services.task_service import (
+    build_scraper_task_view_rows as _svc_build_scraper_task_view_rows,
     collect_detail_urls_from_progress_values as _svc_collect_detail_urls_from_progress_values,
     collect_scraper_progress_rows as _svc_collect_scraper_progress_rows,
     count_jsonl_rows as _svc_count_jsonl_rows,
@@ -127,6 +128,8 @@ from services.task_service import (
     sort_public_task_summaries as _svc_sort_public_task_summaries,
     retry_requires_crawl_phase as _svc_retry_requires_crawl_phase,
     safe_positive_int as _svc_safe_positive_int,
+    task_entry_status_text as _svc_task_entry_status_text,
+    reconcile_task_entry_runtime_state as _svc_reconcile_task_entry_runtime_state,
     set_public_scraper_template_state as _svc_set_public_scraper_template_state,
     summarize_public_task as _svc_summarize_public_task,
     suggest_public_scraper_output_root as _svc_suggest_public_scraper_output_root,
@@ -3741,37 +3744,11 @@ class D2ILiteApp(BaseWindow):
         self._schedule_public_scraper_poll()
 
     def _task_entry_status_text(self, entry: Dict[str, Any]) -> str:
-        if not isinstance(entry, dict):
-            return "未知"
-        proc = entry.get("proc")
-        if self._is_process_running(proc):
-            return "手动暂停" if bool(entry.get("manual_paused", False)) else "运行中"
-        text = str(entry.get("runtime_state", "")).strip()
-        return text or "空闲"
+        return _svc_task_entry_status_text(entry, is_process_running_fn=self._is_process_running)
 
     def _reconcile_task_entry_runtime_state(self, root: str, entry: Dict[str, Any]) -> None:
-        if not isinstance(entry, dict):
-            return
-        proc = entry.get("proc")
-        if self._is_process_running(proc):
-            return
-        entry["proc"] = None
-        running_like_states = {"运行中", "继续运行中", "失败重试中", "元数据重写中"}
-        current_state = str(entry.get("runtime_state", "")).strip()
-        if bool(entry.get("manual_paused", False)):
-            entry["runtime_state"] = "已暂停(手动)"
-            return
-        if current_state in running_like_states:
-            exit_code = entry.get("last_exit_code")
-            if isinstance(exit_code, int):
-                if exit_code == 0:
-                    entry["runtime_state"] = "已完成"
-                elif exit_code == 2:
-                    entry["runtime_state"] = "已暂停(风控等待)"
-                else:
-                    entry["runtime_state"] = f"异常结束({exit_code})"
-            else:
-                entry["runtime_state"] = "已停止(待继续)"
+        _ = root
+        _svc_reconcile_task_entry_runtime_state(entry, is_process_running_fn=self._is_process_running)
 
     def _refresh_scraper_task_list_view(self):
         tree = self._scraper_task_tree
@@ -3788,33 +3765,20 @@ class D2ILiteApp(BaseWindow):
         except Exception:
             selected_root = ""
 
-        items: List[Tuple[str, Dict[str, Any]]] = []
-        for root, entry in self._public_scraper_tasks.items():
-            normalized_root = self._normalize_public_task_root(root)
-            task_entry = entry if isinstance(entry, dict) else {}
-            self._reconcile_task_entry_runtime_state(normalized_root, task_entry)
-            items.append((normalized_root, task_entry))
-
         active_root = self._normalize_public_task_root(self._public_scraper_active_task_root or self._public_scraper_output_root)
-        if active_root and (active_root not in {x[0] for x in items}):
-            items.append(
-                (
-                    active_root,
-                    {
-                        "proc": self._public_scraper_proc,
-                        "runtime_state": self._public_scraper_runtime_state,
-                        "manual_paused": bool(self._public_scraper_manual_paused),
-                        "output_root": active_root,
-                    },
-                )
-            )
-
-        items.sort(
-            key=lambda pair: (
-                0 if self._is_process_running(pair[1].get("proc")) else 1,
-                -float(pair[1].get("started_at") or 0.0),
-                pair[0],
-            )
+        rows, running_count = _svc_build_scraper_task_view_rows(
+            self._public_scraper_tasks,
+            active_root=active_root,
+            active_entry_if_missing={
+                "proc": self._public_scraper_proc,
+                "runtime_state": self._public_scraper_runtime_state,
+                "manual_paused": bool(self._public_scraper_manual_paused),
+                "output_root": active_root,
+            },
+            normalize_root_fn=self._normalize_public_task_root,
+            is_process_running_fn=self._is_process_running,
+            reconcile_entry_fn=lambda e: self._reconcile_task_entry_runtime_state(str(e.get("output_root", "")), e),
+            status_text_fn=self._task_entry_status_text,
         )
 
         try:
@@ -3823,19 +3787,17 @@ class D2ILiteApp(BaseWindow):
             pass
 
         root_to_item: Dict[str, str] = {}
-        running_count = 0
-        for root, entry in items:
-            proc = entry.get("proc")
-            running = self._is_process_running(proc)
-            if running:
-                running_count += 1
-            pid_text = str(getattr(proc, "pid", "-")) if running else "-"
-            status_text = self._task_entry_status_text(entry)
-            task_name = os.path.basename(root) or root
+        for row in rows:
+            root = str(row.get("root", "")).strip()
             item_id = tree.insert(
                 "",
                 tk.END,
-                values=(status_text, pid_text, task_name, root),
+                values=(
+                    str(row.get("status_text", "")),
+                    str(row.get("pid_text", "")),
+                    str(row.get("task_name", "")),
+                    root,
+                ),
             )
             root_to_item[root] = item_id
 
@@ -3849,7 +3811,7 @@ class D2ILiteApp(BaseWindow):
 
         if status_var is not None:
             try:
-                status_var.set(f"会话任务: {len(items)}（运行中: {running_count}）")
+                status_var.set(f"会话任务: {len(rows)}（运行中: {running_count}）")
             except Exception:
                 pass
 
