@@ -73,6 +73,19 @@ def set_public_scraper_manual_pause_flag(output_root: Any, paused: bool) -> bool
         return False
 
 
+def resolve_public_task_directory(output_root: Any) -> str:
+    root = normalize_public_task_root(output_root)
+    return root if (root and os.path.isdir(root)) else ""
+
+
+def resolve_public_task_log_path(output_root: Any) -> str:
+    root = normalize_public_task_root(output_root)
+    if not root:
+        return ""
+    path = os.path.join(root, "reports", "gui_public_scraper.log")
+    return path if os.path.exists(path) else ""
+
+
 def normalize_existing_path(path_value: Any) -> str:
     path = str(path_value or "").strip()
     if not path:

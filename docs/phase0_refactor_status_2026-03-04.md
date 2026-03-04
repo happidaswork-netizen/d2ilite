@@ -41,6 +41,7 @@
    - 进度表视图模型：`split_scraper_progress_rows`、`scraper_progress_snapshot`、`scraper_progress_row_to_table_values`、`collect_detail_urls_from_progress_values`、`dedupe_progress_values`
    - 任务面板视图模型：`task_entry_status_text`、`reconcile_task_entry_runtime_state`、`build_scraper_task_view_rows`
    - 任务选择与暂停标记：`parse_task_root_from_values`、`set_public_scraper_manual_pause_flag`
+   - 任务目录与日志解析：`resolve_public_task_directory`、`resolve_public_task_log_path`
    - 进度统计与文案：`summarize_scraper_progress_rows`、`build_public_scraper_progress_text`
    - 任务动作参数编排：`build_continue_start_existing_task_args`、`build_retry_start_existing_task_args`、`build_rewrite_metadata_start_existing_task_args`、`continue_action_for_active_entry`
    - 任务管理视图渲染：`public_task_summary_to_tree_values`、`public_task_manager_status_text`

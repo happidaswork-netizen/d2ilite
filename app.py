@@ -136,6 +136,8 @@ from services.task_service import (
     safe_positive_int as _svc_safe_positive_int,
     task_entry_status_text as _svc_task_entry_status_text,
     reconcile_task_entry_runtime_state as _svc_reconcile_task_entry_runtime_state,
+    resolve_public_task_directory as _svc_resolve_public_task_directory,
+    resolve_public_task_log_path as _svc_resolve_public_task_log_path,
     set_public_scraper_template_state as _svc_set_public_scraper_template_state,
     summarize_public_task as _svc_summarize_public_task,
     suggest_public_scraper_output_root as _svc_suggest_public_scraper_output_root,
@@ -2032,8 +2034,9 @@ class D2ILiteApp(BaseWindow):
         if not root:
             messagebox.showinfo("提示", "请先在任务列表中选择一个任务。", parent=self)
             return
-        if os.path.isdir(root):
-            os.startfile(root)
+        resolved = _svc_resolve_public_task_directory(root)
+        if resolved:
+            os.startfile(resolved)
             return
         messagebox.showerror("打开失败", f"目录不存在：\n{root}", parent=self)
 
@@ -2042,7 +2045,7 @@ class D2ILiteApp(BaseWindow):
         if not root:
             messagebox.showinfo("提示", "请先在任务列表中选择一个任务。", parent=self)
             return
-        target = os.path.join(root, "reports", "gui_public_scraper.log")
+        target = _svc_resolve_public_task_log_path(root)
         if target and os.path.exists(target):
             try:
                 subprocess.Popen(["notepad.exe", target], close_fds=True)

@@ -59,6 +59,8 @@ from services.task_service import (
     parse_task_root_from_values,
     public_task_manager_status_text,
     public_task_summary_to_tree_values,
+    resolve_public_task_directory,
+    resolve_public_task_log_path,
     public_scraper_template_state_path,
     public_scraper_templates_dir,
     retry_requires_crawl_phase,
@@ -476,6 +478,16 @@ def test_public_task_manager_view_helpers() -> None:
     _assert_equal(values[0], "运行中", "task_manager_values_status")
     _assert_equal(values[9], "D:/x", "task_manager_values_root")
     _assert_equal(public_task_manager_status_text(12), "任务数: 12", "task_manager_status_text")
+
+    with tempfile.TemporaryDirectory() as td:
+        root = resolve_public_task_directory(td)
+        _assert_true(bool(root), "resolve_public_task_directory_exists")
+        _assert_equal(resolve_public_task_log_path(td), "", "resolve_public_task_log_missing")
+        log_dir = os.path.join(td, "reports")
+        os.makedirs(log_dir, exist_ok=True)
+        log_path = os.path.join(log_dir, "gui_public_scraper.log")
+        Path(log_path).write_text("x", encoding="utf-8")
+        _assert_equal(resolve_public_task_log_path(td), log_path, "resolve_public_task_log_exists")
 
 
 def main() -> int:
