@@ -34,6 +34,7 @@ from services.scraper_monitor_service import (
 )
 from services.settings_service import load_app_settings, save_app_settings
 from services.task_service import (
+    collect_detail_urls_from_progress_values,
     collect_scraper_progress_rows,
     count_jsonl_rows,
     count_latest_metadata_status,
@@ -48,9 +49,12 @@ from services.task_service import (
     public_scraper_template_state_path,
     public_scraper_templates_dir,
     retry_requires_crawl_phase,
+    scraper_progress_row_to_table_values,
+    scraper_progress_snapshot,
     scraper_progress_values_has_error,
     save_public_scraper_template_states,
     set_public_scraper_template_state,
+    split_scraper_progress_rows,
     sort_public_task_summaries,
     summarize_public_task,
     suggest_public_scraper_output_root,
@@ -269,6 +273,28 @@ def test_scraper_row_status_helpers() -> None:
     _assert_true(scraper_progress_values_has_error(values), "progress_values_error")
 
 
+def test_scraper_progress_view_helpers() -> None:
+    rows = [
+        {"idx": "1", "name": "甲", "detail": "√", "image": "√", "meta": "√", "reason": "", "detail_url": "u1", "image_path": "p1"},
+        {"idx": "2", "name": "乙", "detail": "√", "image": "×", "meta": "…", "reason": "图片缺失", "detail_url": "u2", "image_path": ""},
+    ]
+    pending, done = split_scraper_progress_rows(rows)
+    _assert_equal(len(pending), 1, "split_pending")
+    _assert_equal(len(done), 1, "split_done")
+    snapshot = scraper_progress_snapshot(pending, done)
+    _assert_true(bool(snapshot), "snapshot_not_empty")
+    values = scraper_progress_row_to_table_values(rows[0])
+    _assert_equal(values[1], "甲", "row_to_values_name")
+    urls = collect_detail_urls_from_progress_values(
+        [
+            ("1", "甲", "√", "√", "√", "", "u1", "p1"),
+            ("2", "乙", "×", "×", "…", "失败", "u2", "p2"),
+            ("2", "乙", "×", "×", "…", "失败", "u2", "p2"),
+        ]
+    )
+    _assert_equal(urls, ["u1", "u2"], "collect_detail_urls")
+
+
 def test_public_task_summary_sort() -> None:
     with tempfile.TemporaryDirectory() as td:
         os.makedirs(os.path.join(td, "raw"), exist_ok=True)
@@ -310,6 +336,7 @@ def main() -> int:
         test_count_jsonl_rows_cache,
         test_collect_scraper_progress_rows,
         test_scraper_row_status_helpers,
+        test_scraper_progress_view_helpers,
         test_public_task_summary_sort,
     ]
     for fn in tests:

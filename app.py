@@ -98,6 +98,7 @@ from services.settings_service import (
     save_app_settings as _svc_save_app_settings,
 )
 from services.task_service import (
+    collect_detail_urls_from_progress_values as _svc_collect_detail_urls_from_progress_values,
     collect_scraper_progress_rows as _svc_collect_scraper_progress_rows,
     count_jsonl_rows as _svc_count_jsonl_rows,
     count_latest_metadata_status as _svc_count_latest_metadata_status,
@@ -117,8 +118,11 @@ from services.task_service import (
     public_scraper_pause_flag_path as _svc_public_scraper_pause_flag_path,
     read_json_file as _svc_read_json_file,
     read_scraper_backoff_state as _svc_read_scraper_backoff_state,
+    scraper_progress_row_to_table_values as _svc_scraper_progress_row_to_table_values,
+    scraper_progress_snapshot as _svc_scraper_progress_snapshot,
     scraper_progress_values_has_error as _svc_scraper_progress_values_has_error,
     save_public_scraper_template_states as _svc_save_public_scraper_template_states,
+    split_scraper_progress_rows as _svc_split_scraper_progress_rows,
     sort_public_task_summaries as _svc_sort_public_task_summaries,
     retry_requires_crawl_phase as _svc_retry_requires_crawl_phase,
     safe_positive_int as _svc_safe_positive_int,
@@ -1292,15 +1296,12 @@ class D2ILiteApp(BaseWindow):
             return
         if rows is None:
             rows = self._collect_scraper_progress_rows(output_root)
-        pending_rows: List[Dict[str, Any]] = []
-        done_rows: List[Dict[str, Any]] = []
-        for row in rows:
-            if self._is_scraper_row_completed(row):
-                done_rows.append(row)
-            else:
-                pending_rows.append(row)
+        pending_rows, done_rows = _svc_split_scraper_progress_rows(
+            rows,
+            is_row_completed_fn=self._is_scraper_row_completed,
+        )
         self._update_scraper_progress_group_titles(len(pending_rows), len(done_rows))
-        snapshot = json.dumps({"pending": pending_rows, "done": done_rows}, ensure_ascii=False)
+        snapshot = _svc_scraper_progress_snapshot(pending_rows, done_rows)
         if snapshot == self._scraper_monitor_last_progress_snapshot:
             return
         self._scraper_monitor_last_progress_snapshot = snapshot
@@ -1311,16 +1312,7 @@ class D2ILiteApp(BaseWindow):
                     pending_table.insert(
                         "",
                         tk.END,
-                        values=(
-                            row.get("idx", ""),
-                            row.get("name", ""),
-                            row.get("detail", ""),
-                            row.get("image", ""),
-                            row.get("meta", ""),
-                            row.get("reason", ""),
-                            row.get("detail_url", ""),
-                            row.get("image_path", ""),
-                        ),
+                        values=_svc_scraper_progress_row_to_table_values(row),
                     )
             if done_table is not None:
                 done_table.delete(*done_table.get_children())
@@ -1328,16 +1320,7 @@ class D2ILiteApp(BaseWindow):
                     done_table.insert(
                         "",
                         tk.END,
-                        values=(
-                            row.get("idx", ""),
-                            row.get("name", ""),
-                            row.get("detail", ""),
-                            row.get("image", ""),
-                            row.get("meta", ""),
-                            row.get("reason", ""),
-                            row.get("detail_url", ""),
-                            row.get("image_path", ""),
-                        ),
+                        values=_svc_scraper_progress_row_to_table_values(row),
                     )
         except Exception:
             pass
@@ -1405,17 +1388,8 @@ class D2ILiteApp(BaseWindow):
         return _svc_scraper_progress_values_has_error(values)
 
     def _collect_selected_scraper_detail_urls(self, table: Optional[ttk.Treeview] = None) -> List[str]:
-        urls: List[str] = []
-        seen: set[str] = set()
-        for values in self._collect_selected_scraper_progress_values(table):
-            if len(values) < 7:
-                continue
-            detail_url = str(values[6] or "").strip()
-            if (not detail_url) or (detail_url in seen):
-                continue
-            seen.add(detail_url)
-            urls.append(detail_url)
-        return urls
+        values_list = self._collect_selected_scraper_progress_values(table)
+        return _svc_collect_detail_urls_from_progress_values(values_list)
 
     def _select_scraper_error_rows(self, table: Optional[ttk.Treeview] = None, *, across_tables: bool = False) -> int:
         target_tables = []

@@ -390,6 +390,66 @@ def scraper_progress_values_has_error(values: Tuple[Any, ...]) -> bool:
     return any(token in reason for token in hints)
 
 
+def split_scraper_progress_rows(
+    rows: Iterable[Dict[str, Any]],
+    *,
+    is_row_completed_fn: Optional[Callable[[Dict[str, Any]], bool]] = None,
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    pending_rows: List[Dict[str, Any]] = []
+    done_rows: List[Dict[str, Any]] = []
+    checker = is_row_completed_fn or is_scraper_row_completed
+    for row in list(rows or []):
+        if not isinstance(row, dict):
+            continue
+        try:
+            completed = bool(checker(row))
+        except Exception:
+            completed = False
+        if completed:
+            done_rows.append(row)
+        else:
+            pending_rows.append(row)
+    return pending_rows, done_rows
+
+
+def scraper_progress_snapshot(
+    pending_rows: List[Dict[str, Any]],
+    done_rows: List[Dict[str, Any]],
+) -> str:
+    try:
+        return json.dumps({"pending": pending_rows or [], "done": done_rows or []}, ensure_ascii=False)
+    except Exception:
+        return ""
+
+
+def scraper_progress_row_to_table_values(row: Dict[str, Any]) -> Tuple[str, str, str, str, str, str, str, str]:
+    data = row if isinstance(row, dict) else {}
+    return (
+        str(data.get("idx", "")),
+        str(data.get("name", "")),
+        str(data.get("detail", "")),
+        str(data.get("image", "")),
+        str(data.get("meta", "")),
+        str(data.get("reason", "")),
+        str(data.get("detail_url", "")),
+        str(data.get("image_path", "")),
+    )
+
+
+def collect_detail_urls_from_progress_values(values_list: Iterable[Tuple[Any, ...]]) -> List[str]:
+    urls: List[str] = []
+    seen: set[str] = set()
+    for values in list(values_list or []):
+        if not isinstance(values, tuple) or len(values) < 7:
+            continue
+        detail_url = str(values[6] or "").strip()
+        if (not detail_url) or (detail_url in seen):
+            continue
+        seen.add(detail_url)
+        urls.append(detail_url)
+    return urls
+
+
 def collect_scraper_progress_rows(
     output_root: Any,
     *,

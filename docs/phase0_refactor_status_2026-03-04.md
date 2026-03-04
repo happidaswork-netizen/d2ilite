@@ -25,7 +25,7 @@
 
 3. 新增契约冒烟脚本：
    - `scripts/phase0_contract_smoke.py`
-   - 执行命令：`python scripts/phase0_contract_smoke.py`（当前 17 项）
+   - 执行命令：`python scripts/phase0_contract_smoke.py`（当前 18 项）
 
 4. 新增任务服务能力并接入 `app.py`：
    - 路径与文件工具：`normalize_existing_path`、`read_json_file`、`safe_positive_int`
@@ -37,12 +37,13 @@
    - 进度行聚合：`collect_scraper_progress_rows`（列表/详情/图片/元数据/复核/失败日志聚合）
    - 行状态判定：`is_scraper_row_completed`、`is_scraper_row_image_downloaded`、`scraper_progress_values_has_error`
    - 任务摘要与排序：`summarize_public_task`、`sort_public_task_summaries`
+   - 进度表视图模型：`split_scraper_progress_rows`、`scraper_progress_snapshot`、`scraper_progress_row_to_table_values`、`collect_detail_urls_from_progress_values`
 
 ## 验证结果
 
 1. `python -m py_compile app.py` 通过。
 2. `python -m py_compile services/*.py`（逐文件）通过。
-3. `python scripts/phase0_contract_smoke.py` 通过（17 项）。
+3. `python scripts/phase0_contract_smoke.py` 通过（18 项）。
 4. `python -c "import app; print('ok')"` 通过。
 
 ## 当前边界
