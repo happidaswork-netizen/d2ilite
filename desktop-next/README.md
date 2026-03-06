@@ -1,73 +1,64 @@
-# React + TypeScript + Vite
+# D2I Lite Next
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+`desktop-next/` 是 `Phase 1` 的现代前端工作台原型，当前基于 `React + TypeScript + Vite`。
 
-Currently, two official plugins are available:
+## 当前能力
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) (or [oxc](https://oxc.rs) when used in [rolldown-vite](https://vite.dev/guide/rolldown)) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+1. 加载本地图片目录
+2. 读取单张图片元数据
+3. 编辑并保存结构化元数据
+4. 开发模式下直接预览本地图片
+5. 开发模式下通过 Python CLI bridge 访问真实后端
 
-## React Compiler
+## 运行方式
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+### 1. 启动前提
 
-## Expanding the ESLint configuration
+在仓库根目录准备好 Python 环境：
 
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
-
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
-
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```powershell
+python -m venv .venv
+.\.venv\Scripts\activate
+pip install -r requirements.txt
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+### 2. 启动前端开发模式
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
-
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```powershell
+cd desktop-next
+npm install
+npm run dev
 ```
+
+开发服务器会自动暴露以下开发期 bridge 路由：
+
+- `GET /api/bridge/ping`
+- `GET /api/bridge/list`
+- `GET /api/bridge/read`
+- `POST /api/bridge/save`
+- `GET /api/bridge/preview`
+
+这些路由会在后台调用：
+
+```powershell
+python scripts\desktop_bridge_cli.py
+```
+
+## Provider 说明
+
+1. `vite-python-cli`
+   - 仅在 `vite dev` 下可用
+   - 走真实 Python CLI bridge
+   - 支持真实图片预览与真实元数据读写
+
+2. `tauri`
+   - 预留给后续 `src-tauri` 接线
+
+3. `mock`
+   - 非开发模式、又没有 Tauri runtime 时的兜底
+
+## 现阶段边界
+
+1. 当前还没有 `src-tauri/`
+2. 生产构建产物仍是前端静态资源，不是最终桌面端
+3. `Phase 1` 当前目标是先把前端工作台与 Python bridge 联通，而不是立即完成 Tauri 壳

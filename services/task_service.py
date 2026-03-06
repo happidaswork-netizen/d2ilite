@@ -10,10 +10,12 @@ from datetime import datetime
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 from services.scraper_monitor_service import (
+    normalize_optional_audit_value,
     humanize_scraper_reason,
     merge_status_reason,
     normalize_person_key,
     read_jsonl_rows,
+    write_jsonl_rows,
 )
 from services.task_orchestration_service import (
     build_continue_start_existing_task_args,
@@ -533,6 +535,63 @@ def public_task_manager_status_text(task_count: int) -> str:
     return f"任务数: {max(0, int(task_count or 0))}"
 
 
+def build_public_task_manager_list_view(
+    base_root: Any,
+    *,
+    discover_task_roots_fn: Callable[[str], List[str]],
+    summarize_task_fn: Callable[[str], Dict[str, Any]],
+    sort_rows_fn: Optional[Callable[[List[Dict[str, Any]]], List[Dict[str, Any]]]] = None,
+    row_to_values_fn: Optional[Callable[[Dict[str, Any]], Tuple[str, ...]]] = None,
+) -> Dict[str, Any]:
+    base = normalize_public_task_root(base_root)
+    if not base:
+        return {"base_root": "", "roots": [], "rows": [], "tree_values": [], "task_count": 0}
+
+    roots: List[str] = []
+    try:
+        for raw in discover_task_roots_fn(base):
+            normalized = normalize_public_task_root(raw)
+            if normalized:
+                roots.append(normalized)
+    except Exception:
+        roots = []
+
+    rows: List[Dict[str, Any]] = []
+    for root in roots:
+        try:
+            summary = summarize_task_fn(root)
+        except Exception:
+            continue
+        if isinstance(summary, dict):
+            rows.append(summary)
+
+    sorter = sort_rows_fn or sort_public_task_summaries
+    try:
+        rows = sorter(rows)
+    except Exception:
+        pass
+
+    to_values = row_to_values_fn or public_task_summary_to_tree_values
+    tree_values: List[Tuple[str, ...]] = []
+    for row in rows:
+        try:
+            values = to_values(row)
+        except Exception:
+            continue
+        if isinstance(values, tuple):
+            tree_values.append(tuple(str(v) for v in values))
+        elif isinstance(values, list):
+            tree_values.append(tuple(str(v) for v in values))
+
+    return {
+        "base_root": base,
+        "roots": roots,
+        "rows": rows,
+        "tree_values": tree_values,
+        "task_count": len(rows),
+    }
+
+
 def is_scraper_row_completed(row: Dict[str, Any]) -> bool:
     if not isinstance(row, dict):
         return False
@@ -562,6 +621,564 @@ def scraper_progress_values_has_error(values: Tuple[Any, ...]) -> bool:
         return False
     hints = ("失败", "缺失", "错误", "异常", "待补充", "metadata_", "image_", "audit_missing")
     return any(token in reason for token in hints)
+
+
+def extract_detail_url_from_progress_values(
+    values: Any,
+    *,
+    detail_index: int = 6,
+) -> str:
+    if isinstance(values, list):
+        values = tuple(values)
+    if (not isinstance(values, tuple)) or (detail_index < 0) or (len(values) <= detail_index):
+        return ""
+    return str(values[detail_index] or "").strip()
+
+
+def resolve_openable_image_path_from_progress_values(
+    values: Any,
+    *,
+    image_status_index: int = 3,
+    image_path_index: int = 7,
+    normalize_existing_path_fn: Optional[Callable[[Any], str]] = None,
+) -> str:
+    if isinstance(values, list):
+        values = tuple(values)
+    if not isinstance(values, tuple):
+        return ""
+    need_len = max(image_status_index, image_path_index) + 1
+    if image_status_index < 0 or image_path_index < 0 or len(values) < need_len:
+        return ""
+    image_status = str(values[image_status_index] or "").strip()
+    if image_status not in {"√", "✓"}:
+        return ""
+    normalize_existing = normalize_existing_path_fn or normalize_existing_path
+    return normalize_existing(values[image_path_index])
+
+
+def collect_scraper_error_row_ids(
+    row_items: Iterable[Tuple[Any, Any]],
+    *,
+    has_error_fn: Optional[Callable[[Tuple[Any, ...]], bool]] = None,
+) -> List[str]:
+    checker = has_error_fn or scraper_progress_values_has_error
+    bad_ids: List[str] = []
+    for item in list(row_items or []):
+        if not isinstance(item, tuple) or len(item) < 2:
+            continue
+        row_id = str(item[0] or "").strip()
+        if not row_id:
+            continue
+        values = item[1]
+        if isinstance(values, list):
+            values = tuple(values)
+        if not isinstance(values, tuple):
+            continue
+        try:
+            if checker(values):
+                bad_ids.append(row_id)
+        except Exception:
+            continue
+    return bad_ids
+
+
+def scraper_error_selection_status_text(selected_count: int) -> str:
+    count = max(0, int(selected_count or 0))
+    if count > 0:
+        return f"已选中错误项 {count} 条"
+    return "当前列表没有可选中的错误项"
+
+
+def normalize_progress_values(values: Any) -> Tuple[Any, ...]:
+    if isinstance(values, tuple):
+        return values
+    if isinstance(values, list):
+        return tuple(values)
+    return tuple()
+
+
+def pick_first_progress_values(candidates: Iterable[Any]) -> Tuple[Any, ...]:
+    for values in list(candidates or []):
+        normalized = normalize_progress_values(values)
+        if normalized:
+            return normalized
+    return tuple()
+
+
+def collect_progress_values(values_list: Iterable[Any]) -> List[Tuple[Any, ...]]:
+    output: List[Tuple[Any, ...]] = []
+    for values in list(values_list or []):
+        normalized = normalize_progress_values(values)
+        if normalized:
+            output.append(normalized)
+    return dedupe_progress_values(output)
+
+
+def collect_other_progress_table_refs(table_refs: Iterable[Any], active_ref: Any) -> List[Any]:
+    others: List[Any] = []
+    for ref in list(table_refs or []):
+        if ref is None:
+            continue
+        if ref == active_ref:
+            continue
+        others.append(ref)
+    return others
+
+
+def build_progress_selection_sync_plan(
+    table_refs: Iterable[Any],
+    active_ref: Any,
+    selected_values: Any,
+) -> Dict[str, Any]:
+    refs = [ref for ref in list(table_refs or []) if ref is not None]
+    has_active_table = any(ref == active_ref for ref in refs)
+    return {
+        "has_active_table": has_active_table,
+        "detail_url": extract_detail_url_from_progress_values(selected_values) if has_active_table else "",
+        "clear_other_refs": collect_other_progress_table_refs(refs, active_ref) if has_active_table else [],
+        "should_queue_open": bool(has_active_table),
+    }
+
+
+def build_progress_context_menu_plan(
+    clicked_row_id: Any,
+    selected_row_ids: Iterable[Any],
+    clicked_values: Any,
+    selected_values: Iterable[Any],
+) -> Dict[str, Any]:
+    row_id = str(clicked_row_id or "").strip()
+    selected_ids = {
+        str(item or "").strip()
+        for item in list(selected_row_ids or [])
+        if str(item or "").strip()
+    }
+    clicked_tuple = normalize_progress_values(clicked_values)
+    use_clicked_only = bool(row_id) and (row_id not in selected_ids)
+    effective_values = collect_progress_values(
+        [clicked_tuple] if use_clicked_only else list(selected_values or [])
+    )
+    detail_urls = collect_detail_urls_from_progress_values(effective_values)
+    return {
+        "row_id": row_id,
+        "should_reset_selection": use_clicked_only,
+        "focus_row_id": row_id,
+        "detail_url": extract_detail_url_from_progress_values(clicked_tuple),
+        "detail_urls": detail_urls,
+        "retry_count": len(detail_urls),
+        "has_retryable_selection": bool(detail_urls),
+    }
+
+
+def normalize_retry_detail_urls(detail_urls: Iterable[Any]) -> List[str]:
+    normalized: List[str] = []
+    seen: set[str] = set()
+    for raw in list(detail_urls or []):
+        detail = str(raw or "").strip()
+        if (not detail) or (detail in seen):
+            continue
+        seen.add(detail)
+        normalized.append(detail)
+    return normalized
+
+
+def build_retry_detail_plan(
+    detail_urls: Iterable[Any],
+    *,
+    preview_limit: int = 3,
+) -> Dict[str, Any]:
+    urls = normalize_retry_detail_urls(detail_urls)
+    count = len(urls)
+    limit = max(1, int(preview_limit or 3))
+    preview_text = "\n".join(urls[:limit])
+    if count > limit:
+        preview_text += f"\n...（共 {count} 条）"
+    confirm_message = (
+        "将清理选中条目的已抓取记录（详情/图片/元数据结果），\n"
+        "然后你可点击“继续任务”让它们重新抓取。\n\n"
+        f"选中条目：{count}\n"
+        f"{preview_text}"
+    )
+    return {
+        "detail_urls": urls,
+        "detail_count": count,
+        "detail_preview": preview_text,
+        "detail_set": set(urls),
+        "has_details": bool(urls),
+        "empty_selection_message": "当前选中项缺少详情链接，无法标记重试。",
+        "confirm_title": "确认重试",
+        "confirm_message": confirm_message,
+    }
+
+
+def retry_cleanup_matches_detail(obj: Any, detail_set: Iterable[Any]) -> bool:
+    if isinstance(detail_set, set):
+        details = detail_set
+    else:
+        details = {str(item or "").strip() for item in list(detail_set or []) if str(item or "").strip()}
+    if not isinstance(obj, dict) or (not details):
+        return False
+    if str(obj.get("detail_url", "")).strip() in details:
+        return True
+    record = obj.get("record")
+    if isinstance(record, dict) and str(record.get("detail_url", "")).strip() in details:
+        return True
+    return False
+
+
+def filter_retry_cleanup_jsonl(
+    path: Any,
+    matcher: Callable[[Any], bool],
+    *,
+    read_rows_fn: Optional[Callable[[str], List[Dict[str, Any]]]] = None,
+    write_rows_fn: Optional[Callable[[str, List[Dict[str, Any]]], None]] = None,
+) -> Dict[str, Any]:
+    text = str(path or "").strip()
+    if (not text) or (not os.path.exists(text)):
+        return {"removed_count": 0, "removed_rows": [], "kept_rows": []}
+
+    reader = read_rows_fn or (lambda p: read_jsonl_rows(p, max_rows=0))
+    writer = write_rows_fn or write_jsonl_rows
+    rows = reader(text)
+    kept: List[Dict[str, Any]] = []
+    removed: List[Dict[str, Any]] = []
+    for item in rows:
+        if matcher(item):
+            removed.append(item)
+        else:
+            kept.append(item)
+    if removed:
+        writer(text, kept)
+    return {
+        "removed_count": len(removed),
+        "removed_rows": removed,
+        "kept_rows": kept,
+    }
+
+
+def collect_retry_cleanup_image_urls(*row_groups: Iterable[Dict[str, Any]]) -> set[str]:
+    image_urls: set[str] = set()
+    for rows in row_groups:
+        for item in list(rows or []):
+            if not isinstance(item, dict):
+                continue
+            image_url = str(item.get("image_url", "")).strip()
+            if image_url:
+                image_urls.add(image_url)
+    return image_urls
+
+
+def drop_retry_cleanup_image_url_index(
+    path: Any,
+    image_urls: Iterable[Any],
+    *,
+    read_json_file_fn: Optional[Callable[[Any], Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
+    text = str(path or "").strip()
+    urls = {str(item or "").strip() for item in list(image_urls or []) if str(item or "").strip()}
+    if (not text) or (not urls) or (not os.path.exists(text)):
+        return {"dropped_count": 0, "index_map": {}}
+
+    reader = read_json_file_fn or read_json_file
+    state_payload = reader(text)
+    index_map = state_payload if isinstance(state_payload, dict) else {}
+    changed = False
+    dropped_count = 0
+    for image_url in list(urls):
+        if image_url in index_map:
+            del index_map[image_url]
+            dropped_count += 1
+            changed = True
+    if changed:
+        try:
+            with open(text, "w", encoding="utf-8") as f:
+                json.dump(index_map, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+    return {"dropped_count": dropped_count, "index_map": index_map}
+
+
+def build_retry_cleanup_feedback(
+    detail_count: int,
+    *,
+    removed_profile_count: int,
+    removed_manifest_count: int,
+    removed_queue_count: int,
+    removed_meta_count: int,
+    removed_review_count: int,
+    removed_failure_count: int,
+    dropped_url_index: int,
+) -> Dict[str, Any]:
+    touched = (
+        int(removed_profile_count)
+        + int(removed_manifest_count)
+        + int(removed_queue_count)
+        + int(removed_meta_count)
+        + int(removed_review_count)
+        + int(removed_failure_count)
+    )
+    review_failure_count = int(removed_review_count) + int(removed_failure_count)
+    return {
+        "touched_count": touched,
+        "has_touched": touched > 0,
+        "status_text": (
+            "已标记批量重试："
+            f"详情{int(removed_profile_count)}/图片{int(removed_manifest_count)}/"
+            f"元数据队列{int(removed_queue_count)}/元数据结果{int(removed_meta_count)}"
+        ),
+        "empty_cleanup_message": "所选条目当前没有可清理的历史记录。\n可直接点击“继续任务”尝试重新抓取。",
+        "dialog_title": "已标记重试",
+        "dialog_message": (
+            f"已清理并标记重试 {max(0, int(detail_count or 0))} 条。\n\n"
+            f"详情记录移除：{int(removed_profile_count)}\n"
+            f"图片记录移除：{int(removed_manifest_count)}\n"
+            f"元数据队列移除：{int(removed_queue_count)}\n"
+            f"元数据结果移除：{int(removed_meta_count)}\n"
+            f"复核/失败移除：{review_failure_count}\n"
+            f"URL索引移除：{int(dropped_url_index)}\n\n"
+            "下一步请点击“继续任务”。"
+        ),
+    }
+
+
+def execute_retry_detail_cleanup(
+    output_root: Any,
+    detail_urls: Iterable[Any],
+    *,
+    read_rows_fn: Optional[Callable[[str], List[Dict[str, Any]]]] = None,
+    write_rows_fn: Optional[Callable[[str, List[Dict[str, Any]]], None]] = None,
+    read_json_file_fn: Optional[Callable[[Any], Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
+    root = normalize_public_task_root(output_root)
+    detail_list = normalize_retry_detail_urls(detail_urls)
+    detail_set = set(detail_list)
+
+    profile_path = os.path.join(root, "raw", "profiles.jsonl")
+    manifest_path = os.path.join(root, "downloads", "image_downloads.jsonl")
+    queue_path = os.path.join(root, "raw", "metadata_queue.jsonl")
+    meta_result_path = os.path.join(root, "raw", "metadata_write_results.jsonl")
+    review_path = os.path.join(root, "raw", "review_queue.jsonl")
+    failures_path = os.path.join(root, "raw", "failures.jsonl")
+    image_url_index_path = os.path.join(root, "state", "image_url_index.json")
+
+    detail_matcher = lambda obj: retry_cleanup_matches_detail(obj, detail_set)
+    detail_url_matcher = lambda obj: isinstance(obj, dict) and str(obj.get("detail_url", "")).strip() in detail_set
+    failure_matcher = lambda obj: isinstance(obj, dict) and str(obj.get("url", "")).strip() in detail_set
+
+    removed_profiles_result = filter_retry_cleanup_jsonl(
+        profile_path,
+        detail_matcher,
+        read_rows_fn=read_rows_fn,
+        write_rows_fn=write_rows_fn,
+    )
+    removed_manifest_result = filter_retry_cleanup_jsonl(
+        manifest_path,
+        detail_url_matcher,
+        read_rows_fn=read_rows_fn,
+        write_rows_fn=write_rows_fn,
+    )
+    removed_queue_result = filter_retry_cleanup_jsonl(
+        queue_path,
+        detail_url_matcher,
+        read_rows_fn=read_rows_fn,
+        write_rows_fn=write_rows_fn,
+    )
+    removed_meta_result = filter_retry_cleanup_jsonl(
+        meta_result_path,
+        detail_url_matcher,
+        read_rows_fn=read_rows_fn,
+        write_rows_fn=write_rows_fn,
+    )
+    removed_review_result = filter_retry_cleanup_jsonl(
+        review_path,
+        detail_matcher,
+        read_rows_fn=read_rows_fn,
+        write_rows_fn=write_rows_fn,
+    )
+    removed_failure_result = filter_retry_cleanup_jsonl(
+        failures_path,
+        failure_matcher,
+        read_rows_fn=read_rows_fn,
+        write_rows_fn=write_rows_fn,
+    )
+
+    image_urls_to_drop = collect_retry_cleanup_image_urls(
+        removed_profiles_result.get("removed_rows") or [],
+        removed_manifest_result.get("removed_rows") or [],
+        removed_queue_result.get("removed_rows") or [],
+    )
+    index_drop = drop_retry_cleanup_image_url_index(
+        image_url_index_path,
+        image_urls_to_drop,
+        read_json_file_fn=read_json_file_fn,
+    )
+
+    feedback = build_retry_cleanup_feedback(
+        len(detail_list),
+        removed_profile_count=int(removed_profiles_result.get("removed_count", 0)),
+        removed_manifest_count=int(removed_manifest_result.get("removed_count", 0)),
+        removed_queue_count=int(removed_queue_result.get("removed_count", 0)),
+        removed_meta_count=int(removed_meta_result.get("removed_count", 0)),
+        removed_review_count=int(removed_review_result.get("removed_count", 0)),
+        removed_failure_count=int(removed_failure_result.get("removed_count", 0)),
+        dropped_url_index=int(index_drop.get("dropped_count", 0)),
+    )
+    return {
+        "detail_urls": detail_list,
+        "detail_set": detail_set,
+        "removed_profile_count": int(removed_profiles_result.get("removed_count", 0)),
+        "removed_manifest_count": int(removed_manifest_result.get("removed_count", 0)),
+        "removed_queue_count": int(removed_queue_result.get("removed_count", 0)),
+        "removed_meta_count": int(removed_meta_result.get("removed_count", 0)),
+        "removed_review_count": int(removed_review_result.get("removed_count", 0)),
+        "removed_failure_count": int(removed_failure_result.get("removed_count", 0)),
+        "dropped_url_index": int(index_drop.get("dropped_count", 0)),
+        "removed_profiles": list(removed_profiles_result.get("removed_rows") or []),
+        "removed_manifest": list(removed_manifest_result.get("removed_rows") or []),
+        "removed_queue": list(removed_queue_result.get("removed_rows") or []),
+        "image_urls_to_drop": image_urls_to_drop,
+        **feedback,
+    }
+
+
+def missing_audit_fields_from_metadata_snapshot(
+    *,
+    gender: Any,
+    profile: Optional[Dict[str, Any]] = None,
+) -> List[str]:
+    missing: List[str] = []
+    data = profile if isinstance(profile, dict) else {}
+
+    normalized_gender = normalize_optional_audit_value(gender)
+    birth_date = normalize_optional_audit_value(data.get("birth_date", ""))
+    photo_taken_at = normalize_optional_audit_value(data.get("photo_taken_at", ""))
+    age_at_photo = normalize_optional_audit_value(data.get("age_at_photo", ""))
+
+    if not normalized_gender:
+        missing.append("gender")
+    if not birth_date:
+        missing.append("birth_date")
+    if not photo_taken_at:
+        missing.append("photo_taken_at")
+    if not age_at_photo:
+        missing.append("age_at_photo")
+    return missing
+
+
+def build_audit_missing_metadata_reason(missing_fields: Iterable[Any]) -> Dict[str, Any]:
+    cleaned_fields: List[str] = []
+    for field in list(missing_fields or []):
+        token = str(field or "").strip().lower()
+        if token and token not in cleaned_fields:
+            cleaned_fields.append(token)
+    reason = ""
+    if cleaned_fields:
+        reason = f"audit_missing_metadata_fields:{','.join(cleaned_fields)}"
+    return {
+        "missing_fields": cleaned_fields,
+        "has_missing_fields": bool(cleaned_fields),
+        "reason": reason,
+    }
+
+
+def sync_audit_review_queue_rows(
+    rows: Iterable[Dict[str, Any]],
+    detail_url: Any,
+    *,
+    missing_fields: Iterable[Any],
+    name_hint: str = "",
+    scraped_at: str = "",
+) -> Dict[str, Any]:
+    detail = str(detail_url or "").strip()
+    if not detail:
+        return {"changed": False, "rows": list(rows or []), "found": False, "reason": "", "missing_fields": []}
+
+    reason_plan = build_audit_missing_metadata_reason(missing_fields)
+    desired_reason = str(reason_plan.get("reason", "")).strip()
+    cleaned_fields = list(reason_plan.get("missing_fields") or [])
+    normalized_name = str(name_hint or "").strip()
+    timestamp = str(scraped_at or "").strip() or datetime.now().isoformat(timespec="seconds")
+
+    kept: List[Dict[str, Any]] = []
+    changed = False
+    found = False
+    for row in list(rows or []):
+        if not isinstance(row, dict):
+            continue
+        current = dict(row)
+        reason = str(current.get("reason", "")).strip()
+        reason_lower = reason.lower()
+        row_detail = str(current.get("detail_url", "")).strip()
+        if row_detail != detail or (not reason_lower.startswith("audit_missing_metadata_fields")):
+            kept.append(current)
+            continue
+
+        if not desired_reason:
+            changed = True
+            continue
+
+        found = True
+        if reason != desired_reason:
+            current["reason"] = desired_reason
+            current["missing_fields"] = list(cleaned_fields)
+            current["scraped_at"] = timestamp
+            changed = True
+        if normalized_name and (not str(current.get("name", "")).strip()):
+            current["name"] = normalized_name
+            changed = True
+        kept.append(current)
+
+    if desired_reason and (not found):
+        kept.append(
+            {
+                "scraped_at": timestamp,
+                "reason": desired_reason,
+                "detail_url": detail,
+                "name": normalized_name,
+                "missing_fields": list(cleaned_fields),
+            }
+        )
+        changed = True
+
+    return {
+        "changed": changed,
+        "rows": kept,
+        "found": found,
+        "reason": desired_reason,
+        "missing_fields": cleaned_fields,
+    }
+
+
+def sync_scraper_audit_review_queue(
+    output_root: Any,
+    detail_url: Any,
+    *,
+    missing_fields: Iterable[Any],
+    name_hint: str = "",
+    read_rows_fn: Optional[Callable[[str], List[Dict[str, Any]]]] = None,
+    write_rows_fn: Optional[Callable[[str, List[Dict[str, Any]]], None]] = None,
+    scraped_at: str = "",
+) -> bool:
+    root = str(output_root or "").strip()
+    detail = str(detail_url or "").strip()
+    if (not root) or (not os.path.isdir(root)) or (not detail):
+        return False
+    review_path = os.path.join(root, "raw", "review_queue.jsonl")
+    if not os.path.exists(review_path):
+        return False
+
+    reader = read_rows_fn or (lambda path: read_jsonl_rows(path, max_rows=0))
+    writer = write_rows_fn or write_jsonl_rows
+    rows = reader(review_path)
+    plan = sync_audit_review_queue_rows(
+        rows,
+        detail,
+        missing_fields=missing_fields,
+        name_hint=name_hint,
+        scraped_at=scraped_at,
+    )
+    if bool(plan.get("changed")):
+        writer(review_path, list(plan.get("rows") or []))
+    return bool(plan.get("changed"))
 
 
 def split_scraper_progress_rows(
@@ -614,9 +1231,7 @@ def collect_detail_urls_from_progress_values(values_list: Iterable[Tuple[Any, ..
     urls: List[str] = []
     seen: set[str] = set()
     for values in list(values_list or []):
-        if not isinstance(values, tuple) or len(values) < 7:
-            continue
-        detail_url = str(values[6] or "").strip()
+        detail_url = extract_detail_url_from_progress_values(values)
         if (not detail_url) or (detail_url in seen):
             continue
         seen.add(detail_url)
@@ -628,12 +1243,13 @@ def dedupe_progress_values(values_list: Iterable[Tuple[Any, ...]]) -> List[Tuple
     output: List[Tuple[Any, ...]] = []
     seen: set[Tuple[Any, ...]] = set()
     for values in list(values_list or []):
-        if not isinstance(values, tuple) or (not values):
+        normalized = normalize_progress_values(values)
+        if not normalized:
             continue
-        if values in seen:
+        if normalized in seen:
             continue
-        seen.add(values)
-        output.append(values)
+        seen.add(normalized)
+        output.append(normalized)
     return output
 
 

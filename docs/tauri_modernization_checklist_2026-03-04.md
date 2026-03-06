@@ -3,6 +3,14 @@
 更新时间：2026-03-04  
 适用仓库：`d2ilite`
 
+## 当前状态（2026-03-06）
+
+1. `Phase 0` 已完成，Python 工程已完成核心服务分层。
+2. `app.py` 当前主要保留 Tk UI、事件绑定和少量界面协调。
+3. 契约回归可执行：`scripts/phase0_contract_smoke.py`、`scripts/bridge_cli_smoke.py`。
+4. `desktop-next/` 已具备开发态最小闭环：目录浏览、图片预览、元数据读取与保存。
+5. `desktop-next` 开发模式下已通过 `/api/bridge/*` 接入本地 Python CLI bridge；`src-tauri` 尚未初始化。
+
 ## 1. 目标与原则
 
 目标：
@@ -36,6 +44,8 @@
 
 目标：把现有 Python 工程拆成“UI 层 / 领域服务层 / I/O 适配层”。
 
+状态：已完成（2026-03-06）
+
 清单：
 
 1. 抽离 `app.py` 中与 UI 无关逻辑到 `services/`（如元数据读写、文本清洗、任务状态转换）。
@@ -52,16 +62,20 @@
 
 目标：建立 `Tauri + React + TS` 空骨架并完成与 Python 服务联通。
 
+状态：开发态最小闭环已完成（2026-03-06）
+
 清单：
 
-1. 新建 `desktop-next/`（Tauri 工程）。
+1. 新建 `desktop-next/` 前端工程，并保留后续 `src-tauri/` 接入位。
 2. 前端实现基础布局：顶部动作区、左预览、右元数据面板、底部状态栏。
-3. 打通一个最小闭环：打开图片 -> 读取元数据 -> 前端展示。
+3. 打通开发态最小闭环：打开目录 -> 读取元数据 -> 前端展示 -> 保存回图片。
+4. 开发模式通过 Vite 中间件转发 `/api/bridge/*` 到 `scripts/desktop_bridge_cli.py`。
 
 验收：
 
-1. 新桌面端可启动并读取本地图片元数据。
+1. 新桌面端开发模式可读取、预览并保存本地图片元数据。
 2. 老界面仍可独立使用（双轨并行）。
+3. `src-tauri` 尚未接入，不影响当前 React 工作台验证。
 
 ## Phase 2：Rust 核心迁移（2-3 周）
 
@@ -170,6 +184,6 @@
 
 ## 7. 下一步（立即执行）
 
-1. 从当前稳定快照切出：`feature/tauri-modernization`。
-2. 在新分支完成 Phase 0 的服务分层拆分。
-3. 建立第一版契约测试样本和性能基准脚本。
+1. 初始化 `desktop-next/src-tauri`，将现有桥接命令映射到 Tauri `invoke`。
+2. 把当前开发态工作台字段继续扩展到结构化 / XMP / EXIF / IPTC 视图。
+3. 建立 `desktop-next` 端到端冒烟检查，覆盖 `ping/list/read/save/preview`。

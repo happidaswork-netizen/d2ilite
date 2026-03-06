@@ -212,6 +212,65 @@ def extract_runtime_log_field(line: str, label: str) -> str:
     return str(m.group(1) or "").strip()
 
 
+def infer_scraper_live_action(line: Any) -> str:
+    text = str(line or "")
+    if ("正在下载" in text) and ("的图片" in text):
+        return "正在下载图片"
+    if ("正在写入" in text) and ("的元数据" in text):
+        return "正在写入元数据"
+    if ("正在抓取" in text) and ("的详情页" in text):
+        return "正在抓取详情页"
+    if "元数据写入失败，准备延迟重试" in text:
+        return "元数据重试中"
+    return ""
+
+
+def extract_scraper_live_actions(
+    output_root: Any,
+    *,
+    read_text_tail_fn=None,
+    repair_text_fn=None,
+    extract_runtime_log_field_fn=None,
+    normalize_person_key_fn=None,
+    max_lines: int = 240,
+) -> tuple[Dict[str, str], Dict[str, str], str]:
+    by_person: Dict[str, str] = {}
+    by_detail: Dict[str, str] = {}
+    latest_action = ""
+    root = str(output_root or "").strip()
+    if not root:
+        return by_person, by_detail, latest_action
+
+    log_path = os.path.join(root, "reports", "gui_public_scraper.log")
+    tail_reader = read_text_tail_fn or read_text_tail
+    repair_text = repair_text_fn or repair_mojibake_utf8_latin1
+    extract_field = extract_runtime_log_field_fn or extract_runtime_log_field
+    normalize_person = normalize_person_key_fn or normalize_person_key
+    tail = tail_reader(log_path, max_lines=max_lines)
+    if not tail:
+        return by_person, by_detail, latest_action
+
+    lines = [item.strip() for item in str(tail or "").splitlines() if str(item or "").strip()]
+    for line in reversed(lines):
+        fixed = repair_text(line)
+        action = infer_scraper_live_action(fixed)
+        if not action:
+            continue
+        if not latest_action:
+            latest_action = action
+
+        person = extract_field(fixed, "人物")
+        person_key = normalize_person(person)
+        if person_key and (person_key not in by_person):
+            by_person[person_key] = action
+
+        detail = extract_field(fixed, "详情页")
+        if detail and (detail not in by_detail):
+            by_detail[detail] = action
+
+    return by_person, by_detail, latest_action
+
+
 def normalize_optional_audit_value(value: Any) -> str:
     raw = str(value or "").strip()
     if not raw:

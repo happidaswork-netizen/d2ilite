@@ -1,4 +1,4 @@
-export type BridgeProvider = 'mock' | 'tauri'
+export type BridgeProvider = 'mock' | 'tauri' | 'vite-python-cli'
 
 export interface BridgeHealth {
   provider: string
@@ -43,5 +43,6 @@ export interface DesktopBridge {
   listImages(folder: string, limit?: number): Promise<string[]>
   readMetadata(path: string): Promise<MetadataItem>
   saveMetadata(path: string, payload: SavePayload): Promise<void>
+  getPreviewUrl(path: string): string
 }
 

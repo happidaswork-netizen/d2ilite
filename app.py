@@ -75,12 +75,22 @@ from services.metadata_service import (
     read_raw_with_pyexiv2 as _svc_read_raw_with_pyexiv2,
     write_raw_with_pyexiv2 as _svc_write_raw_with_pyexiv2,
 )
+from services.public_scraper_config_service import (
+    apply_public_scraper_setup_to_runtime_config as _svc_apply_public_scraper_setup_to_runtime_config,
+    build_public_scraper_runtime_config as _svc_build_public_scraper_runtime_config,
+    build_public_scraper_setup_initial_state as _svc_build_public_scraper_setup_initial_state,
+    build_public_scraper_setup_submit_plan as _svc_build_public_scraper_setup_submit_plan,
+    build_public_scraper_template_selection_state as _svc_build_public_scraper_template_selection_state,
+    guess_public_site_name as _svc_guess_public_site_name,
+    register_generated_template as _svc_register_generated_template,
+    save_generated_public_scraper_template as _svc_save_generated_public_scraper_template,
+)
 from services.scraper_monitor_service import (
+    extract_scraper_live_actions as _svc_extract_scraper_live_actions,
     extract_runtime_log_field as _svc_extract_runtime_log_field,
     format_elapsed as _svc_format_elapsed,
     humanize_scraper_reason as _svc_humanize_scraper_reason,
     merge_status_reason as _svc_merge_status_reason,
-    normalize_optional_audit_value as _svc_normalize_optional_audit_value,
     normalize_person_key as _svc_normalize_person_key,
     read_jsonl_rows as _svc_read_jsonl_rows,
     read_text_tail as _svc_read_text_tail,
@@ -98,14 +108,22 @@ from services.settings_service import (
     save_app_settings as _svc_save_app_settings,
 )
 from services.task_service import (
+    build_retry_detail_plan as _svc_build_retry_detail_plan,
+    build_progress_context_menu_plan as _svc_build_progress_context_menu_plan,
+    build_public_task_manager_list_view as _svc_build_public_task_manager_list_view,
     build_scraper_task_view_rows as _svc_build_scraper_task_view_rows,
     build_public_scraper_progress_text as _svc_build_public_scraper_progress_text,
+    build_progress_selection_sync_plan as _svc_build_progress_selection_sync_plan,
     collect_detail_urls_from_progress_values as _svc_collect_detail_urls_from_progress_values,
+    collect_other_progress_table_refs as _svc_collect_other_progress_table_refs,
+    collect_scraper_error_row_ids as _svc_collect_scraper_error_row_ids,
     collect_scraper_progress_rows as _svc_collect_scraper_progress_rows,
+    collect_progress_values as _svc_collect_progress_values,
     count_jsonl_rows as _svc_count_jsonl_rows,
     count_latest_metadata_status as _svc_count_latest_metadata_status,
     default_public_tasks_root as _svc_default_public_tasks_root,
     discover_public_task_roots as _svc_discover_public_task_roots,
+    execute_retry_detail_cleanup as _svc_execute_retry_detail_cleanup,
     estimate_scraper_total_target as _svc_estimate_scraper_total_target,
     get_scraper_record_path as _svc_get_scraper_record_path,
     is_process_running as _svc_is_process_running,
@@ -113,7 +131,7 @@ from services.task_service import (
     is_scraper_row_image_downloaded as _svc_is_scraper_row_image_downloaded,
     list_public_scraper_templates as _svc_list_public_scraper_templates,
     load_public_scraper_template_states as _svc_load_public_scraper_template_states,
-    dedupe_progress_values as _svc_dedupe_progress_values,
+    extract_detail_url_from_progress_values as _svc_extract_detail_url_from_progress_values,
     normalize_existing_path as _svc_normalize_existing_path,
     normalize_public_task_root as _svc_normalize_public_task_root,
     public_scraper_template_state_path as _svc_public_scraper_template_state_path,
@@ -121,9 +139,11 @@ from services.task_service import (
     public_scraper_pause_flag_path as _svc_public_scraper_pause_flag_path,
     read_json_file as _svc_read_json_file,
     read_scraper_backoff_state as _svc_read_scraper_backoff_state,
+    missing_audit_fields_from_metadata_snapshot as _svc_missing_audit_fields_from_metadata_snapshot,
     parse_task_root_from_values as _svc_parse_task_root_from_values,
     public_task_manager_status_text as _svc_public_task_manager_status_text,
     public_task_summary_to_tree_values as _svc_public_task_summary_to_tree_values,
+    pick_first_progress_values as _svc_pick_first_progress_values,
     scraper_progress_row_to_table_values as _svc_scraper_progress_row_to_table_values,
     scraper_progress_snapshot as _svc_scraper_progress_snapshot,
     scraper_progress_values_has_error as _svc_scraper_progress_values_has_error,
@@ -133,22 +153,33 @@ from services.task_service import (
     summarize_scraper_progress_rows as _svc_summarize_scraper_progress_rows,
     sort_public_task_summaries as _svc_sort_public_task_summaries,
     retry_requires_crawl_phase as _svc_retry_requires_crawl_phase,
-    safe_positive_int as _svc_safe_positive_int,
     task_entry_status_text as _svc_task_entry_status_text,
     reconcile_task_entry_runtime_state as _svc_reconcile_task_entry_runtime_state,
     resolve_public_task_directory as _svc_resolve_public_task_directory,
     resolve_public_task_log_path as _svc_resolve_public_task_log_path,
+    resolve_openable_image_path_from_progress_values as _svc_resolve_openable_image_path_from_progress_values,
+    scraper_error_selection_status_text as _svc_scraper_error_selection_status_text,
     set_public_scraper_template_state as _svc_set_public_scraper_template_state,
     summarize_public_task as _svc_summarize_public_task,
     suggest_public_scraper_output_root as _svc_suggest_public_scraper_output_root,
+    sync_scraper_audit_review_queue as _svc_sync_scraper_audit_review_queue,
 )
 from services.task_orchestration_service import (
+    build_public_scraper_app_close_plan as _svc_build_public_scraper_app_close_plan,
+    build_public_scraper_poll_plan as _svc_build_public_scraper_poll_plan,
+    build_public_scraper_close_reset_state as _svc_build_public_scraper_close_reset_state,
+    build_public_scraper_task_exit_plan as _svc_build_public_scraper_task_exit_plan,
+    build_existing_task_started_message as _svc_build_existing_task_started_message,
     build_continue_start_existing_task_args as _svc_build_continue_start_existing_task_args,
+    build_public_scraper_command as _svc_build_public_scraper_command,
+    build_public_scraper_log_banner as _svc_build_public_scraper_log_banner,
     build_retry_start_existing_task_args as _svc_build_retry_start_existing_task_args,
     build_rewrite_metadata_start_existing_task_args as _svc_build_rewrite_metadata_start_existing_task_args,
+    build_started_task_message as _svc_build_started_task_message,
     continue_action_for_active_entry as _svc_continue_action_for_active_entry,
-    decide_task_exit_outcome as _svc_decide_task_exit_outcome,
-    pick_next_active_root as _svc_pick_next_active_root,
+    prepare_existing_task_runtime_config as _svc_prepare_existing_task_runtime_config,
+    resolve_active_template_path as _svc_resolve_active_template_path,
+    resolve_named_images_dir as _svc_resolve_named_images_dir,
     retry_started_status_text as _svc_retry_started_status_text,
 )
 from services.viewer_load_service import (
@@ -1115,55 +1146,15 @@ class D2ILiteApp(BaseWindow):
         self,
         output_root: str,
     ) -> Tuple[Dict[str, str], Dict[str, str], str]:
-        by_person: Dict[str, str] = {}
-        by_detail: Dict[str, str] = {}
-        latest_action = ""
-        if not output_root:
-            return by_person, by_detail, latest_action
-
-        log_path = os.path.join(output_root, "reports", "gui_public_scraper.log")
-        tail = self._read_text_tail(log_path, max_lines=240)
-        if not tail:
-            return by_person, by_detail, latest_action
-
-        def _infer_action(line: str) -> str:
-            s = str(line or "")
-            if ("正在下载" in s) and ("的图片" in s):
-                return "正在下载图片"
-            if ("正在写入" in s) and ("的元数据" in s):
-                return "正在写入元数据"
-            if ("正在抓取" in s) and ("的详情页" in s):
-                return "正在抓取详情页"
-            if "元数据写入失败，准备延迟重试" in s:
-                return "元数据重试中"
-            return ""
-
-        lines = [x.strip() for x in str(tail or "").splitlines() if str(x or "").strip()]
-        for line in reversed(lines):
-            fixed = self._repair_mojibake_utf8_latin1(line)
-            action = _infer_action(fixed)
-            if not action:
-                continue
-            if not latest_action:
-                latest_action = action
-
-            person = self._extract_runtime_log_field(fixed, "人物")
-            person_key = self._normalize_person_key(person)
-            if person_key and (person_key not in by_person):
-                by_person[person_key] = action
-
-            detail = self._extract_runtime_log_field(fixed, "详情页")
-            if detail and (detail not in by_detail):
-                by_detail[detail] = action
-
-        return by_person, by_detail, latest_action
-
-    @staticmethod
-    def _normalize_optional_audit_value(value: Any) -> str:
-        return _svc_normalize_optional_audit_value(value)
+        return _svc_extract_scraper_live_actions(
+            output_root,
+            read_text_tail_fn=self._read_text_tail,
+            repair_text_fn=self._repair_mojibake_utf8_latin1,
+            extract_runtime_log_field_fn=self._extract_runtime_log_field,
+            normalize_person_key_fn=self._normalize_person_key,
+        )
 
     def _scraper_missing_required_fields_from_info(self, info: ImageMetadataInfo) -> List[str]:
-        missing: List[str] = []
         if not isinstance(info, ImageMetadataInfo):
             return ["gender", "birth_date", "photo_taken_at", "age_at_photo"]
         profile: Dict[str, Any] = {}
@@ -1171,21 +1162,10 @@ class D2ILiteApp(BaseWindow):
             prof_raw = (info.titi_json or {}).get("d2i_profile")
             if isinstance(prof_raw, dict):
                 profile = prof_raw
-
-        gender = self._normalize_optional_audit_value(info.gender)
-        birth_date = self._normalize_optional_audit_value(profile.get("birth_date", ""))
-        photo_taken_at = self._normalize_optional_audit_value(profile.get("photo_taken_at", ""))
-        age_at_photo = self._normalize_optional_audit_value(profile.get("age_at_photo", ""))
-
-        if not gender:
-            missing.append("gender")
-        if not birth_date:
-            missing.append("birth_date")
-        if not photo_taken_at:
-            missing.append("photo_taken_at")
-        if not age_at_photo:
-            missing.append("age_at_photo")
-        return missing
+        return _svc_missing_audit_fields_from_metadata_snapshot(
+            gender=info.gender,
+            profile=profile,
+        )
 
     def _sync_scraper_audit_review_queue_for_detail(
         self,
@@ -1195,68 +1175,15 @@ class D2ILiteApp(BaseWindow):
         missing_fields: List[str],
         name_hint: str = "",
     ) -> bool:
-        root = str(output_root or "").strip()
-        detail = str(detail_url or "").strip()
-        if (not root) or (not os.path.isdir(root)) or (not detail):
-            return False
-        review_path = os.path.join(root, "raw", "review_queue.jsonl")
-        if not os.path.exists(review_path):
-            return False
-
-        desired_reason = ""
-        cleaned_fields: List[str] = []
-        for field in (missing_fields or []):
-            token = str(field or "").strip().lower()
-            if token and token not in cleaned_fields:
-                cleaned_fields.append(token)
-        if cleaned_fields:
-            desired_reason = f"audit_missing_metadata_fields:{','.join(cleaned_fields)}"
-
-        rows = self._read_jsonl_rows(review_path, max_rows=0)
-        kept: List[Dict[str, Any]] = []
-        changed = False
-        found = False
-        for row in rows:
-            if not isinstance(row, dict):
-                continue
-            reason = str(row.get("reason", "")).strip()
-            reason_lower = reason.lower()
-            row_detail = str(row.get("detail_url", "")).strip()
-            if row_detail != detail or (not reason_lower.startswith("audit_missing_metadata_fields")):
-                kept.append(row)
-                continue
-
-            # Same detail_url + audit reason: prune when resolved; otherwise keep updated.
-            if not desired_reason:
-                changed = True
-                continue
-
-            found = True
-            if reason != desired_reason:
-                row["reason"] = desired_reason
-                row["missing_fields"] = list(cleaned_fields)
-                row["scraped_at"] = datetime.now().isoformat(timespec="seconds")
-                changed = True
-            if name_hint and (not str(row.get("name", "")).strip()):
-                row["name"] = str(name_hint).strip()
-                changed = True
-            kept.append(row)
-
-        if desired_reason and (not found):
-            kept.append(
-                {
-                    "scraped_at": datetime.now().isoformat(timespec="seconds"),
-                    "reason": desired_reason,
-                    "detail_url": detail,
-                    "name": str(name_hint or "").strip(),
-                    "missing_fields": list(cleaned_fields),
-                }
-            )
-            changed = True
-
-        if changed:
-            self._write_jsonl_rows(review_path, kept)
-        return changed
+        return _svc_sync_scraper_audit_review_queue(
+            output_root,
+            detail_url,
+            missing_fields=missing_fields,
+            name_hint=name_hint,
+            read_rows_fn=lambda path: self._read_jsonl_rows(path, max_rows=0),
+            write_rows_fn=self._write_jsonl_rows,
+            scraped_at=datetime.now().isoformat(timespec="seconds"),
+        )
 
     @staticmethod
     def _normalize_existing_path(path_value: Any) -> str:
@@ -1265,10 +1192,6 @@ class D2ILiteApp(BaseWindow):
     @staticmethod
     def _read_json_file(path: str) -> Dict[str, Any]:
         return _svc_read_json_file(path)
-
-    @staticmethod
-    def _safe_int(value: Any) -> int:
-        return _svc_safe_positive_int(value)
 
     def _estimate_scraper_total_target(self, output_root: str) -> int:
         return _svc_estimate_scraper_total_target(
@@ -1368,20 +1291,20 @@ class D2ILiteApp(BaseWindow):
             if table not in prioritized:
                 prioritized.append(table)
 
+        prioritized_values: List[Any] = []
         for table in prioritized:
             try:
                 selected = table.selection()
                 if not selected:
                     continue
                 values = table.item(selected[0], "values")
-                if isinstance(values, (list, tuple)):
-                    return tuple(values)
             except Exception:
                 continue
-        return tuple()
+            prioritized_values.append(values)
+        return _svc_pick_first_progress_values(prioritized_values)
 
     def _collect_selected_scraper_progress_values(self, table: Optional[ttk.Treeview] = None) -> List[Tuple[Any, ...]]:
-        values_list: List[Tuple[Any, ...]] = []
+        values_list: List[Any] = []
         tables = [table] if table is not None else self._iter_scraper_progress_tables()
         for t in tables:
             if t is None:
@@ -1392,11 +1315,11 @@ class D2ILiteApp(BaseWindow):
                 selected = []
             for row_id in selected:
                 try:
-                    values = tuple(t.item(row_id, "values") or ())
+                    values = t.item(row_id, "values")
                 except Exception:
                     continue
                 values_list.append(values)
-        return _svc_dedupe_progress_values(values_list)
+        return _svc_collect_progress_values(values_list)
 
     @staticmethod
     def _scraper_progress_values_has_error(values: Tuple[Any, ...]) -> bool:
@@ -1421,11 +1344,8 @@ class D2ILiteApp(BaseWindow):
         try:
             self._scraper_progress_selection_syncing = True
             if (not across_tables) and target_tables:
-                # Keep only one table selection in single-table mode.
                 selected_table = target_tables[0]
-                for other in self._iter_scraper_progress_tables():
-                    if other is selected_table:
-                        continue
+                for other in _svc_collect_other_progress_table_refs(self._iter_scraper_progress_tables(), selected_table):
                     try:
                         other.selection_remove(other.selection())
                     except Exception:
@@ -1436,14 +1356,17 @@ class D2ILiteApp(BaseWindow):
                     row_ids = list(t.get_children("") or [])
                 except Exception:
                     row_ids = []
-                bad_ids: List[str] = []
+                row_items: List[Tuple[Any, Any]] = []
                 for row_id in row_ids:
                     try:
                         values = tuple(t.item(row_id, "values") or ())
                     except Exception:
                         continue
-                    if self._scraper_progress_values_has_error(values):
-                        bad_ids.append(row_id)
+                    row_items.append((row_id, values))
+                bad_ids = _svc_collect_scraper_error_row_ids(
+                    row_items,
+                    has_error_fn=self._scraper_progress_values_has_error,
+                )
                 try:
                     if bad_ids:
                         t.selection_set(bad_ids)
@@ -1456,27 +1379,15 @@ class D2ILiteApp(BaseWindow):
         finally:
             self._scraper_progress_selection_syncing = False
 
-        if total_selected > 0:
-            self._set_status(f"已选中错误项 {total_selected} 条")
-        else:
-            self._set_status("当前列表没有可选中的错误项")
+        self._set_status(_svc_scraper_error_selection_status_text(total_selected))
         return total_selected
 
     def _resolve_scraper_selected_image_path(self) -> str:
         values = self._get_selected_scraper_progress_values()
-        if not isinstance(values, (list, tuple)) or len(values) < 8:
-            return ""
-        image_status = str(values[3] or "").strip()
-        image_path = str(values[7] or "").strip()
-        if image_status not in {"√", "✓"}:
-            return ""
-        if not image_path:
-            return ""
-        try:
-            normalized = os.path.abspath(image_path)
-        except Exception:
-            normalized = image_path
-        return normalized if os.path.isfile(normalized) else ""
+        return _svc_resolve_openable_image_path_from_progress_values(
+            values,
+            normalize_existing_path_fn=self._normalize_existing_path,
+        )
 
     def _open_selected_scraper_result(self):
         target = self._resolve_scraper_selected_image_path()
@@ -1600,28 +1511,30 @@ class D2ILiteApp(BaseWindow):
     def _on_scraper_progress_row_selected(self, _event=None):
         if self._scraper_progress_selection_syncing:
             return
+        tables = self._iter_scraper_progress_tables()
+        event_widget = getattr(_event, "widget", None)
+        selected_values: Any = tuple()
         try:
-            event_widget = getattr(_event, "widget", None)
-            if event_widget in self._iter_scraper_progress_tables():
+            if event_widget in tables:
                 selected = event_widget.selection()
                 if selected:
-                    values = tuple(event_widget.item(selected[0], "values") or ())
-                    if len(values) >= 7:
-                        self._scraper_last_selected_detail_url = str(values[6] or "").strip()
+                    selected_values = event_widget.item(selected[0], "values")
         except Exception:
             pass
+        plan = _svc_build_progress_selection_sync_plan(tables, event_widget, selected_values)
+        detail_url = str(plan.get("detail_url", "") or "").strip()
+        if detail_url:
+            self._scraper_last_selected_detail_url = detail_url
         try:
-            event_widget = getattr(_event, "widget", None)
-            if event_widget is not None:
+            if bool(plan.get("has_active_table")):
                 self._scraper_progress_selection_syncing = True
-                for table in self._iter_scraper_progress_tables():
-                    if table is event_widget:
-                        continue
+                for table in list(plan.get("clear_other_refs") or []):
                     table.selection_remove(table.selection())
         except Exception:
             pass
         try:
-            self._queue_open_selected_scraper_result()
+            if bool(plan.get("should_queue_open")):
+                self._queue_open_selected_scraper_result()
         finally:
             self._scraper_progress_selection_syncing = False
 
@@ -1636,23 +1549,45 @@ class D2ILiteApp(BaseWindow):
             row_id = ""
         if not row_id:
             return "break"
+
+        selected_now: List[Any] = []
+        selected_values: List[Any] = []
+        values_clicked: Any = tuple()
         try:
-            selected_now = set(table.selection() or ())
-            if row_id not in selected_now:
-                table.selection_set(row_id)
-            table.focus(row_id)
+            selected_now = list(table.selection() or [])
+        except Exception:
+            selected_now = []
+        for selected_id in selected_now:
+            try:
+                selected_values.append(table.item(selected_id, "values"))
+            except Exception:
+                continue
+        try:
+            values_clicked = table.item(row_id, "values")
+        except Exception:
+            values_clicked = tuple()
+
+        plan = _svc_build_progress_context_menu_plan(
+            row_id,
+            selected_now,
+            values_clicked,
+            selected_values,
+        )
+        try:
+            if bool(plan.get("should_reset_selection")):
+                table.selection_set(str(plan.get("row_id", "") or "").strip())
+            focus_row_id = str(plan.get("focus_row_id", "") or "").strip()
+            if focus_row_id:
+                table.focus(focus_row_id)
         except Exception:
             pass
 
-        try:
-            values_clicked = tuple(table.item(row_id, "values") or ())
-            if len(values_clicked) >= 7:
-                self._scraper_last_selected_detail_url = str(values_clicked[6] or "").strip()
-        except Exception:
-            pass
+        detail_url = str(plan.get("detail_url", "") or "").strip()
+        if detail_url:
+            self._scraper_last_selected_detail_url = detail_url
 
-        detail_urls = self._collect_selected_scraper_detail_urls(table)
-        detail_count = len(detail_urls)
+        detail_urls = list(plan.get("detail_urls") or [])
+        detail_count = int(plan.get("retry_count", 0) or 0)
 
         menu = tk.Menu(self, tearoff=False)
         menu.add_command(label="打开选中", command=self._open_selected_scraper_result)
@@ -1685,17 +1620,14 @@ class D2ILiteApp(BaseWindow):
         self._retry_scraper_detail_rows([detail_url])
 
     def _retry_scraper_detail_rows(self, detail_urls: List[str]):
-        detail_list: List[str] = []
-        seen: set[str] = set()
-        for raw in detail_urls or []:
-            detail = str(raw or "").strip()
-            if (not detail) or (detail in seen):
-                continue
-            seen.add(detail)
-            detail_list.append(detail)
-
-        if not detail_list:
-            messagebox.showinfo("提示", "当前选中项缺少详情链接，无法标记重试。", parent=self)
+        retry_plan = _svc_build_retry_detail_plan(detail_urls)
+        detail_list = list(retry_plan.get("detail_urls") or [])
+        if not bool(retry_plan.get("has_details")):
+            messagebox.showinfo(
+                "提示",
+                str(retry_plan.get("empty_selection_message", "") or "当前选中项缺少详情链接，无法标记重试。"),
+                parent=self,
+            )
             return
 
         proc = self._public_scraper_proc
@@ -1708,129 +1640,25 @@ class D2ILiteApp(BaseWindow):
             messagebox.showerror("重试失败", "当前任务目录无效，无法执行重试。", parent=self)
             return
 
-        detail_preview = "\n".join(detail_list[:3])
-        if len(detail_list) > 3:
-            detail_preview += f"\n...（共 {len(detail_list)} 条）"
         if not messagebox.askyesno(
-            "确认重试",
-            "将清理选中条目的已抓取记录（详情/图片/元数据结果），\n"
-            "然后你可点击“继续任务”让它们重新抓取。\n\n"
-            f"选中条目：{len(detail_list)}\n"
-            f"{detail_preview}",
+            str(retry_plan.get("confirm_title", "") or "确认重试"),
+            str(retry_plan.get("confirm_message", "") or ""),
             parent=self,
         ):
             return
 
-        detail_set = set(detail_list)
-
-        profile_path = os.path.join(output_root, "raw", "profiles.jsonl")
-        manifest_path = os.path.join(output_root, "downloads", "image_downloads.jsonl")
-        queue_path = os.path.join(output_root, "raw", "metadata_queue.jsonl")
-        meta_result_path = os.path.join(output_root, "raw", "metadata_write_results.jsonl")
-        review_path = os.path.join(output_root, "raw", "review_queue.jsonl")
-        failures_path = os.path.join(output_root, "raw", "failures.jsonl")
-        image_url_index_path = os.path.join(output_root, "state", "image_url_index.json")
-
-        removed_profiles: List[Dict[str, Any]] = []
-        removed_manifest: List[Dict[str, Any]] = []
-        removed_queue: List[Dict[str, Any]] = []
-
-        def _match_detail(obj: Any) -> bool:
-            if not isinstance(obj, dict):
-                return False
-            if str(obj.get("detail_url", "")).strip() in detail_set:
-                return True
-            record = obj.get("record")
-            if isinstance(record, dict) and str(record.get("detail_url", "")).strip() in detail_set:
-                return True
-            return False
-
-        def _filter_jsonl(path: str, matcher) -> Tuple[int, List[Dict[str, Any]]]:
-            if not os.path.exists(path):
-                return 0, []
-            rows = self._read_jsonl_rows(path, max_rows=0)
-            kept: List[Dict[str, Any]] = []
-            removed: List[Dict[str, Any]] = []
-            for item in rows:
-                if matcher(item):
-                    removed.append(item)
-                else:
-                    kept.append(item)
-            if removed:
-                self._write_jsonl_rows(path, kept)
-            return len(removed), removed
-
-        removed_profile_count, removed_profiles = _filter_jsonl(profile_path, _match_detail)
-        removed_manifest_count, removed_manifest = _filter_jsonl(
-            manifest_path, lambda x: isinstance(x, dict) and str(x.get("detail_url", "")).strip() in detail_set
-        )
-        removed_queue_count, removed_queue = _filter_jsonl(
-            queue_path, lambda x: isinstance(x, dict) and str(x.get("detail_url", "")).strip() in detail_set
-        )
-        removed_meta_count, _ = _filter_jsonl(
-            meta_result_path, lambda x: isinstance(x, dict) and str(x.get("detail_url", "")).strip() in detail_set
-        )
-        removed_review_count, _ = _filter_jsonl(review_path, _match_detail)
-        removed_failure_count, _ = _filter_jsonl(
-            failures_path, lambda x: isinstance(x, dict) and str(x.get("url", "")).strip() in detail_set
-        )
-
-        image_urls_to_drop: set[str] = set()
-        for source_rows in (removed_profiles, removed_manifest, removed_queue):
-            for item in source_rows:
-                if not isinstance(item, dict):
-                    continue
-                image_url = str(item.get("image_url", "")).strip()
-                if image_url:
-                    image_urls_to_drop.add(image_url)
-
-        dropped_url_index = 0
-        if image_urls_to_drop and os.path.exists(image_url_index_path):
-            state_payload = self._read_json_file(image_url_index_path)
-            index_map = state_payload if isinstance(state_payload, dict) else {}
-            changed = False
-            for image_url in list(image_urls_to_drop):
-                if image_url in index_map:
-                    del index_map[image_url]
-                    dropped_url_index += 1
-                    changed = True
-            if changed:
-                try:
-                    with open(image_url_index_path, "w", encoding="utf-8") as f:
-                        json.dump(index_map, f, ensure_ascii=False, indent=2)
-                except Exception:
-                    pass
-
-        touched = (
-            removed_profile_count
-            + removed_manifest_count
-            + removed_queue_count
-            + removed_meta_count
-            + removed_review_count
-            + removed_failure_count
-        )
-        if touched <= 0:
+        cleanup_result = _svc_execute_retry_detail_cleanup(output_root, detail_list)
+        if not bool(cleanup_result.get("has_touched")):
             messagebox.showinfo(
                 "提示",
-                "所选条目当前没有可清理的历史记录。\n可直接点击“继续任务”尝试重新抓取。",
+                str(cleanup_result.get("empty_cleanup_message", "")),
                 parent=self,
             )
         else:
-            self._set_status(
-                "已标记批量重试："
-                f"详情{removed_profile_count}/图片{removed_manifest_count}/元数据队列{removed_queue_count}/"
-                f"元数据结果{removed_meta_count}"
-            )
+            self._set_status(str(cleanup_result.get("status_text", "")))
             messagebox.showinfo(
-                "已标记重试",
-                f"已清理并标记重试 {len(detail_list)} 条。\n\n"
-                f"详情记录移除：{removed_profile_count}\n"
-                f"图片记录移除：{removed_manifest_count}\n"
-                f"元数据队列移除：{removed_queue_count}\n"
-                f"元数据结果移除：{removed_meta_count}\n"
-                f"复核/失败移除：{removed_review_count + removed_failure_count}\n"
-                f"URL索引移除：{dropped_url_index}\n\n"
-                "下一步请点击“继续任务”。",
+                str(cleanup_result.get("dialog_title", "") or "已标记重试"),
+                str(cleanup_result.get("dialog_message", "")),
                 parent=self,
             )
         self._refresh_scraper_monitor_panel()
@@ -1937,15 +1765,20 @@ class D2ILiteApp(BaseWindow):
         if tree is None or base_var is None:
             return
         base_root = str(base_var.get() or "").strip()
-        roots = self._discover_public_task_roots(base_root)
-        rows = [self._summarize_public_task(root) for root in roots]
-        rows = _svc_sort_public_task_summaries(rows)
+        view = _svc_build_public_task_manager_list_view(
+            base_root,
+            discover_task_roots_fn=self._discover_public_task_roots,
+            summarize_task_fn=self._summarize_public_task,
+            sort_rows_fn=_svc_sort_public_task_summaries,
+            row_to_values_fn=_svc_public_task_summary_to_tree_values,
+        )
+        rows = list(view.get("rows") or [])
+        tree_values = list(view.get("tree_values") or [])
         try:
             tree.delete(*tree.get_children())
         except Exception:
             pass
-        for row in rows:
-            values = _svc_public_task_summary_to_tree_values(row)
+        for values in tree_values:
             tree.insert("", tk.END, values=values)
         if status_var is not None:
             try:
@@ -3194,412 +3027,6 @@ class D2ILiteApp(BaseWindow):
         dialog.lift()
 
     @staticmethod
-    def _guess_public_site_name(start_url: str) -> str:
-        parsed = urllib.parse.urlparse(str(start_url or "").strip())
-        host = (parsed.hostname or "site").strip().lower()
-        first_path = parsed.path.strip("/").split("/", 1)[0].strip().lower()
-        seed = f"{host}_{first_path or 'index'}"
-        normalized = re.sub(r"[^a-z0-9]+", "_", seed).strip("_")
-        if normalized:
-            return normalized
-        return f"site_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-
-    @staticmethod
-    def _sanitize_public_subdir_name(value: str) -> str:
-        text = str(value or "").strip()
-        if not text:
-            return ""
-        text = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", text)
-        text = re.sub(r"\s+", " ", text).strip().strip(". ")
-        text = re.sub(r"_+", "_", text).strip("_")
-        return text
-
-    @staticmethod
-    def _extract_public_year_token(*texts: Any) -> str:
-        for raw in texts:
-            text = str(raw or "")
-            m = re.search(r"(?<!\d)(19|20)\d{2}(?!\d)", text)
-            if m:
-                return m.group(0)
-        return ""
-
-    @staticmethod
-    def _guess_public_unit_name(start_url: str, payload: Dict[str, Any], template_path: str = "") -> str:
-        rules = payload.get("rules")
-        if not isinstance(rules, dict):
-            rules = {}
-        for key in ("unit_name", "organization_name", "org_name", "unit"):
-            candidate = str(rules.get(key, "")).strip()
-            if candidate:
-                return candidate
-
-        host = (urllib.parse.urlparse(str(start_url or "")).hostname or "").strip().lower()
-        if "tiantonglaw.com" in host:
-            return "天同律师事务所"
-        if host.endswith("mps.gov.cn") or ("mps.gov.cn" in host):
-            return "公安部"
-
-        site_name = str(payload.get("site_name", "")).strip()
-        if site_name:
-            cleaned = re.sub(r"[_\-]+", " ", site_name).strip()
-            if cleaned:
-                return cleaned
-
-        template_name = os.path.splitext(os.path.basename(str(template_path or "").strip()))[0]
-        if template_name:
-            return template_name
-
-        if host:
-            parts = [p for p in host.split(".") if p]
-            if len(parts) >= 2:
-                return parts[-2]
-            return host
-        return "单位"
-
-    def _resolve_public_task_output_root(
-        self,
-        base_output_root: str,
-        start_url: str,
-        payload: Dict[str, Any],
-        template_path: str = "",
-    ) -> str:
-        base_root = os.path.abspath(str(base_output_root or "").strip() or self._suggest_public_scraper_output_root(start_url))
-        rules = payload.get("rules")
-        if not isinstance(rules, dict):
-            rules = {}
-            payload["rules"] = rules
-
-        auto_unit_subdir = bool(rules.get("auto_unit_subdir", False))
-        if not auto_unit_subdir:
-            rules.pop("output_root_parent", None)
-            rules.pop("resolved_output_subdir", None)
-            rules.pop("resolved_unit_name", None)
-            rules.pop("resolved_year", None)
-            return base_root
-
-        unit_name = self._sanitize_public_subdir_name(
-            str(self._guess_public_unit_name(start_url, payload, template_path) or "")
-        )
-        site_name = self._sanitize_public_subdir_name(str(payload.get("site_name", "") or ""))
-        host = self._sanitize_public_subdir_name(
-            str((urllib.parse.urlparse(str(start_url or "")).hostname or "").strip().lower())
-        )
-        year = self._sanitize_public_subdir_name(
-            str(
-                rules.get("year_hint")
-                or self._extract_public_year_token(
-                    start_url,
-                    payload.get("site_name", ""),
-                    os.path.basename(str(template_path or "")),
-                )
-            )
-        )
-        year_suffix = f"_{year}" if year else ""
-
-        pattern = str(rules.get("output_subdir_pattern", "{unit}{year_suffix}") or "").strip()
-        if not pattern:
-            pattern = "{unit}{year_suffix}"
-
-        format_ctx = {
-            "unit": unit_name,
-            "year": year,
-            "year_suffix": year_suffix,
-            "site_name": site_name,
-            "host": host,
-        }
-
-        class _SafeDict(dict):
-            def __missing__(self, key: str) -> str:
-                return ""
-
-        try:
-            subdir_raw = pattern.format_map(_SafeDict(format_ctx))
-        except Exception:
-            subdir_raw = f"{unit_name}{year_suffix}".strip()
-        subdir_name = self._sanitize_public_subdir_name(subdir_raw)
-        if not subdir_name:
-            subdir_name = self._sanitize_public_subdir_name(unit_name or site_name or host)
-        if not subdir_name:
-            rules.pop("output_root_parent", None)
-            rules.pop("resolved_output_subdir", None)
-            rules.pop("resolved_unit_name", None)
-            rules.pop("resolved_year", None)
-            return base_root
-
-        resolved_root = os.path.abspath(os.path.join(base_root, subdir_name))
-        rules["output_root_parent"] = base_root
-        rules["resolved_output_subdir"] = subdir_name
-        rules["resolved_unit_name"] = unit_name or site_name or host
-        if year:
-            rules["resolved_year"] = year
-        else:
-            rules.pop("resolved_year", None)
-        return resolved_root
-
-    @staticmethod
-    def _default_public_scraper_template() -> Dict[str, Any]:
-        return {
-            "site_name": "generic_profiles",
-            "start_urls": ["https://example.org/list"],
-            "allowed_domains": ["example.org"],
-            "user_agent": "D2ILiteArchiveBot/1.0 (+local archival use)",
-            "default_headers": {
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
-            },
-            "image_headers": {},
-            "output_root": "data/public_archive/generic_profiles",
-            "selectors": {
-                "list_item": "article a[href], .list a[href], .news a[href], .item a[href], li a[href], dl dd a[href], a[href]",
-                "name": ["::text", "img::attr(alt)", "img::attr(title)"],
-                "detail_link": "::attr(href)",
-                "list_fields": {},
-                "next_page": [
-                    "a.next::attr(href)",
-                    "a[rel='next']::attr(href)",
-                    "xpath://a[contains(@class,'next')]/@href",
-                    "xpath://a[contains(normalize-space(),'下一页')]/@href",
-                    "xpath://a[contains(normalize-space(),'下页')]/@href",
-                ],
-                "detail_name": [
-                    "h1::text",
-                    "h2::text",
-                    ".title::text",
-                    ".name::text",
-                    "meta[property='og:title']::attr(content)",
-                    "title::text",
-                ],
-                "detail_image": [
-                    "meta[property='og:image']::attr(content)",
-                    ".article img::attr(src)",
-                    ".content img::attr(src)",
-                    ".detail img::attr(src)",
-                    ".main img::attr(src)",
-                    "img::attr(src)",
-                ],
-                "detail_gender": [
-                    ".gender::text",
-                    "xpath:string(//*[contains(normalize-space(),'性别')][1])",
-                ],
-                "detail_summary": [
-                    ".article p::text",
-                    ".content p::text",
-                    ".detail p::text",
-                    ".main p::text",
-                    "article p::text",
-                    "p::text",
-                ],
-                "detail_full_text": [],
-                "detail_fields": {},
-                "detail_field_labels": {},
-            },
-            "rules": {
-                "obey_robots_txt": False,
-                "snapshot_html": True,
-                "extract_images": True,
-                "write_metadata": True,
-                "retry_failed_first": True,
-                "metadata_write_retries": 3,
-                "metadata_write_retry_delay_seconds": 1.2,
-                "metadata_write_retry_backoff_factor": 1.5,
-                "named_images_dir": "",
-                "image_referer_from_detail_url": True,
-                "required_fields": ["name", "detail_url", "image_url"],
-                "default_gender": "",
-                "gender_map": {"男": "male", "女": "female"},
-                "field_map": {},
-                "detail_field_labels": {},
-                "auto_unit_subdir": False,
-                "unit_name": "",
-                "output_subdir_pattern": "{unit}{year_suffix}",
-                "year_hint": "",
-                "jsl_clearance_enabled": True,
-                "jsl_max_retries": 3,
-                "image_download_mode": "requests_jsl",
-                "auto_fallback_to_browser": True,
-                "disable_page_images_during_crawl": True,
-                "browser_engine": "edge",
-                "llm_enrich_enabled": False,
-                "llm_api_base": "http://127.0.0.1:11434/v1",
-                "llm_api_key": "",
-                "llm_model": "qwen2.5:7b-instruct",
-                "llm_timeout_seconds": 45,
-                "llm_max_retries": 2,
-                "llm_temperature": 0.1,
-                "llm_only_when_missing_fields": True,
-                "llm_generate_biography": True,
-                "llm_append_biography_to_description": True,
-                "llm_cache_enabled": True,
-                "llm_max_input_chars": 6000,
-                "output_mode": "images_only_with_record",
-                "keep_record_file": True,
-            },
-            "crawl": {
-                "concurrent_requests": 1,
-                "download_delay": 5,
-                "autothrottle_start_delay": 5,
-                "autothrottle_max_delay": 8,
-                "retry_times": 3,
-                "timeout_seconds": 30,
-                "blocked_statuses": [403, 429],
-                "blocked_backoff_hours": 6,
-                "suspect_block_consecutive_failures": 3,
-                "interval_min_seconds": 5,
-                "interval_max_seconds": 8,
-                "image_interval_min_seconds": 5,
-                "image_interval_max_seconds": 8,
-            },
-        }
-
-    def _build_public_scraper_runtime_config(
-        self,
-        start_url: str,
-        output_root: str,
-        template_path: str = "",
-    ) -> Tuple[str, Dict[str, Any]]:
-        app_dir = os.path.dirname(__file__)
-        template_candidates = [
-            template_path,
-            os.path.join(app_dir, "scraper", "config.template.generic.json"),
-            os.path.join(app_dir, "scraper", "config.example.json"),
-        ]
-        payload: Dict[str, Any] = {}
-        loaded_template_path = ""
-        for candidate in template_candidates:
-            if not os.path.exists(candidate):
-                continue
-            try:
-                with open(candidate, "r", encoding="utf-8") as f:
-                    loaded = json.load(f)
-                if isinstance(loaded, dict):
-                    payload = loaded
-                    loaded_template_path = os.path.abspath(candidate)
-                    break
-            except Exception:
-                continue
-        if not payload:
-            payload = self._default_public_scraper_template()
-
-        payload = json.loads(json.dumps(payload, ensure_ascii=False))
-
-        parsed = urllib.parse.urlparse(start_url)
-        host = (parsed.hostname or "").strip().lower()
-        if not host:
-            raise ValueError("无效链接：无法解析域名")
-
-        custom_template_path = os.path.abspath(template_path) if template_path else ""
-        using_custom_template = bool(custom_template_path and loaded_template_path and (custom_template_path == loaded_template_path))
-
-        template_start_urls_raw = payload.get("start_urls")
-        template_start_urls: List[str] = []
-        if isinstance(template_start_urls_raw, list):
-            for item in template_start_urls_raw:
-                value = str(item or "").strip()
-                if value:
-                    template_start_urls.append(value)
-        elif isinstance(template_start_urls_raw, str):
-            value = str(template_start_urls_raw).strip()
-            if value:
-                template_start_urls.append(value)
-
-        runtime_start_urls: List[str] = []
-        if using_custom_template and template_start_urls:
-            for item in template_start_urls:
-                if item not in runtime_start_urls:
-                    runtime_start_urls.append(item)
-            if start_url not in runtime_start_urls:
-                runtime_start_urls.insert(0, start_url)
-        else:
-            runtime_start_urls = [start_url]
-
-        allowed_domains: List[str] = []
-        for seed_url in runtime_start_urls:
-            seed_host = (urllib.parse.urlparse(seed_url).hostname or "").strip().lower()
-            if not seed_host:
-                continue
-            for domain in [seed_host, seed_host[4:] if seed_host.startswith("www.") else f"www.{seed_host}"]:
-                d = str(domain or "").strip().lower()
-                if d and (d not in allowed_domains):
-                    allowed_domains.append(d)
-
-        template_allowed_domains_raw = payload.get("allowed_domains")
-        if using_custom_template and isinstance(template_allowed_domains_raw, list):
-            for item in template_allowed_domains_raw:
-                d = str(item or "").strip().lower()
-                if d and (d not in allowed_domains):
-                    allowed_domains.append(d)
-
-        site_name = str(payload.get("site_name", "")).strip() if using_custom_template else ""
-        if not site_name:
-            site_name = self._guess_public_site_name(start_url)
-        referer = f"{parsed.scheme}://{parsed.netloc}/"
-        base_output_root = os.path.abspath(str(output_root or "").strip() or self._suggest_public_scraper_output_root(start_url))
-
-        payload["site_name"] = site_name
-        payload["start_urls"] = runtime_start_urls
-        payload["allowed_domains"] = allowed_domains
-        payload["output_root"] = base_output_root
-
-        default_headers = payload.get("default_headers")
-        if not isinstance(default_headers, dict):
-            default_headers = {}
-        if not str(default_headers.get("Referer", "")).strip():
-            default_headers["Referer"] = referer
-        payload["default_headers"] = default_headers
-
-        image_headers = payload.get("image_headers")
-        if not isinstance(image_headers, dict):
-            image_headers = {}
-        if not str(image_headers.get("Referer", "")).strip():
-            image_headers["Referer"] = referer
-        payload["image_headers"] = image_headers
-
-        defaults = self._default_public_scraper_template()
-
-        selectors = payload.get("selectors")
-        if not isinstance(selectors, dict):
-            selectors = {}
-        for key, value in defaults["selectors"].items():
-            if key not in selectors:
-                selectors[key] = value
-        payload["selectors"] = selectors
-
-        rules = payload.get("rules")
-        if not isinstance(rules, dict):
-            rules = {}
-        for key, value in defaults["rules"].items():
-            if key not in rules:
-                rules[key] = value
-        # Final images should be written directly into the selected output folder.
-        rules["named_images_dir"] = ""
-        rules["final_output_root"] = ""
-        rules["record_root"] = ""
-        rules["default_gender"] = ""
-        rules["template_source_path"] = os.path.abspath(template_path) if template_path else ""
-        payload["rules"] = rules
-
-        resolved_output_root = self._resolve_public_task_output_root(
-            base_output_root,
-            start_url,
-            payload,
-            template_path=template_path,
-        )
-        payload["output_root"] = resolved_output_root
-
-        crawl = payload.get("crawl")
-        if not isinstance(crawl, dict):
-            crawl = {}
-        for key, value in defaults["crawl"].items():
-            if key not in crawl:
-                crawl[key] = value
-        payload["crawl"] = crawl
-
-        runtime_config_path = os.path.join(resolved_output_root, "state", "runtime_config.json")
-        os.makedirs(os.path.dirname(runtime_config_path), exist_ok=True)
-        with open(runtime_config_path, "w", encoding="utf-8") as f:
-            json.dump(payload, f, ensure_ascii=False, indent=2)
-        return runtime_config_path, payload
-
-    @staticmethod
     def _normalize_public_task_root(output_root: str) -> str:
         return _svc_normalize_public_task_root(output_root)
 
@@ -3893,7 +3320,7 @@ class D2ILiteApp(BaseWindow):
         self._refresh_scraper_monitor_panel()
 
     def _suggest_public_scraper_output_root(self, start_url: str) -> str:
-        site_name = self._guess_public_site_name(start_url)
+        site_name = _svc_guess_public_site_name(start_url)
         return _svc_suggest_public_scraper_output_root(__file__, site_name)
 
     def _public_scraper_templates_dir(self) -> str:
@@ -3914,42 +3341,13 @@ class D2ILiteApp(BaseWindow):
     def _list_public_scraper_templates(self) -> List[Tuple[str, str]]:
         return _svc_list_public_scraper_templates(__file__)
 
-    def _save_generated_template(self, start_url: str, runtime_config: Dict[str, Any]) -> str:
-        payload = json.loads(json.dumps(runtime_config, ensure_ascii=False))
-        site_name = self._guess_public_site_name(start_url)
-        payload["site_name"] = site_name
-        payload["output_root"] = f"data/public_archive/{site_name}"
-        rules = payload.get("rules")
-        if not isinstance(rules, dict):
-            rules = {}
-        rules.pop("cleanup_paths", None)
-        rules.pop("template_source_path", None)
-        rules.pop("generated_template_path", None)
-        rules.pop("output_root_parent", None)
-        rules.pop("resolved_output_subdir", None)
-        rules.pop("resolved_unit_name", None)
-        rules.pop("resolved_year", None)
-        payload["rules"] = rules
-
-        templates_dir = self._public_scraper_templates_dir()
-        base = os.path.join(templates_dir, f"{site_name}.json")
-        target = base
-        if os.path.exists(target):
-            target = os.path.join(
-                templates_dir,
-                f"{site_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
-            )
-        with open(target, "w", encoding="utf-8") as f:
-            json.dump(payload, f, ensure_ascii=False, indent=2)
-        return target
-
     def _show_public_scraper_setup_dialog(self, source_hint: str) -> Optional[Dict[str, Any]]:
-        defaults = self._default_public_scraper_template()
-        crawl_defaults = defaults.get("crawl", {})
-        rules_defaults = defaults.get("rules", {})
-
-        initial_url = str(source_hint or "").strip() or "https://"
-        initial_output = self._suggest_public_scraper_output_root(initial_url)
+        global_llm = self._get_global_llm_settings()
+        initial_state = _svc_build_public_scraper_setup_initial_state(
+            source_hint,
+            __file__,
+            global_llm_settings=global_llm,
+        )
 
         dialog = tk.Toplevel(self)
         dialog.title("公共抓取(通用) 设置")
@@ -3961,76 +3359,32 @@ class D2ILiteApp(BaseWindow):
         container.pack(fill=tk.BOTH, expand=True)
         container.columnconfigure(1, weight=1)
 
-        url_var = tk.StringVar(value=initial_url)
-        output_var = tk.StringVar(value=initial_output)
-        interval_min_default = crawl_defaults.get(
-            "interval_min_seconds",
-            crawl_defaults.get("image_interval_min_seconds", crawl_defaults.get("download_delay", 5)),
-        )
-        interval_max_default = crawl_defaults.get(
-            "interval_max_seconds",
-            crawl_defaults.get("image_interval_max_seconds", max(float(interval_min_default), 8.0)),
-        )
-        try:
-            interval_min_default = float(interval_min_default)
-        except Exception:
-            interval_min_default = 5.0
-        try:
-            interval_max_default = float(interval_max_default)
-        except Exception:
-            interval_max_default = max(interval_min_default, 8.0)
-        if interval_max_default < interval_min_default:
-            interval_max_default = interval_min_default
-
-        interval_min_var = tk.StringVar(value=str(interval_min_default))
-        interval_max_var = tk.StringVar(value=str(interval_max_default))
-        timeout_var = tk.StringVar(value=str(crawl_defaults.get("timeout_seconds", 30)))
-        suspect_failures_default = crawl_defaults.get("suspect_block_consecutive_failures", 3)
-        try:
-            suspect_failures_default = int(suspect_failures_default)
-        except Exception:
-            suspect_failures_default = 3
-        if suspect_failures_default < 2:
-            suspect_failures_default = 2
-        suspect_failures_var = tk.StringVar(value=str(suspect_failures_default))
-        jsl_var = tk.BooleanVar(value=bool(rules_defaults.get("jsl_clearance_enabled", True)))
-        image_mode_raw = str(rules_defaults.get("image_download_mode", "requests_jsl")).strip().lower()
-        if image_mode_raw not in {"requests_jsl", "browser"}:
-            image_mode_raw = "requests_jsl"
-        image_mode_var = tk.StringVar(value=image_mode_raw)
-        auto_fallback_var = tk.BooleanVar(value=bool(rules_defaults.get("auto_fallback_to_browser", True)))
-        disable_page_images_var = tk.BooleanVar(
-            value=bool(rules_defaults.get("disable_page_images_during_crawl", True))
-        )
-        output_minimal_var = tk.BooleanVar(
-            value=str(rules_defaults.get("output_mode", "images_only_with_record")).strip().lower()
-            in {"images_only", "images_only_with_record"}
-        )
-        direct_write_images_var = tk.BooleanVar(value=bool(rules_defaults.get("direct_write_images", True)))
-        global_llm = self._get_global_llm_settings()
-        global_llm_enabled = bool(global_llm.get("enabled_default", False))
-        global_llm_model = str(global_llm.get("model", "")).strip()
-        global_llm_api_base = str(global_llm.get("api_base", "")).strip()
-        global_llm_api_key = str(global_llm.get("api_key", "")).strip()
-
-        llm_enable_var = tk.BooleanVar(
-            value=global_llm_enabled if global_llm_api_base or global_llm_model else bool(rules_defaults.get("llm_enrich_enabled", False))
-        )
-        llm_model_var = tk.StringVar(value=global_llm_model or str(rules_defaults.get("llm_model", "qwen2.5:7b-instruct")))
-        llm_api_base_var = tk.StringVar(
-            value=global_llm_api_base or str(rules_defaults.get("llm_api_base", "http://127.0.0.1:11434/v1"))
-        )
-        llm_api_key_var = tk.StringVar(value=global_llm_api_key or str(rules_defaults.get("llm_api_key", "")))
+        url_var = tk.StringVar(value=str(initial_state.get("start_url", "https://")))
+        output_var = tk.StringVar(value=str(initial_state.get("output_root", "")))
+        interval_min_var = tk.StringVar(value=str(initial_state.get("interval_min", "5.0")))
+        interval_max_var = tk.StringVar(value=str(initial_state.get("interval_max", "8.0")))
+        timeout_var = tk.StringVar(value=str(initial_state.get("timeout_seconds", "30")))
+        suspect_failures_var = tk.StringVar(value=str(initial_state.get("suspect_block_consecutive_failures", "3")))
+        jsl_var = tk.BooleanVar(value=bool(initial_state.get("jsl_enabled", True)))
+        image_mode_var = tk.StringVar(value=str(initial_state.get("image_download_mode", "requests_jsl")))
+        auto_fallback_var = tk.BooleanVar(value=bool(initial_state.get("auto_fallback_to_browser", True)))
+        disable_page_images_var = tk.BooleanVar(value=bool(initial_state.get("disable_page_images_during_crawl", True)))
+        output_minimal_var = tk.BooleanVar(value=bool(initial_state.get("output_minimal", True)))
+        direct_write_images_var = tk.BooleanVar(value=bool(initial_state.get("direct_write_images", True)))
+        llm_enable_var = tk.BooleanVar(value=bool(initial_state.get("llm_enrich_enabled", False)))
+        llm_model_var = tk.StringVar(value=str(initial_state.get("llm_model", "")))
+        llm_api_base_var = tk.StringVar(value=str(initial_state.get("llm_api_base", "")))
+        llm_api_key_var = tk.StringVar(value=str(initial_state.get("llm_api_key", "")))
         template_pairs = self._list_public_scraper_templates()
         template_auto_label = "自动生成模板（按当前链接）"
         template_label_to_path: Dict[str, str] = {template_auto_label: ""}
         for label, path in template_pairs:
             template_label_to_path[label] = path
         template_var = tk.StringVar(value=template_auto_label)
-        save_template_var = tk.BooleanVar(value=True)
-        cleanup_template_var = tk.BooleanVar(value=True)
-        template_hint_var = tk.StringVar(value="未选择模板时，需手动输入链接。")
-        template_start_url_cache: Dict[str, str] = {"url": ""}
+        save_template_var = tk.BooleanVar(value=bool(initial_state.get("save_generated_template", True)))
+        cleanup_template_var = tk.BooleanVar(value=bool(initial_state.get("cleanup_generated_template", True)))
+        template_hint_var = tk.StringVar(value=str(initial_state.get("template_hint", "未选择模板时，需手动输入链接。")))
+        template_start_url_cache: Dict[str, str] = {"url": str(initial_state.get("template_start_url", ""))}
 
         ttk.Label(container, text="列表页链接").grid(row=0, column=0, sticky="w", padx=(0, 8), pady=(0, 8))
         url_entry = ttk.Entry(container, textvariable=url_var, width=80)
@@ -4046,112 +3400,57 @@ class D2ILiteApp(BaseWindow):
         )
         template_combo.grid(row=1, column=1, sticky="ew", pady=(0, 8))
 
-        def _normalize_template_output_root(path_text: str) -> str:
-            raw = str(path_text or "").strip()
-            if not raw:
-                return ""
-            path_obj = Path(raw)
-            if not path_obj.is_absolute():
-                path_obj = (Path(os.path.dirname(__file__)) / raw).resolve()
-            return str(path_obj.resolve())
-
         def _apply_template_to_form():
             selected_path = str(template_label_to_path.get(template_var.get(), "")).strip()
-            if not selected_path:
-                template_start_url_cache["url"] = ""
-                url_entry.configure(state=tk.NORMAL)
-                template_hint_var.set("未选择模板时，需手动输入链接。")
-                try:
-                    save_tpl_cb.configure(state=tk.NORMAL)
-                    cleanup_tpl_cb.configure(state=tk.NORMAL)
-                except Exception:
-                    pass
-                return
-
+            patch = _svc_build_public_scraper_template_selection_state(
+                selected_path,
+                __file__,
+                global_llm_settings=global_llm,
+            )
+            template_start_url_cache["url"] = str(patch.get("template_start_url", "")).strip()
+            if "start_url" in patch:
+                url_var.set(str(patch.get("start_url", "")))
+            url_entry.configure(state=(tk.DISABLED if patch.get("url_locked") else tk.NORMAL))
+            if "hint" in patch:
+                template_hint_var.set(str(patch.get("hint", "")))
+            if "interval_min" in patch:
+                interval_min_var.set(str(patch.get("interval_min", "")))
+            if "interval_max" in patch:
+                interval_max_var.set(str(patch.get("interval_max", "")))
+            if "timeout_seconds" in patch:
+                timeout_var.set(str(patch.get("timeout_seconds", "")))
+            if "suspect_block_consecutive_failures" in patch:
+                suspect_failures_var.set(str(patch.get("suspect_block_consecutive_failures", "")))
+            if "jsl_enabled" in patch:
+                jsl_var.set(bool(patch.get("jsl_enabled", False)))
+            if "image_download_mode" in patch:
+                image_mode_var.set(str(patch.get("image_download_mode", "requests_jsl")))
+            if "auto_fallback_to_browser" in patch:
+                auto_fallback_var.set(bool(patch.get("auto_fallback_to_browser", True)))
+            if "disable_page_images_during_crawl" in patch:
+                disable_page_images_var.set(bool(patch.get("disable_page_images_during_crawl", True)))
+            if "llm_enrich_enabled" in patch:
+                llm_enable_var.set(bool(patch.get("llm_enrich_enabled", False)))
+            if "llm_model" in patch:
+                llm_model_var.set(str(patch.get("llm_model", "")))
+            if "llm_api_base" in patch:
+                llm_api_base_var.set(str(patch.get("llm_api_base", "")))
+            if "llm_api_key" in patch:
+                llm_api_key_var.set(str(patch.get("llm_api_key", "")))
+            if "output_minimal" in patch:
+                output_minimal_var.set(bool(patch.get("output_minimal", True)))
+            if "direct_write_images" in patch:
+                direct_write_images_var.set(bool(patch.get("direct_write_images", True)))
+            if "output_root" in patch:
+                output_var.set(str(patch.get("output_root", "")))
+            if "save_generated_template" in patch:
+                save_template_var.set(bool(patch.get("save_generated_template", True)))
+            if "cleanup_generated_template" in patch:
+                cleanup_template_var.set(bool(patch.get("cleanup_generated_template", True)))
             try:
-                with open(selected_path, "r", encoding="utf-8") as f:
-                    payload = json.load(f)
-                if not isinstance(payload, dict):
-                    raise ValueError("模板不是 JSON 对象")
-            except Exception as e:
-                template_start_url_cache["url"] = ""
-                template_hint_var.set(f"模板读取失败：{e}")
-                url_entry.configure(state=tk.NORMAL)
-                return
-
-            start_url = ""
-            start_urls = payload.get("start_urls")
-            if isinstance(start_urls, list) and start_urls:
-                start_url = _normalize_http_url(start_urls[0])
-            if not start_url.lower().startswith(("http://", "https://")):
-                template_start_url_cache["url"] = ""
-                template_hint_var.set("模板缺少有效 start_urls，无法直接启动。")
-                url_entry.configure(state=tk.NORMAL)
-                return
-
-            template_start_url_cache["url"] = start_url
-            url_var.set(start_url)
-            url_entry.configure(state=tk.DISABLED)
-            template_hint_var.set("已使用模板内置链接，可直接开始任务。")
-
-            crawl_cfg = payload.get("crawl")
-            if isinstance(crawl_cfg, dict):
-                min_val = crawl_cfg.get(
-                    "interval_min_seconds",
-                    crawl_cfg.get("image_interval_min_seconds", crawl_cfg.get("download_delay", "")),
-                )
-                max_val = crawl_cfg.get(
-                    "interval_max_seconds",
-                    crawl_cfg.get("image_interval_max_seconds", min_val),
-                )
-                interval_min_var.set(str(min_val))
-                interval_max_var.set(str(max_val))
-                if "timeout_seconds" in crawl_cfg:
-                    timeout_var.set(str(crawl_cfg.get("timeout_seconds", "")))
-                suspect_val = crawl_cfg.get(
-                    "suspect_block_consecutive_failures",
-                    crawl_defaults.get("suspect_block_consecutive_failures", 3),
-                )
-                suspect_failures_var.set(str(suspect_val))
-
-            rules_cfg = payload.get("rules")
-            if isinstance(rules_cfg, dict):
-                jsl_var.set(bool(rules_cfg.get("jsl_clearance_enabled", True)))
-                mode = str(rules_cfg.get("image_download_mode", "requests_jsl")).strip().lower()
-                image_mode_var.set(mode if mode in {"requests_jsl", "browser"} else "requests_jsl")
-                auto_fallback_var.set(bool(rules_cfg.get("auto_fallback_to_browser", True)))
-                disable_page_images_var.set(bool(rules_cfg.get("disable_page_images_during_crawl", True)))
-                llm_enable_var.set(bool(rules_cfg.get("llm_enrich_enabled", False)))
-                llm_model_var.set(str(rules_cfg.get("llm_model", "qwen2.5:7b-instruct")))
-                llm_api_base_var.set(str(rules_cfg.get("llm_api_base", "http://127.0.0.1:11434/v1")))
-                llm_api_key_var.set(str(rules_cfg.get("llm_api_key", "")))
-
-                # Prefer global LLM settings (so you don't have to reconfigure per template/task).
-                if global_llm_api_base:
-                    llm_api_base_var.set(global_llm_api_base)
-                if global_llm_model:
-                    llm_model_var.set(global_llm_model)
-                if global_llm_api_key:
-                    llm_api_key_var.set(global_llm_api_key)
-                if global_llm_api_base or global_llm_model:
-                    llm_enable_var.set(global_llm_enabled)
-                output_minimal_var.set(
-                    str(rules_cfg.get("output_mode", "images_only_with_record")).strip().lower()
-                    in {"images_only", "images_only_with_record"}
-                )
-                direct_write_images_var.set(bool(rules_cfg.get("direct_write_images", True)))
-
-            output_cfg = _normalize_template_output_root(str(payload.get("output_root", "")))
-            if output_cfg:
-                output_var.set(output_cfg)
-            else:
-                output_var.set(self._suggest_public_scraper_output_root(start_url))
-
-            save_template_var.set(False)
-            cleanup_template_var.set(False)
-            try:
-                save_tpl_cb.configure(state=tk.DISABLED)
-                cleanup_tpl_cb.configure(state=tk.DISABLED)
+                state = tk.DISABLED if patch.get("disable_template_persistence_controls") else tk.NORMAL
+                save_tpl_cb.configure(state=state)
+                cleanup_tpl_cb.configure(state=state)
             except Exception:
                 pass
 
@@ -4331,62 +3630,39 @@ class D2ILiteApp(BaseWindow):
 
         def _start():
             selected_template_path = str(template_label_to_path.get(template_var.get(), "")).strip()
-            if selected_template_path:
-                start_url = str(template_start_url_cache.get("url", "")).strip() or _normalize_http_url(url_var.get())
-                if not start_url.lower().startswith(("http://", "https://")):
-                    messagebox.showerror("模板错误", "所选模板缺少有效 start_urls，无法直接启动。", parent=dialog)
-                    return
-            else:
-                start_url = _normalize_http_url(url_var.get())
-                if not start_url.lower().startswith(("http://", "https://")):
-                    messagebox.showerror("链接无效", "请输入有效的 http/https 链接。", parent=dialog)
-                    return
-
-            output_root_raw = str(output_var.get() or "").strip()
-            output_root = os.path.abspath(
-                output_root_raw if output_root_raw else self._suggest_public_scraper_output_root(start_url)
+            submit_plan = _svc_build_public_scraper_setup_submit_plan(
+                {
+                    "start_url": url_var.get(),
+                    "output_root": output_var.get(),
+                    "interval_min": interval_min_var.get(),
+                    "interval_max": interval_max_var.get(),
+                    "timeout_seconds": timeout_var.get(),
+                    "suspect_block_consecutive_failures": suspect_failures_var.get(),
+                    "jsl_enabled": bool(jsl_var.get()),
+                    "image_download_mode": image_mode_var.get(),
+                    "auto_fallback_to_browser": bool(auto_fallback_var.get()),
+                    "disable_page_images_during_crawl": bool(disable_page_images_var.get()),
+                    "llm_enrich_enabled": bool(llm_enable_var.get()),
+                    "llm_model": llm_model_var.get(),
+                    "llm_api_base": llm_api_base_var.get(),
+                    "llm_api_key": llm_api_key_var.get(),
+                    "output_minimal": bool(output_minimal_var.get()),
+                    "direct_write_images": bool(direct_write_images_var.get()),
+                    "save_generated_template": bool(save_template_var.get()),
+                    "cleanup_generated_template": bool(cleanup_template_var.get()),
+                },
+                app_file=__file__,
+                selected_template_path=selected_template_path,
+                template_start_url=str(template_start_url_cache.get("url", "")),
             )
-
-            try:
-                interval_min = float(str(interval_min_var.get()).strip())
-                interval_max = float(str(interval_max_var.get()).strip())
-                timeout_seconds = int(str(timeout_var.get()).strip())
-                suspect_failures = int(str(suspect_failures_var.get()).strip())
-            except Exception:
-                messagebox.showerror("参数错误", "间隔、超时、连续失败阈值必须是数字。", parent=dialog)
+            if not submit_plan.get("ok"):
+                messagebox.showerror(
+                    str(submit_plan.get("title", "参数错误")),
+                    str(submit_plan.get("message", "")),
+                    parent=dialog,
+                )
                 return
-
-            if interval_min < 0.1:
-                messagebox.showerror("参数错误", "统一间隔最小值必须 >= 0.1 秒。", parent=dialog)
-                return
-            if interval_max < interval_min:
-                interval_max = interval_min
-            if timeout_seconds < 5:
-                messagebox.showerror("参数错误", "请求超时必须 >= 5 秒。", parent=dialog)
-                return
-            if suspect_failures < 2:
-                messagebox.showerror("参数错误", "连续失败阈值必须 >= 2。", parent=dialog)
-                return
-
-            result["start_url"] = start_url
-            result["output_root"] = output_root
-            result["interval_min"] = round(interval_min, 3)
-            result["interval_max"] = round(interval_max, 3)
-            result["timeout_seconds"] = int(timeout_seconds)
-            result["suspect_block_consecutive_failures"] = int(suspect_failures)
-            result["jsl_enabled"] = bool(jsl_var.get())
-            result["image_download_mode"] = str(image_mode_var.get() or "requests_jsl").strip().lower()
-            result["auto_fallback_to_browser"] = bool(auto_fallback_var.get())
-            result["disable_page_images_during_crawl"] = bool(disable_page_images_var.get())
-            result["llm_enrich_enabled"] = bool(llm_enable_var.get())
-            result["llm_model"] = str(llm_model_var.get() or "").strip()
-            result["llm_api_base"] = str(llm_api_base_var.get() or "").strip()
-            result["llm_api_key"] = str(llm_api_key_var.get() or "").strip()
-            result["output_minimal"] = bool(output_minimal_var.get())
-            result["direct_write_images"] = bool(direct_write_images_var.get())
-            result["template_path"] = selected_template_path
-            result["save_generated_template"] = bool(save_template_var.get()) and (not selected_template_path)
-            result["cleanup_generated_template"] = bool(cleanup_template_var.get()) and (not selected_template_path)
+            result.update(dict(submit_plan.get("result") or {}))
             dialog.destroy()
 
         ttk.Button(actions, text="取消", command=_cancel, width=10).pack(side=tk.RIGHT)
@@ -4444,7 +3720,8 @@ class D2ILiteApp(BaseWindow):
         template_path = str(setup.get("template_path", "")).strip()
 
         try:
-            config_path, runtime_config = self._build_public_scraper_runtime_config(
+            config_path, runtime_config = _svc_build_public_scraper_runtime_config(
+                __file__,
                 start_url,
                 output_root,
                 template_path=template_path,
@@ -4460,80 +3737,32 @@ class D2ILiteApp(BaseWindow):
             self._set_active_public_scraper_task(output_root, refresh=True)
             return
 
-        crawl = runtime_config.get("crawl")
-        if not isinstance(crawl, dict):
-            crawl = {}
-        rules = runtime_config.get("rules")
-        if not isinstance(rules, dict):
-            rules = {}
-
-        interval_min = float(setup["interval_min"])
-        interval_max = float(setup["interval_max"])
-        crawl["interval_min_seconds"] = interval_min
-        crawl["interval_max_seconds"] = interval_max
-        crawl["download_delay"] = interval_min
-        crawl["autothrottle_start_delay"] = interval_min
-        crawl["autothrottle_max_delay"] = interval_max
-        crawl["image_interval_min_seconds"] = interval_min
-        crawl["image_interval_max_seconds"] = interval_max
-        crawl["timeout_seconds"] = int(setup["timeout_seconds"])
-        crawl["suspect_block_consecutive_failures"] = max(
-            2,
-            int(setup.get("suspect_block_consecutive_failures", crawl.get("suspect_block_consecutive_failures", 3))),
-        )
-        rules["jsl_clearance_enabled"] = bool(setup["jsl_enabled"])
-        mode = str(setup.get("image_download_mode", "requests_jsl")).strip().lower()
-        rules["image_download_mode"] = mode if mode in {"requests_jsl", "browser"} else "requests_jsl"
-        rules["auto_fallback_to_browser"] = bool(setup.get("auto_fallback_to_browser", True))
-        rules["disable_page_images_during_crawl"] = bool(setup.get("disable_page_images_during_crawl", True))
-        rules["direct_write_images"] = bool(setup.get("direct_write_images", True))
-        rules["llm_enrich_enabled"] = bool(setup.get("llm_enrich_enabled", False))
-
         global_llm = self._get_global_llm_settings()
-        global_llm_model = str(global_llm.get("model", "")).strip()
-        global_llm_api_base = str(global_llm.get("api_base", "")).strip()
-        global_llm_api_key = str(global_llm.get("api_key", "")).strip()
+        apply_plan = _svc_apply_public_scraper_setup_to_runtime_config(
+            runtime_config,
+            setup,
+            global_llm_settings=global_llm,
+            normalize_api_base_fn=(normalize_api_base if HAS_LLM_CLIENT and callable(normalize_api_base) else None),
+        )
+        runtime_config = dict(apply_plan.get("runtime_config") or {})
+        llm_model = str(apply_plan.get("llm_model", "")).strip()
+        llm_api_base = str(apply_plan.get("llm_api_base", "")).strip()
+        llm_api_key = str(apply_plan.get("llm_api_key", "")).strip()
 
-        llm_model = str(setup.get("llm_model", "")).strip() or global_llm_model
-        llm_api_base = str(setup.get("llm_api_base", "")).strip() or global_llm_api_base
-        llm_api_key = str(setup.get("llm_api_key", "")).strip() or global_llm_api_key
-        if llm_api_base and HAS_LLM_CLIENT and callable(normalize_api_base):
-            try:
-                llm_api_base = normalize_api_base(llm_api_base)
-            except Exception:
-                llm_api_base = llm_api_base.rstrip("/")
-        if llm_model:
-            rules["llm_model"] = llm_model
-        if llm_api_base:
-            rules["llm_api_base"] = llm_api_base
-        # Never write API keys to task config on disk; pass via env instead.
-        rules.pop("llm_api_key", None)
-        if mode == "browser":
-            rules["browser_engine"] = str(rules.get("browser_engine", "edge")).strip().lower() or "edge"
-        if bool(setup.get("output_minimal", True)):
-            rules["output_mode"] = "images_only_with_record"
-            rules["keep_record_file"] = True
-        else:
-            rules["output_mode"] = "full"
-            rules["keep_record_file"] = True
-
-        generated_template_path = ""
         if (not template_path) and bool(setup.get("save_generated_template", True)):
             try:
-                generated_template_path = self._save_generated_template(start_url, runtime_config)
-                rules["generated_template_path"] = generated_template_path
-                if bool(setup.get("cleanup_generated_template", True)):
-                    cleanup_paths = rules.get("cleanup_paths", [])
-                    if not isinstance(cleanup_paths, list):
-                        cleanup_paths = []
-                    if generated_template_path not in cleanup_paths:
-                        cleanup_paths.append(generated_template_path)
-                    rules["cleanup_paths"] = cleanup_paths
+                generated_template_path = _svc_save_generated_public_scraper_template(
+                    start_url,
+                    runtime_config,
+                    self._public_scraper_templates_dir(),
+                )
+                runtime_config = _svc_register_generated_template(
+                    runtime_config,
+                    generated_template_path,
+                    cleanup_after_run=bool(setup.get("cleanup_generated_template", True)),
+                )
             except Exception:
-                generated_template_path = ""
-
-        runtime_config["crawl"] = crawl
-        runtime_config["rules"] = rules
+                pass
 
         try:
             with open(config_path, "w", encoding="utf-8") as f:
@@ -4542,44 +3771,21 @@ class D2ILiteApp(BaseWindow):
             messagebox.showerror("启动失败", f"无法写入运行配置：\n{e}", parent=self)
             return
 
-        named_dir_cfg = (
-            runtime_config.get("rules", {}).get("named_images_dir", "")
-            if isinstance(runtime_config.get("rules"), dict)
-            else ""
-        )
-        named_dir_raw = str(named_dir_cfg or "").strip()
-        if not named_dir_raw:
-            named_dir = os.path.abspath(output_root)
-        else:
-            named_dir = named_dir_raw if os.path.isabs(named_dir_raw) else os.path.join(output_root, named_dir_raw)
-            named_dir = os.path.abspath(named_dir)
+        named_dir = _svc_resolve_named_images_dir(output_root, runtime_config.get("rules"))
         log_path = os.path.join(output_root, "reports", "gui_public_scraper.log")
 
         os.makedirs(os.path.dirname(log_path), exist_ok=True)
         self._set_public_scraper_manual_pause_flag(output_root, paused=False)
         try:
             log_handle = open(log_path, "a", encoding="utf-8")
-            log_handle.write(
-                "\n\n=== D2I Public Scraper Run "
-                + datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                + " ===\n"
-            )
+            log_handle.write(_svc_build_public_scraper_log_banner("Run", datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
             log_handle.flush()
         except Exception as e:
             messagebox.showerror("启动失败", f"无法创建日志文件：\n{e}", parent=self)
             return
 
         python_exec = self._resolve_python_cli_executable()
-        cmd = [
-            python_exec,
-            "-X",
-            "utf8",
-            script_path,
-            "--config",
-            config_path,
-            "--output-root",
-            output_root,
-        ]
+        cmd = _svc_build_public_scraper_command(python_exec, script_path, config_path, output_root)
         env = self._build_utf8_subprocess_env()
         env = self._apply_llm_env(env, api_base=llm_api_base, api_key=llm_api_key, model=llm_model)
         try:
@@ -4601,12 +3807,7 @@ class D2ILiteApp(BaseWindow):
         runtime_rules = runtime_config.get("rules")
         if not isinstance(runtime_rules, dict):
             runtime_rules = {}
-        active_template_path = (
-            str(template_path or "").strip()
-            or str(runtime_rules.get("template_source_path", "")).strip()
-            or str(runtime_rules.get("generated_template_path", "")).strip()
-        )
-        active_template_path_abs = os.path.abspath(active_template_path) if active_template_path else ""
+        active_template_path_abs = _svc_resolve_active_template_path(template_path, runtime_rules)
         if active_template_path_abs:
             self._set_public_scraper_template_state(active_template_path_abs, "pending")
         self._register_public_scraper_task(
@@ -4620,27 +3821,14 @@ class D2ILiteApp(BaseWindow):
             active_template_path=active_template_path_abs,
         )
         self._set_status("通用抓取已启动（后台运行）")
-        template_msg = ""
-        used_template_path = str(runtime_config.get("rules", {}).get("template_source_path", "")).strip()
-        generated_template_path = str(runtime_config.get("rules", {}).get("generated_template_path", "")).strip()
-        image_mode = str(runtime_config.get("rules", {}).get("image_download_mode", "requests_jsl")).strip().lower()
-        image_mode_text = "浏览器模式(慢稳)" if image_mode == "browser" else "请求模式(快)"
-        folder_msg = ""
-        resolved_subdir = str(runtime_config.get("rules", {}).get("resolved_output_subdir", "")).strip()
-        if resolved_subdir:
-            folder_msg = f"\n任务子目录：{resolved_subdir}\n"
-        if used_template_path:
-            template_msg = f"\n模板：\n{used_template_path}"
-        elif generated_template_path:
-            template_msg = f"\n模板（本次生成）：\n{generated_template_path}"
         messagebox.showinfo(
             "已启动",
-            "抓取任务已在后台启动。\n"
-            f"任务进程 PID: {proc.pid}\n\n"
-            f"图片下载方式：{image_mode_text}\n\n"
-            f"{folder_msg}"
-            f"最终图片会输出到：\n{named_dir}\n\n"
-            f"运行日志：\n{log_path}{template_msg}",
+            _svc_build_started_task_message(
+                pid=proc.pid,
+                named_dir=named_dir,
+                log_path=log_path,
+                runtime_rules=runtime_rules,
+            ),
             parent=self,
         )
 
@@ -4690,29 +3878,16 @@ class D2ILiteApp(BaseWindow):
             messagebox.showerror("继续失败", f"无法读取运行配置：\n{e}", parent=self)
             return False
 
-        runtime_config["output_root"] = output_root_abs
+        runtime_config = _svc_prepare_existing_task_runtime_config(
+            runtime_config,
+            output_root=output_root_abs,
+            mode_override=mode_override,
+            auto_fallback_override=auto_fallback_override,
+            disable_page_images_override=disable_page_images_override,
+        )
         rules = runtime_config.get("rules")
         if not isinstance(rules, dict):
             rules = {}
-        rules["named_images_dir"] = ""
-        rules["final_output_root"] = ""
-        rules["record_root"] = ""
-        rules.setdefault("retry_failed_first", True)
-        rules.setdefault("metadata_write_retries", 3)
-        rules.setdefault("metadata_write_retry_delay_seconds", 1.2)
-        rules.setdefault("metadata_write_retry_backoff_factor", 1.5)
-        mode = str(mode_override or "").strip().lower()
-        if mode in {"requests_jsl", "browser"}:
-            rules["image_download_mode"] = mode
-            if mode == "browser":
-                rules["download_images_during_crawl"] = True
-        if auto_fallback_override is not None:
-            rules["auto_fallback_to_browser"] = bool(auto_fallback_override)
-        if disable_page_images_override is not None:
-            rules["disable_page_images_during_crawl"] = bool(disable_page_images_override)
-        # Avoid keeping API keys on disk inside task runtime_config.json.
-        rules.pop("llm_api_key", None)
-        runtime_config["rules"] = rules
         try:
             with open(config_path, "w", encoding="utf-8") as f:
                 json.dump(runtime_config, f, ensure_ascii=False, indent=2)
@@ -4720,17 +3895,7 @@ class D2ILiteApp(BaseWindow):
             messagebox.showerror("继续失败", f"无法更新运行配置：\n{e}", parent=self)
             return False
 
-        named_dir_cfg = (
-            runtime_config.get("rules", {}).get("named_images_dir", "")
-            if isinstance(runtime_config.get("rules"), dict)
-            else ""
-        )
-        named_dir_raw = str(named_dir_cfg or "").strip()
-        if not named_dir_raw:
-            named_dir = os.path.abspath(output_root_abs)
-        else:
-            named_dir = named_dir_raw if os.path.isabs(named_dir_raw) else os.path.join(output_root_abs, named_dir_raw)
-            named_dir = os.path.abspath(named_dir)
+        named_dir = _svc_resolve_named_images_dir(output_root_abs, runtime_config.get("rules"))
 
         log_path = os.path.join(output_root_abs, "reports", "gui_public_scraper.log")
         os.makedirs(os.path.dirname(log_path), exist_ok=True)
@@ -4739,33 +3904,22 @@ class D2ILiteApp(BaseWindow):
         try:
             log_handle = open(log_path, "a", encoding="utf-8")
             run_label = "Retry" if skip_crawl else "Continue"
-            log_handle.write(
-                f"\n\n=== D2I Public Scraper {run_label} "
-                + datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                + " ===\n"
-            )
+            log_handle.write(_svc_build_public_scraper_log_banner(run_label, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
             log_handle.flush()
         except Exception as e:
             messagebox.showerror("继续失败", f"无法创建日志文件：\n{e}", parent=self)
             return False
 
         python_exec = self._resolve_python_cli_executable()
-        cmd = [
+        cmd = _svc_build_public_scraper_command(
             python_exec,
-            "-X",
-            "utf8",
             script_path,
-            "--config",
             config_path,
-            "--output-root",
             output_root_abs,
-        ]
-        if skip_crawl:
-            cmd.append("--skip-crawl")
-        if skip_images:
-            cmd.append("--skip-images")
-        if skip_metadata:
-            cmd.append("--skip-metadata")
+            skip_crawl=skip_crawl,
+            skip_images=skip_images,
+            skip_metadata=skip_metadata,
+        )
 
         global_llm = self._get_global_llm_settings()
         llm_model = str(rules.get("llm_model", "")).strip() or str(global_llm.get("model", "")).strip()
@@ -4798,11 +3952,7 @@ class D2ILiteApp(BaseWindow):
         runtime_rules = runtime_config.get("rules")
         if not isinstance(runtime_rules, dict):
             runtime_rules = {}
-        active_template_path = (
-            str(runtime_rules.get("template_source_path", "")).strip()
-            or str(runtime_rules.get("generated_template_path", "")).strip()
-        )
-        active_template_path_abs = os.path.abspath(active_template_path) if active_template_path else ""
+        active_template_path_abs = _svc_resolve_active_template_path("", runtime_rules)
         if active_template_path_abs:
             self._set_public_scraper_template_state(active_template_path_abs, "pending")
         self._register_public_scraper_task(
@@ -4817,15 +3967,15 @@ class D2ILiteApp(BaseWindow):
         )
         self._set_status("抓取任务继续运行中（后台）")
         if show_success_dialog:
-            mode_hint = "（仅重试失败阶段）" if skip_crawl else ""
             messagebox.showinfo(
                 success_title,
-                "已按已有配置继续抓取任务。\n\n"
-                f"{mode_hint}\n"
-                f"任务进程 PID: {proc.pid}\n\n"
-                f"任务目录：\n{output_root_abs}\n\n"
-                f"最终图片目录：\n{named_dir}\n\n"
-                f"运行日志：\n{log_path}",
+                _svc_build_existing_task_started_message(
+                    pid=proc.pid,
+                    output_root=output_root_abs,
+                    named_dir=named_dir,
+                    log_path=log_path,
+                    skip_crawl=skip_crawl,
+                ),
                 parent=self,
             )
         return True
@@ -5099,59 +4249,48 @@ class D2ILiteApp(BaseWindow):
         self._public_scraper_poll_after = self.after(1500, self._poll_public_scraper_proc)
 
     def _handle_public_scraper_task_exit(self, root: str, task: Dict[str, Any], code: int):
-        root_abs = self._normalize_public_task_root(root)
-        named_dir = str(task.get("named_dir", "")).strip()
-        active_template_path = str(task.get("active_template_path", "")).strip()
-        log_path = str(task.get("log_path", "")).strip()
-        log_handle = task.get("log_handle")
-
+        exit_plan = _svc_build_public_scraper_task_exit_plan(
+            root,
+            task,
+            int(code),
+            current_active_root=self._normalize_public_task_root(
+                self._public_scraper_active_task_root or self._public_scraper_output_root
+            ),
+            record_path=self._get_scraper_record_path(root),
+            backoff_state=(self._read_scraper_backoff_state(root) if int(code) == 2 else {"blocked_until": "", "blocked_reason": ""}),
+            updated_at_ts=time.time(),
+        )
+        root_abs = str(exit_plan.get("root", "") or "").strip()
+        log_handle = exit_plan.get("log_handle")
         self._close_public_scraper_log_handle(log_handle)
         if self._public_scraper_log_handle is log_handle:
             self._public_scraper_log_handle = None
         self._set_public_scraper_manual_pause_flag(root_abs, paused=False)
 
-        task["proc"] = None
-        task["log_handle"] = None
-        task["manual_paused"] = False
-        task["last_exit_code"] = int(code)
-        task["updated_at_ts"] = time.time()
-
-        is_active = self._normalize_public_task_root(self._public_scraper_active_task_root or self._public_scraper_output_root) == root_abs
-        backoff = self._read_scraper_backoff_state(root_abs) if int(code) == 2 else {"blocked_until": "", "blocked_reason": ""}
-        outcome = _svc_decide_task_exit_outcome(
-            int(code),
-            is_active=is_active,
-            named_dir=named_dir,
-            active_template_path=active_template_path,
-            log_path=log_path,
-            record_path=self._get_scraper_record_path(root_abs),
-            blocked_until=str(backoff.get("blocked_until", "")),
-            blocked_reason=str(backoff.get("blocked_reason", "")),
-        )
-        task["runtime_state"] = str(outcome.get("runtime_state", "")).strip() or task.get("runtime_state", "")
-
-        template_state = str(outcome.get("template_state", "")).strip()
+        next_task = dict(exit_plan.get("task") or {})
+        active_template_path = str(exit_plan.get("active_template_path", "") or "").strip()
+        template_state = str(exit_plan.get("template_state", "")).strip()
         if active_template_path and template_state:
             self._set_public_scraper_template_state(active_template_path, template_state)
 
-        status_text = str(outcome.get("status_text", "")).strip()
+        is_active = bool(exit_plan.get("is_active"))
+        status_text = str(exit_plan.get("status_text", "")).strip()
         if is_active and status_text:
             self._set_status(status_text)
 
-        dialog_kind = str(outcome.get("dialog_kind", "")).strip().lower()
-        dialog_title = str(outcome.get("dialog_title", "")).strip()
-        dialog_message = str(outcome.get("dialog_message", "")).strip()
+        dialog_kind = str(exit_plan.get("dialog_kind", "")).strip().lower()
+        dialog_title = str(exit_plan.get("dialog_title", "")).strip()
+        dialog_message = str(exit_plan.get("dialog_message", "")).strip()
         if is_active and dialog_kind and dialog_title and dialog_message:
             if dialog_kind == "warning":
                 messagebox.showwarning(dialog_title, dialog_message, parent=self)
             else:
                 messagebox.showinfo(dialog_title, dialog_message, parent=self)
 
-        self._public_scraper_tasks[root_abs] = task
+        self._public_scraper_tasks[root_abs] = next_task
 
     def _poll_public_scraper_proc(self):
         self._public_scraper_poll_after = None
-        running_any = False
         for root, entry in list(self._public_scraper_tasks.items()):
             if not isinstance(entry, dict):
                 continue
@@ -5163,17 +4302,15 @@ class D2ILiteApp(BaseWindow):
             except Exception:
                 code = 1
             if code is None:
-                running_any = True
                 continue
             self._handle_public_scraper_task_exit(root, entry, int(code))
 
-        current_active_root = self._normalize_public_task_root(self._public_scraper_active_task_root or self._public_scraper_output_root)
-        active_root = _svc_pick_next_active_root(
-            current_active_root,
+        poll_plan = _svc_build_public_scraper_poll_plan(
+            self._normalize_public_task_root(self._public_scraper_active_task_root or self._public_scraper_output_root),
             self._public_scraper_tasks,
             is_process_running_fn=self._is_process_running,
         )
-        self._set_active_public_scraper_task(active_root, refresh=False)
+        self._set_active_public_scraper_task(str(poll_plan.get("active_root", "") or "").strip(), refresh=False)
 
         if self._is_process_running(self._public_scraper_proc):
             self._update_public_scraper_progress()
@@ -5182,7 +4319,7 @@ class D2ILiteApp(BaseWindow):
             self._refresh_scraper_monitor_panel()
 
         self._refresh_public_task_manager_list()
-        if running_any:
+        if bool(poll_plan.get("should_schedule_poll")):
             self._schedule_public_scraper_poll()
 
     def _on_app_close(self):
@@ -5193,21 +4330,22 @@ class D2ILiteApp(BaseWindow):
                 pass
             self._public_scraper_poll_after = None
 
-        running_tasks: List[Tuple[str, Dict[str, Any]]] = []
-        for root, entry in self._public_scraper_tasks.items():
-            if isinstance(entry, dict) and self._is_process_running(entry.get("proc")):
-                running_tasks.append((root, entry))
+        close_plan = _svc_build_public_scraper_app_close_plan(
+            self._public_scraper_tasks,
+            is_process_running_fn=self._is_process_running,
+        )
 
-        if running_tasks:
+        if bool(close_plan.get("should_confirm")):
             should_exit = messagebox.askyesno(
-                "关闭确认",
-                f"仍有 {len(running_tasks)} 个抓取任务在运行。\n\n关闭软件将停止这些任务。\n是否继续关闭？",
+                str(close_plan.get("confirm_title", "") or "关闭确认"),
+                str(close_plan.get("confirm_message", "") or ""),
                 parent=self,
             )
             if not should_exit:
                 return
-            for root, entry in running_tasks:
-                proc = entry.get("proc")
+            for cleanup in list(close_plan.get("cleanup_plans") or []):
+                root = str(cleanup.get("root", "") or "").strip()
+                proc = cleanup.get("proc")
                 if proc is None:
                     continue
                 try:
@@ -5218,29 +4356,26 @@ class D2ILiteApp(BaseWindow):
                         proc.kill()
                 except Exception:
                     pass
-                active_template_path = str(entry.get("active_template_path", "")).strip()
+                active_template_path = str(cleanup.get("active_template_path", "") or "").strip()
                 if active_template_path:
                     self._set_public_scraper_template_state(active_template_path, "pending")
                 self._set_public_scraper_manual_pause_flag(root, paused=False)
-                self._close_public_scraper_log_handle(entry.get("log_handle"))
-                entry["proc"] = None
-                entry["log_handle"] = None
+                self._close_public_scraper_log_handle(cleanup.get("log_handle"))
 
-        # Close remaining log handles.
-        for entry in self._public_scraper_tasks.values():
-            if isinstance(entry, dict):
-                self._close_public_scraper_log_handle(entry.get("log_handle"))
-                entry["log_handle"] = None
+        for handle in list(close_plan.get("all_log_handles") or []):
+            self._close_public_scraper_log_handle(handle)
 
-        self._public_scraper_tasks.clear()
-        self._public_scraper_active_task_root = ""
+        reset_state = _svc_build_public_scraper_close_reset_state()
+        self._public_scraper_tasks = dict(reset_state.get("tasks") or {})
+        self._public_scraper_active_task_root = str(reset_state.get("active_task_root", "") or "").strip()
         self._clear_public_scraper_manual_pause_flag()
-        self._public_scraper_proc = None
-        self._public_scraper_named_dir = ""
-        self._public_scraper_last_progress_text = ""
-        self._public_scraper_started_at = None
-        self._public_scraper_runtime_state = "空闲"
-        self._public_scraper_active_template_path = ""
+        self._public_scraper_output_root = str(reset_state.get("output_root", "") or "").strip()
+        self._public_scraper_proc = reset_state.get("proc")
+        self._public_scraper_named_dir = str(reset_state.get("named_dir", "") or "").strip()
+        self._public_scraper_last_progress_text = str(reset_state.get("last_progress_text", "") or "").strip()
+        self._public_scraper_started_at = reset_state.get("started_at")
+        self._public_scraper_runtime_state = str(reset_state.get("runtime_state", "") or "空闲").strip() or "空闲"
+        self._public_scraper_active_template_path = str(reset_state.get("active_template_path", "") or "").strip()
         self._close_public_scraper_log_handle()
         self._refresh_scraper_monitor_panel()
         self.destroy()

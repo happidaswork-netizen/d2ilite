@@ -1,68 +1,63 @@
-# Phase 0 重构状态（2026-03-04）
+# Phase 0 重构状态
 
+最后更新：`2026-03-06`  
 分支：`feature/tauri-modernization`
 
-## 已完成
+## 结论
 
-1. 建立 `services/` 目录并完成第一批服务下沉：
+`Phase 0` 已收口。
+
+当前 Python 工程已经基本完成“`UI 层 / 领域服务层 / I/O 工具层`”分层，`app.py` 仍保留 Tk 界面、事件绑定和少量 UI 协调代码，符合该阶段目标。下一步应转入 `Phase 1`，不建议继续在 `Phase 0` 深挖小块 helper。
+
+## 已完成项
+
+1. 服务层已形成稳定边界：
    - `services/image_service.py`
    - `services/metadata_service.py`
-   - `services/scraper_monitor_service.py`
    - `services/editor_text_service.py`
    - `services/viewer_load_service.py`
    - `services/runtime_service.py`
    - `services/settings_service.py`
-   - `services/task_service.py`（任务编排核心逻辑）
-   - `services/task_orchestration_service.py`（任务动作参数编排）
+   - `services/scraper_monitor_service.py`
+   - `services/task_service.py`
+   - `services/task_orchestration_service.py`
+   - `services/public_scraper_config_service.py`
 
-2. `app.py` 已完成对以下能力的服务化接入：
-   - 图片列表扫描与基础信息读取
-   - URL 归一化 / 关键词解析
-   - 原始 XMP/EXIF/IPTC 读写兜底
-   - 抓取监控日志解析、JSONL 读写、原因文案归一化
-   - 编辑器文本与 profile 规范化、LLM JSON 提取
-   - 主界面加载流程（预览 + 元数据快照）服务化
-   - 结构化保存 payload 组装服务化
+2. `app.py` 中已完成服务化接入的核心链路：
+   - 图片扫描、预览与基础信息读取
+   - URL/文本/Profile 规范化
+   - XMP/EXIF/IPTC 读写兜底
+   - 抓取监控日志解析、JSONL 读写、状态文案映射
+   - 抓取进度表视图模型、选择联动、右键菜单、错误筛选
+   - 任务列表汇总、状态推导、活动任务切换
+   - 任务生命周期编排：`start / continue / retry / poll / exit / app close`
+   - 公共抓取启动配置：模板读取、表单默认值、runtime config 生成与覆写
+   - 失败详情重试清理链：JSONL 清理、URL 索引回收、反馈文案
+   - 审核缺字段判定与 `review_queue.jsonl` 同步
 
-3. 新增契约冒烟脚本：
+3. 契约冒烟已覆盖当前拆出的主链路：
    - `scripts/phase0_contract_smoke.py`
-   - 执行命令：`python scripts/phase0_contract_smoke.py`（当前 23 项）
-
-4. 新增任务服务能力并接入 `app.py`：
-   - 路径与文件工具：`normalize_existing_path`、`read_json_file`、`safe_positive_int`
-   - 抓取任务工具：`estimate_scraper_total_target`、`retry_requires_crawl_phase`
-   - 任务发现与状态：`discover_public_task_roots`、`count_latest_metadata_status`、`derive_public_task_status`
-   - 模板状态管理：模板目录、模板状态读写、模板列表排序
-   - 运行时工具：`normalize_public_task_root`、`is_process_running`、`public_scraper_pause_flag_path`
-   - 计数与缓存：`count_jsonl_rows`（含缓存命中逻辑）
-   - 进度行聚合：`collect_scraper_progress_rows`（列表/详情/图片/元数据/复核/失败日志聚合）
-   - 行状态判定：`is_scraper_row_completed`、`is_scraper_row_image_downloaded`、`scraper_progress_values_has_error`
-   - 任务摘要与排序：`summarize_public_task`、`sort_public_task_summaries`
-   - 进度表视图模型：`split_scraper_progress_rows`、`scraper_progress_snapshot`、`scraper_progress_row_to_table_values`、`collect_detail_urls_from_progress_values`、`dedupe_progress_values`
-   - 任务面板视图模型：`task_entry_status_text`、`reconcile_task_entry_runtime_state`、`build_scraper_task_view_rows`
-   - 任务选择与暂停标记：`parse_task_root_from_values`、`set_public_scraper_manual_pause_flag`
-   - 任务目录与日志解析：`resolve_public_task_directory`、`resolve_public_task_log_path`
-   - 进度统计与文案：`summarize_scraper_progress_rows`、`build_public_scraper_progress_text`
-   - 任务动作参数编排：`build_continue_start_existing_task_args`、`build_retry_start_existing_task_args`、`build_rewrite_metadata_start_existing_task_args`、`continue_action_for_active_entry`
-   - 任务管理视图渲染：`public_task_summary_to_tree_values`、`public_task_manager_status_text`
-   - 任务动作编排模块独立：`task_orchestration_service.py`（从 `task_service.py` 拆分）
-   - 任务退出与激活切换决策：`decide_task_exit_outcome`、`pick_next_active_root`
-
-## 验证结果
-
-1. `python -m py_compile app.py` 通过。
-2. `python -m py_compile services/*.py`（逐文件）通过。
-3. `python scripts/phase0_contract_smoke.py` 通过（23 项）。
-4. `python -c "import app; print('ok')"` 通过。
+   - `scripts/bridge_cli_smoke.py`
 
 ## 当前边界
 
-1. `app.py` 仍保留 UI 控制流和事件绑定（符合 Phase 0 目标）。
-2. 抓取面板中的 UI 事件编排（按钮行为、窗口切换）仍主要在 `app.py`。
-3. 抓取进度树表渲染与选择交互仍在 `app.py`，下一轮继续下沉为前端 ViewModel。
+1. `app.py` 仍保留 Tk 控件构建、窗口布局、事件绑定、弹框与线程调度。
+2. 公共抓取面板中的按钮行为、窗口切换、Treeview 实例读写仍属于 UI 协调层。
+3. 这部分保留在 `app.py` 是刻意的，不再属于 `Phase 0` 要继续下沉的范围。
 
-## 下一阶段建议（Phase 0 收尾）
+## 验证结果
 
-1. 新增 `services/task_orchestration_service.py`，承接抓取任务状态流转与汇总逻辑。
-2. 把抓取进度树表选择联动、错误筛选、状态提示整理为 ViewModel 纯函数，继续减薄 `app.py`。
-3. 为任务管理窗口增加第二套契约测试（任务根目录样本 -> 列表行视图模型）。
+1. `python -m py_compile app.py services/task_service.py services/task_orchestration_service.py services/scraper_monitor_service.py services/public_scraper_config_service.py scripts/phase0_contract_smoke.py` 通过。
+2. `python scripts/phase0_contract_smoke.py` 通过，当前 `28 tests`。
+3. `python scripts/bridge_cli_smoke.py` 通过。
+
+## 阶段产出
+
+1. Python 侧已具备面向新前端的较清晰服务边界。
+2. 现有 Tk 界面仍可继续独立使用，未要求一次性切换。
+3. 继续推进时，应优先消费现有 service，而不是再回到 `app.py` 做深层拆分。
+
+## 下一步
+
+1. 进入 `Phase 1`：以 `desktop-next/` 为主线，开始把现有 service 边界接到 `Tauri + React + TypeScript`。
+2. Python 侧只做配套性补充，不再把 `Phase 0` 作为主工作面。

@@ -1,6 +1,7 @@
 import type { BridgeHealth, DesktopBridge, MetadataItem, SavePayload } from '../types'
 
 type TauriInvoke = (command: string, args?: Record<string, unknown>) => Promise<unknown>
+type TauriConvertFileSrc = (filePath: string, protocol?: string) => string
 
 type BridgeEnvelope<T> = {
   ok: boolean
@@ -46,8 +47,12 @@ function buildMockRecord(path: string): MetadataItem {
 function getTauriInvoke(): TauriInvoke | null {
   const w = window as unknown as {
     __TAURI__?: {
-      core?: { invoke?: TauriInvoke }
+      core?: {
+        invoke?: TauriInvoke
+        convertFileSrc?: TauriConvertFileSrc
+      }
       invoke?: TauriInvoke
+      convertFileSrc?: TauriConvertFileSrc
     }
   }
   const coreInvoke = w.__TAURI__?.core?.invoke
@@ -61,6 +66,24 @@ function getTauriInvoke(): TauriInvoke | null {
   return null
 }
 
+function getTauriConvertFileSrc(): TauriConvertFileSrc | null {
+  const w = window as unknown as {
+    __TAURI__?: {
+      core?: { convertFileSrc?: TauriConvertFileSrc }
+      convertFileSrc?: TauriConvertFileSrc
+    }
+  }
+  const coreConvert = w.__TAURI__?.core?.convertFileSrc
+  if (typeof coreConvert === 'function') {
+    return coreConvert
+  }
+  const legacyConvert = w.__TAURI__?.convertFileSrc
+  if (typeof legacyConvert === 'function') {
+    return legacyConvert
+  }
+  return null
+}
+
 async function invokeJson<T>(invoke: TauriInvoke, command: string, args?: Record<string, unknown>): Promise<T> {
   const result = (await invoke(command, args)) as BridgeEnvelope<T>
   if (!result || result.ok !== true) {
@@ -69,6 +92,17 @@ async function invokeJson<T>(invoke: TauriInvoke, command: string, args?: Record
     throw new Error(`${error}${detail}`)
   }
   return result as unknown as T
+}
+
+async function fetchJson<T>(input: string, init?: RequestInit): Promise<T> {
+  const resp = await fetch(input, init)
+  const data = (await resp.json()) as BridgeEnvelope<T>
+  if (!resp.ok || !data || data.ok !== true) {
+    const error = data?.error || `http ${resp.status}`
+    const detail = data?.detail ? ` (${data.detail})` : ''
+    throw new Error(`${error}${detail}`)
+  }
+  return data as unknown as T
 }
 
 function createMockBridge(): DesktopBridge {
@@ -118,10 +152,14 @@ function createMockBridge(): DesktopBridge {
       }
       store.set(key, next)
     },
+    getPreviewUrl(): string {
+      return ''
+    },
   }
 }
 
 function createTauriBridge(invoke: TauriInvoke): DesktopBridge {
+  const convertFileSrc = getTauriConvertFileSrc()
   return {
     provider: 'tauri',
     async ping(): Promise<BridgeHealth> {
@@ -138,6 +176,50 @@ function createTauriBridge(invoke: TauriInvoke): DesktopBridge {
     async saveMetadata(path: string, payload: SavePayload): Promise<void> {
       await invokeJson<{ saved: boolean }>(invoke, 'bridge_save_metadata', { path, payload })
     },
+    getPreviewUrl(path: string): string {
+      if (typeof convertFileSrc === 'function') {
+        return convertFileSrc(String(path || ''))
+      }
+      return ''
+    },
+  }
+}
+
+function createHttpBridge(): DesktopBridge {
+  return {
+    provider: 'vite-python-cli',
+    async ping(): Promise<BridgeHealth> {
+      return fetchJson<BridgeHealth>('/api/bridge/ping')
+    },
+    async listImages(folder: string, limit = 0): Promise<string[]> {
+      const params = new URLSearchParams({
+        folder: String(folder || ''),
+        limit: String(limit || 0),
+      })
+      const data = await fetchJson<{ items: string[] }>(`/api/bridge/list?${params.toString()}`)
+      return Array.isArray(data.items) ? data.items : []
+    },
+    async readMetadata(path: string): Promise<MetadataItem> {
+      const params = new URLSearchParams({ path: String(path || '') })
+      const data = await fetchJson<{ item: MetadataItem }>(`/api/bridge/read?${params.toString()}`)
+      return data.item
+    },
+    async saveMetadata(path: string, payload: SavePayload): Promise<void> {
+      await fetchJson<{ saved: boolean }>('/api/bridge/save', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          path,
+          payload,
+        }),
+      })
+    },
+    getPreviewUrl(path: string): string {
+      const params = new URLSearchParams({ path: String(path || '') })
+      return `/api/bridge/preview?${params.toString()}`
+    },
   }
 }
 
@@ -146,6 +228,8 @@ export function createDesktopBridge(): DesktopBridge {
   if (invoke) {
     return createTauriBridge(invoke)
   }
+  if (import.meta.env.DEV) {
+    return createHttpBridge()
+  }
   return createMockBridge()
 }
-
