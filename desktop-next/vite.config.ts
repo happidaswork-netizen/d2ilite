@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process'
 import { createReadStream, existsSync } from 'node:fs'
-import { mkdir, rm, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -13,6 +13,9 @@ const desktopRoot = path.dirname(fileURLToPath(import.meta.url))
 const projectRoot = path.resolve(desktopRoot, '..')
 const bridgeScriptPath = path.join(projectRoot, 'scripts', 'desktop_bridge_cli.py')
 const tempRoot = path.join(projectRoot, '.tmp', 'desktop-next')
+const frontendStatusPath = path.join(tempRoot, 'frontend-status.json')
+const smokeRequestPath = path.join(tempRoot, 'smoke-request.json')
+const smokeReportPath = path.join(tempRoot, 'smoke-report.json')
 
 function resolvePythonExecutable(): string {
   const candidates = [
@@ -154,6 +157,32 @@ function desktopBridgeDevPlugin(): Plugin {
               runBridgeCli(['save', '--path', targetPath, '--payload-file', payloadFile]),
             )
             jsonResponse(res, 200, response)
+            return
+          }
+
+          if (req.method === 'POST' && routePath === '/frontend-status') {
+            const body = (await parseBody(req)) as BridgePayload
+            await mkdir(tempRoot, { recursive: true })
+            await writeFile(frontendStatusPath, JSON.stringify(body ?? {}, null, 2), 'utf-8')
+            jsonResponse(res, 200, { ok: true, reported: true, path: frontendStatusPath })
+            return
+          }
+
+          if (req.method === 'GET' && routePath === '/smoke-request') {
+            if (!existsSync(smokeRequestPath)) {
+              jsonResponse(res, 404, { ok: false, error: 'smoke request not found' })
+              return
+            }
+            const body = JSON.parse(await readFile(smokeRequestPath, 'utf-8')) as BridgePayload
+            jsonResponse(res, 200, { ok: true, request: body })
+            return
+          }
+
+          if (req.method === 'POST' && routePath === '/smoke-report') {
+            const body = (await parseBody(req)) as BridgePayload
+            await mkdir(tempRoot, { recursive: true })
+            await writeFile(smokeReportPath, JSON.stringify(body ?? {}, null, 2), 'utf-8')
+            jsonResponse(res, 200, { ok: true, reported: true, path: smokeReportPath })
             return
           }
 

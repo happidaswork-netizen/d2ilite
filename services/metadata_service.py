@@ -169,6 +169,7 @@ def build_structured_payload(
     titi_world_id: Any = "",
     description: Any = "",
     adaptive_profile: Optional[Dict[str, Any]] = None,
+    role_aliases: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     payload: Dict[str, Any] = {
         "title": str(title or "").strip(),
@@ -183,10 +184,12 @@ def build_structured_payload(
         "titi_world_id": str(titi_world_id or "").strip(),
         "description": str(description or "").strip(),
     }
-    adaptive = dict(adaptive_profile or {})
-    if adaptive:
+    if adaptive_profile is not None:
+        adaptive = dict(adaptive_profile or {})
         payload["d2i_profile"] = adaptive
         police_id_val = str(adaptive.get("police_id", "")).strip()
         if police_id_val:
             payload["police_id"] = police_id_val
+    if role_aliases is not None:
+        payload["role_aliases"] = list(role_aliases)
     return payload

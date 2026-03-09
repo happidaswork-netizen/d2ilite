@@ -3,25 +3,35 @@
 更新时间：2026-03-04  
 适用仓库：`d2ilite`
 
-## 当前状态（2026-03-06）
+## 当前状态（2026-03-09）
 
 1. `Phase 0` 已完成，Python 工程已完成核心服务分层。
 2. `app.py` 当前主要保留 Tk UI、事件绑定和少量界面协调。
 3. 契约回归可执行：`scripts/phase0_contract_smoke.py`、`scripts/bridge_cli_smoke.py`。
 4. `desktop-next/` 已具备开发态最小闭环：目录浏览、图片预览、元数据读取与保存。
-5. `desktop-next` 开发模式下已通过 `/api/bridge/*` 接入本地 Python CLI bridge；`src-tauri` 尚未初始化。
+5. `desktop-next` 开发模式下已通过 `/api/bridge/*` 接入本地 Python CLI bridge。
+6. `desktop-next/src-tauri` 已初始化，并已接入最小 Tauri 命令桥接。
+7. `npm run tauri:dev` 启动链路已验证可起。
+8. 已补基础 smoke：provider 选择 + `tauri:dev` 启动链路。
+9. 已确认 Tauri 壳内前端切到 `tauri` provider，并完成启动期 `ping`。
+10. 已确认 Tauri 壳内 `ping/list/read/save/preview` 端到端 roundtrip 可跑通。
+11. `desktop-next` 编辑区已支持 `Profile / TITI / XMP / EXIF / IPTC / Match` 元数据视图。
+12. 路线已调整为“旧版冻结为规格基线，新版独立重构”，不再继续投资长期过渡层。
+13. `desktop-next` 已支持单图角色元数据结构化编辑：`d2i_profile.name + role_aliases[]`。
+14. `desktop-next` 已支持目录级角色工作流：原角色名 / 扮演角色名筛选、勾选集维护、批量设置 / 追加 / 替换 / 清空。
+15. 当前已形成 `desktop-next` 重构稳定基线，下一阶段重点转为 `domain / infrastructure` 收敛。
 
 ## 1. 目标与原则
 
 目标：
 
-1. 将当前 `Tkinter + ttkbootstrap` 桌面端逐步升级为现代架构：`Tauri 2 + Rust Core + React/TypeScript UI`。
+1. 将当前 `Tkinter + ttkbootstrap` 桌面端重构为新的现代桌面应用：`Tauri 2 + Rust Core + React/TypeScript UI`。
 2. 保持现有业务能力（看图、元数据读写、抓取结果复核）不回退。
 3. 优先提升三项体验：界面稳定性、交互可见性、批量处理性能。
 
 原则：
 
-1. 先分层再迁移，不做一次性重写。
+1. 旧版作为规格基线冻结，新版独立实现。
 2. 每一阶段都要“可回滚、可验证、可交付”。
 3. 高风险能力（批量写元数据）优先做双写校验与灰度切换。
 
@@ -60,22 +70,23 @@
 
 ## Phase 1：现代前端骨架（1 周）
 
-目标：建立 `Tauri + React + TS` 空骨架并完成与 Python 服务联通。
+目标：建立 `Tauri + React + TS` 新版主工程骨架，并完成最小可运行闭环。
 
-状态：开发态最小闭环已完成（2026-03-06）
+状态：开发态闭环 + Tauri 壳骨架已完成（2026-03-09）
 
 清单：
 
-1. 新建 `desktop-next/` 前端工程，并保留后续 `src-tauri/` 接入位。
+1. 新建 `desktop-next/` 前端工程，并初始化 `src-tauri/`。
 2. 前端实现基础布局：顶部动作区、左预览、右元数据面板、底部状态栏。
 3. 打通开发态最小闭环：打开目录 -> 读取元数据 -> 前端展示 -> 保存回图片。
 4. 开发模式通过 Vite 中间件转发 `/api/bridge/*` 到 `scripts/desktop_bridge_cli.py`。
+5. Tauri 壳已具备最小命令桥接：`bridge_ping / bridge_list_images / bridge_read_metadata / bridge_save_metadata`。
 
 验收：
 
 1. 新桌面端开发模式可读取、预览并保存本地图片元数据。
-2. 老界面仍可独立使用（双轨并行）。
-3. `src-tauri` 尚未接入，不影响当前 React 工作台验证。
+2. 旧版可继续作为规格基线独立使用。
+3. `src-tauri` 已接入最小桥接骨架，可作为新版继续开发起点。
 
 ## Phase 2：Rust 核心迁移（2-3 周）
 
@@ -184,6 +195,6 @@
 
 ## 7. 下一步（立即执行）
 
-1. 初始化 `desktop-next/src-tauri`，将现有桥接命令映射到 Tauri `invoke`。
-2. 把当前开发态工作台字段继续扩展到结构化 / XMP / EXIF / IPTC 视图。
-3. 建立 `desktop-next` 端到端冒烟检查，覆盖 `ping/list/read/save/preview`。
+1. 先整理并提交当前 `desktop-next + src-tauri + smoke` 成果。
+2. 然后重整 `desktop-next/src/` 结构，把当前单体 `App.tsx` 切成新版长期架构。
+3. 在已完成目录级角色工作流基础上，继续收敛长期 `domain / infrastructure` 边界，并评估目录索引 / 缓存能力。

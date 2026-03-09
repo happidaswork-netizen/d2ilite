@@ -6,7 +6,17 @@
 
 1. `Phase 0` 已完成，Python 工程已完成主服务分层。
 2. `Phase 1` 已完成第一个可交付阶段：`desktop-next` 在开发模式下已接入真实 Python bridge，不再只是 mock UI。
-3. 当前最值得继续的方向，不是再深挖 `app.py`，而是初始化 `desktop-next/src-tauri`，把现有 bridge 命令映射到 Tauri `invoke`。
+3. `desktop-next/src-tauri` 已初始化，并已接入最小 Tauri bridge 命令骨架。
+4. `npm run tauri:dev` 启动链路已验证可起。
+5. 已补基础 smoke：provider 选择 + `tauri:dev` 启动链路。
+6. 已确认 Tauri 壳内前端切到 `tauri` provider，并完成启动期 `ping`。
+7. 已确认 Tauri 壳内 `ping/list/read/save/preview` 端到端 roundtrip 可跑通。
+8. `desktop-next` 编辑区已扩展为“结构化表单 + 原始元数据标签页”，可直接查看 `Profile / TITI / XMP / EXIF / IPTC / Match`。
+9. 当前路线已切到“旧版冻结为规格基线，新版独立重构”。
+10. 当前最值得继续的方向，不是再深挖 `app.py`，而是直接把 `desktop-next` 整理成新版主工程。
+11. `desktop-next` 已支持单图角色元数据结构化编辑：图片原角色名 + 扮演角色名列表。
+12. `desktop-next` 已支持目录级角色工作流：原角色名 / 扮演角色名筛选、勾选集维护、批量设置 / 追加 / 替换 / 清空角色元数据。
+13. 当前已补“稳定基线”文档，可直接作为下一阶段架构收敛的起点。
 
 ## 2. 本轮累计完成内容
 
@@ -52,6 +62,29 @@
    - 元数据保存
    - 未保存修改拦截
    - 当前文件重载
+6. `src-tauri` 已具备最小命令桥接：
+   - `bridge_ping`
+   - `bridge_list_images`
+   - `bridge_read_metadata`
+   - `bridge_save_metadata`
+7. 编辑区已支持：
+   - 结构化摘要卡片（状态 / 文件大小 / 修改时间 / 关键词数）
+   - `Profile`
+   - `TITI`
+   - `XMP`
+   - `EXIF`
+   - `IPTC`
+   - `Match`
+8. 角色元数据已支持：
+   - 图片原角色名（对应 `d2i_profile.name`）
+   - 扮演角色名列表（对应 `role_aliases[]`）
+   - 备注
+   - 启用/停用
+9. 目录级角色工作流已支持：
+   - 原角色名筛选
+   - 扮演角色名筛选
+   - 当前筛选结果勾选
+   - 对勾选项或筛选结果批量设置 / 追加 / 替换 / 清空
 
 ## 3. 本次修改文件清单
 
@@ -71,7 +104,8 @@
 3. `desktop-next/src/bridge/desktopBridge.ts`
 4. `desktop-next/src/App.tsx`
 5. `desktop-next/src/App.css`
-6. `desktop-next/README.md`
+6. `desktop-next/src-tauri/`
+7. `desktop-next/README.md`
 
 ### 3.3 文档
 
@@ -79,6 +113,7 @@
 2. `docs/tauri_modernization_checklist_2026-03-04.md`
 3. `docs/desktop_next_bootstrap_2026-03-04.md`
 4. `docs/cross_machine_handoff_2026-03-06.md`（本文档，新增）
+5. `docs/desktop_next_rewrite_baseline_2026-03-09.md`
 
 ### 3.4 其他
 
@@ -112,6 +147,15 @@ npm run build
 
 1. `lint` 通过
 2. `build` 通过
+3. `cargo check --manifest-path desktop-next/src-tauri/Cargo.toml` 通过
+4. `npm run tauri:dev` 启动链路通过（Vite + cargo run + src-tauri watch）
+5. `npm run smoke:provider` 通过
+6. `npm run smoke:roles` 通过
+7. `.\.venv\Scripts\python.exe scripts/desktop_tauri_startup_smoke.py` 通过
+8. 已确认 Tauri 壳内前端切到 `tauri` provider，并完成启动期 `ping`
+9. `.\.venv\Scripts\python.exe scripts/desktop_tauri_roundtrip_smoke.py` 通过
+10. 已确认 Tauri 壳内 `ping/list/read/save/preview` roundtrip 可跑通
+11. 当前 `desktop-next` 编辑区已能展示 bridge 返回的原始元数据分组，不再只有表单字段
 
 开发态桥接已额外做过端到端检查：
 
@@ -162,14 +206,13 @@ npm run dev
 
 ## 7. 当前边界
 
-1. `desktop-next` 现在是 React 开发态工作台，不是完整 Tauri 应用。
-2. `src-tauri/` 还没有初始化。
-3. 真实桥接当前通过 Vite dev server 中转到 Python CLI。
+1. `desktop-next` 现在已同时具备 React 开发态工作台和已初始化的 Tauri 壳。
+2. Tauri 模式下的 bridge 仍依赖仓库内的 Python CLI 与 `.venv`。
+3. 真实桥接当前已同时支持 Vite dev server 中转和 Tauri 自定义命令两条链路。
 4. Tk 老界面仍可独立使用，并且仍是完整功能入口。
 
 ## 8. 下一步接力点
 
-1. 初始化 `desktop-next/src-tauri`。
-2. 把当前 `/api/bridge/*` 对应的命令映射到 Tauri `invoke`。
-3. 为 `desktop-next` 增加稳定的端到端冒烟检查，固定 `ping/list/read/save/preview` 这条链路。
-4. 在新前端继续扩展结构化/XMP/EXIF/IPTC 视图，而不是回头继续大拆 `app.py`。
+1. 先整理并提交当前 `desktop-next + src-tauri + smoke` 成果。
+2. 然后继续把类型、格式化和校验规则从 `features/metadata/model.ts` 下沉到长期 `domain` 结构。
+3. 再把 bridge / preview / 本地 I/O 从 `workspace` 收敛到 `infrastructure`，减少 UI 层直接依赖。

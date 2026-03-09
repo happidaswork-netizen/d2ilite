@@ -226,6 +226,12 @@ def build_titi_json(metadata, existing_json=None, existing_asset_id=None):
         profile = {}
     else:
         profile = dict(profile)
+    if isinstance(metadata.get("d2i_profile"), dict):
+        for k, v in metadata.get("d2i_profile", {}).items():
+            if v not in (None, "", [], {}):
+                profile[k] = v
+            else:
+                profile.pop(k, None)
 
     # 姓名优先来自 PersonInImage / metadata.person；Title 仅作兜底（兼容旧数据）
     person_name = metadata.get("person") or metadata.get("name")
@@ -234,7 +240,8 @@ def build_titi_json(metadata, existing_json=None, existing_asset_id=None):
         if isinstance(person_name, str) and " - " in person_name:
             person_name = person_name.split(" - ", 1)[0].strip()
 
-    if isinstance(person_name, str) and person_name.strip():
+    explicit_profile_payload = isinstance(metadata.get("d2i_profile"), dict)
+    if (not explicit_profile_payload) and isinstance(person_name, str) and person_name.strip():
         profile["name"] = person_name.strip()
 
     desc = metadata.get("description")
@@ -303,8 +310,11 @@ def build_titi_json(metadata, existing_json=None, existing_asset_id=None):
 
     # 可选：角色别名（如上游传入则写入；否则保留已有）
     role_aliases = metadata.get("role_aliases")
-    if isinstance(role_aliases, list) and role_aliases:
-        base["role_aliases"] = role_aliases
+    if isinstance(role_aliases, list):
+        if role_aliases:
+            base["role_aliases"] = role_aliases
+        else:
+            base.pop("role_aliases", None)
 
     return base
 

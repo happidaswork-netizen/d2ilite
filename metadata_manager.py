@@ -1420,8 +1420,11 @@ def update_metadata_preserve_others(
             for k, v in new_metadata["d2i_profile"].items():
                 if v not in (None, "", [], {}):
                     profile[k] = v
+                else:
+                    profile.pop(k, None)
 
-        if person:
+        profile_payload_provided = isinstance(new_metadata.get("d2i_profile"), dict)
+        if (not profile_payload_provided) and person:
             profile["name"] = person
         if desc:
             profile["description"] = desc
@@ -1458,8 +1461,11 @@ def update_metadata_preserve_others(
             old_titi["d2i_profile"] = profile
 
         # 可选：角色别名
-        if isinstance(new_metadata.get("role_aliases"), list) and new_metadata["role_aliases"]:
-            old_titi["role_aliases"] = new_metadata["role_aliases"]
+        if "role_aliases" in new_metadata and isinstance(new_metadata.get("role_aliases"), list):
+            if new_metadata["role_aliases"]:
+                old_titi["role_aliases"] = new_metadata["role_aliases"]
+            else:
+                old_titi.pop("role_aliases", None)
 
         titi_json_str = json.dumps(old_titi, ensure_ascii=False)
         xmp_data['Xmp.titi.meta'] = titi_json_str

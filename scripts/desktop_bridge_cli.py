@@ -126,9 +126,12 @@ def cmd_save(args: argparse.Namespace) -> int:
             titi_asset_id=raw_payload.get("titi_asset_id", ""),
             titi_world_id=raw_payload.get("titi_world_id", ""),
             description=raw_payload.get("description", ""),
-            adaptive_profile=raw_payload.get("d2i_profile", {})
+            adaptive_profile=raw_payload.get("d2i_profile")
             if isinstance(raw_payload.get("d2i_profile"), dict)
-            else {},
+            else None,
+            role_aliases=raw_payload.get("role_aliases")
+            if isinstance(raw_payload.get("role_aliases"), list)
+            else None,
         )
         ok = bool(update_metadata_preserve_others(path, payload, clean_format=True))
         if not ok:

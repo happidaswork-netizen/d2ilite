@@ -1,0 +1,25 @@
+[package]
+name = "d2i-lite-next"
+version = "0.1.0"
+description = "D2I Lite Next desktop shell"
+authors = ["happidaswork-netizen"]
+license = ""
+repository = ""
+edition = "2021"
+rust-version = "1.77.2"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+name = "d2i_lite_next_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.5.6", features = [] }
+
+[dependencies]
+serde_json = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+log = "0.4"
+tauri = { version = "2.10.3", features = ["protocol-asset"] }
+tauri-plugin-log = "2"

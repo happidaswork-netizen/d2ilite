@@ -1,3 +1,5 @@
+import { convertFileSrc, invoke, isTauri } from '@tauri-apps/api/core'
+
 import type { BridgeHealth, DesktopBridge, MetadataItem, SavePayload } from '../types'
 
 type TauriInvoke = (command: string, args?: Record<string, unknown>) => Promise<unknown>
@@ -8,6 +10,23 @@ type BridgeEnvelope<T> = {
   error?: string
   detail?: string
 } & T
+
+export type DesktopSmokeRequest = {
+  smoke_id: string
+  folder: string
+  marker: string
+  filename?: string
+}
+
+export function resolveDesktopBridgeProvider(hasTauriInvoke: boolean, isDev: boolean): DesktopBridge['provider'] {
+  if (hasTauriInvoke) {
+    return 'tauri'
+  }
+  if (isDev) {
+    return 'vite-python-cli'
+  }
+  return 'mock'
+}
 
 function clone<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T
@@ -45,43 +64,63 @@ function buildMockRecord(path: string): MetadataItem {
 }
 
 function getTauriInvoke(): TauriInvoke | null {
-  const w = window as unknown as {
-    __TAURI__?: {
-      core?: {
-        invoke?: TauriInvoke
-        convertFileSrc?: TauriConvertFileSrc
-      }
-      invoke?: TauriInvoke
-      convertFileSrc?: TauriConvertFileSrc
-    }
-  }
-  const coreInvoke = w.__TAURI__?.core?.invoke
-  if (typeof coreInvoke === 'function') {
-    return coreInvoke
-  }
-  const legacyInvoke = w.__TAURI__?.invoke
-  if (typeof legacyInvoke === 'function') {
-    return legacyInvoke
+  if (isTauri()) {
+    return (command: string, args?: Record<string, unknown>) => invoke(command, args)
   }
   return null
 }
 
 function getTauriConvertFileSrc(): TauriConvertFileSrc | null {
-  const w = window as unknown as {
-    __TAURI__?: {
-      core?: { convertFileSrc?: TauriConvertFileSrc }
-      convertFileSrc?: TauriConvertFileSrc
-    }
-  }
-  const coreConvert = w.__TAURI__?.core?.convertFileSrc
-  if (typeof coreConvert === 'function') {
-    return coreConvert
-  }
-  const legacyConvert = w.__TAURI__?.convertFileSrc
-  if (typeof legacyConvert === 'function') {
-    return legacyConvert
+  if (isTauri()) {
+    return convertFileSrc
   }
   return null
+}
+
+export async function reportDesktopFrontendStatus(payload: Record<string, unknown>): Promise<void> {
+  if (!import.meta.env.DEV) {
+    return
+  }
+  await fetchJson<{ reported: boolean }>('/api/bridge/frontend-status', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(payload ?? {}),
+  })
+}
+
+export async function fetchDesktopSmokeRequest(): Promise<DesktopSmokeRequest | null> {
+  if (!import.meta.env.DEV) {
+    return null
+  }
+  const resp = await fetch('/api/bridge/smoke-request', {
+    method: 'GET',
+    cache: 'no-store',
+  })
+  if (resp.status === 404) {
+    return null
+  }
+  const data = (await resp.json()) as BridgeEnvelope<{ request: DesktopSmokeRequest }>
+  if (!resp.ok || !data || data.ok !== true || !data.request) {
+    const error = data?.error || `http ${resp.status}`
+    const detail = data?.detail ? ` (${data.detail})` : ''
+    throw new Error(`${error}${detail}`)
+  }
+  return data.request
+}
+
+export async function reportDesktopSmokeResult(payload: Record<string, unknown>): Promise<void> {
+  if (!import.meta.env.DEV) {
+    return
+  }
+  await fetchJson<{ reported: boolean }>('/api/bridge/smoke-report', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(payload ?? {}),
+  })
 }
 
 async function invokeJson<T>(invoke: TauriInvoke, command: string, args?: Record<string, unknown>): Promise<T> {
@@ -225,10 +264,11 @@ function createHttpBridge(): DesktopBridge {
 
 export function createDesktopBridge(): DesktopBridge {
   const invoke = getTauriInvoke()
-  if (invoke) {
+  const provider = resolveDesktopBridgeProvider(Boolean(invoke), Boolean(import.meta.env.DEV))
+  if (provider === 'tauri' && invoke) {
     return createTauriBridge(invoke)
   }
-  if (import.meta.env.DEV) {
+  if (provider === 'vite-python-cli') {
     return createHttpBridge()
   }
   return createMockBridge()
