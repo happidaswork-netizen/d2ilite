@@ -8,6 +8,7 @@ use std::{
 use serde_json::Value;
 
 const MANIFEST_DIR: &str = env!("CARGO_MANIFEST_DIR");
+const IMAGE_EXTS: [&str; 7] = ["jpg", "jpeg", "png", "webp", "bmp", "tif", "tiff"];
 
 fn desktop_root() -> PathBuf {
     Path::new(MANIFEST_DIR)
@@ -47,6 +48,55 @@ fn parse_bridge_error(payload: &Value) -> String {
     } else {
         format!("{error} ({detail})")
     }
+}
+
+fn is_supported_image(path: &Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| {
+            IMAGE_EXTS
+                .iter()
+                .any(|allowed| ext.eq_ignore_ascii_case(allowed))
+        })
+        .unwrap_or(false)
+}
+
+fn list_images_in_folder(folder: &Path, limit: usize) -> Result<Vec<String>, String> {
+    if !folder.exists() {
+        return Err(format!("folder not found ({})", folder.display()));
+    }
+    if !folder.is_dir() {
+        return Err(format!("folder is not a directory ({})", folder.display()));
+    }
+
+    let mut items: Vec<PathBuf> = fs::read_dir(folder)
+        .map_err(|error| format!("failed to read folder {}: {error}", folder.display()))?
+        .filter_map(|entry| entry.ok().map(|item| item.path()))
+        .filter(|path| path.is_file() && is_supported_image(path))
+        .collect();
+
+    items.sort_by(|left, right| {
+        let left_name = left
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or_default()
+            .to_lowercase();
+        let right_name = right
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or_default()
+            .to_lowercase();
+        left_name.cmp(&right_name)
+    });
+
+    if limit > 0 && items.len() > limit {
+        items.truncate(limit);
+    }
+
+    Ok(items
+        .into_iter()
+        .map(|path| path.to_string_lossy().to_string())
+        .collect())
 }
 
 fn run_bridge_cli(args: &[String]) -> Result<Value, String> {
@@ -112,14 +162,14 @@ fn bridge_ping() -> Result<Value, String> {
 
 #[tauri::command]
 fn bridge_list_images(folder: String, limit: Option<i64>) -> Result<Value, String> {
-    let limit_value = limit.unwrap_or_default().max(0).to_string();
-    run_bridge_cli(&[
-        String::from("list"),
-        String::from("--folder"),
-        folder,
-        String::from("--limit"),
-        limit_value,
-    ])
+    let folder_path = PathBuf::from(folder.trim());
+    let items = list_images_in_folder(&folder_path, limit.unwrap_or_default().max(0) as usize)?;
+    Ok(serde_json::json!({
+        "ok": true,
+        "folder": folder_path.to_string_lossy().to_string(),
+        "count": items.len(),
+        "items": items,
+    }))
 }
 
 #[tauri::command]

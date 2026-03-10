@@ -97,6 +97,7 @@ def main() -> int:
                     "scripts/desktop_bridge_cli.py",
                     "scripts/desktop_tauri_startup_smoke.py",
                     "scripts/desktop_tauri_roundtrip_smoke.py",
+                    "scripts/desktop_vite_bridge_smoke.py",
                     "scripts/desktop_next_release_gate.py",
                 ],
                 REPO_ROOT,
@@ -107,6 +108,7 @@ def main() -> int:
         steps.append(_run_step("cargo_check", ["cargo", "check", "--manifest-path", "desktop-next/src-tauri/Cargo.toml"], REPO_ROOT))
         steps.append(_run_step("npm_lint", [npm_cmd, "run", "lint"], DESKTOP_ROOT))
         steps.append(_run_step("npm_build", [npm_cmd, "run", "build"], DESKTOP_ROOT))
+        steps.append(_run_step("vite_bridge_smoke", [str(python_exe), "scripts/desktop_vite_bridge_smoke.py"], REPO_ROOT))
         steps.append(_run_step("smoke_provider", [npm_cmd, "run", "smoke:provider"], DESKTOP_ROOT))
         steps.append(_run_step("smoke_roles", [npm_cmd, "run", "smoke:roles"], DESKTOP_ROOT))
         steps.append(_run_step("tauri_startup_smoke", [str(python_exe), "scripts/desktop_tauri_startup_smoke.py"], REPO_ROOT))

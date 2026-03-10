@@ -19,6 +19,7 @@
 13. 当前已补“稳定基线”文档，可直接作为下一阶段架构收敛的起点。
 14. 目录角色摘要索引 / 缓存与批量执行反馈已完成第一轮强化，下一阶段应直接进入交付与切换准备。
 15. 交付与切换准备现已完成：统一 release gate、调试构建路径和切换边界都已落盘。
+16. 当前 Python bridge 已收窄为元数据读写职责，目录列表和图片预览已由 Vite / Tauri 原生承接。
 
 ## 2. 本轮累计完成内容
 
@@ -95,6 +96,9 @@
    - 统一 release gate：`scripts/desktop_next_release_gate.py`
    - 调试构建产物：`desktop-next/src-tauri/target/debug/d2i-lite-next.exe`
    - 单独切换边界文档：`docs/desktop_next_cutover_plan_2026-03-10.md`
+12. bridge 责任边界已收窄：
+   - `list` 和 `preview` 不再依赖 Python CLI
+   - Python backend 当前主要保留 `read/save`
 
 ## 3. 本次修改文件清单
 

@@ -41,6 +41,7 @@
 8. `src-tauri` 已可承接最小桌面壳运行
 9. Tauri 壳内 `ping/list/read/save/preview` 已通过端到端 roundtrip
 10. 已补统一 release gate，并已验证 `tauri:build:debug` 调试构建产物
+11. 当前 Python bridge 已收窄为元数据读写职责，目录列表和图片预览不再经它转发
 
 ## 3. 当前结构边界
 
@@ -112,8 +113,9 @@ cd ..
 下一阶段从这里接：
 
 1. 在“图片元数据主工作流”范围内，当前已经具备可受控切换条件
-2. 下一决策点只剩两条：先替换 Python bridge，或先迁移更高阶工作台能力
-3. 正式 installer / 签名发布仍是后续独立工作
+2. Python bridge 的剩余职责已收窄到元数据读写，这也是下一步替换的明确边界
+3. 下一决策点只剩两条：先替换 Python bridge，或先迁移更高阶工作台能力
+4. 正式 installer / 签名发布仍是后续独立工作
 
 ## 7. 当前完成度判断
 

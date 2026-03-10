@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process'
 import { createReadStream, existsSync } from 'node:fs'
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -16,6 +16,7 @@ const tempRoot = path.join(projectRoot, '.tmp', 'desktop-next')
 const frontendStatusPath = path.join(tempRoot, 'frontend-status.json')
 const smokeRequestPath = path.join(tempRoot, 'smoke-request.json')
 const smokeReportPath = path.join(tempRoot, 'smoke-report.json')
+const imageExts = new Set(['.jpg', '.jpeg', '.png', '.webp', '.bmp', '.tif', '.tiff'])
 
 function resolvePythonExecutable(): string {
   const candidates = [
@@ -66,6 +67,29 @@ function guessContentType(targetPath: string): string {
   if (ext === '.jpg' || ext === '.jpeg') return 'image/jpeg'
   if (ext === '.tif' || ext === '.tiff') return 'image/tiff'
   return 'application/octet-stream'
+}
+
+async function listImagesInFolder(folder: string, limit = 0): Promise<string[]> {
+  const targetFolder = path.resolve(String(folder || '').trim())
+  if (!targetFolder) {
+    throw new Error('folder is required')
+  }
+  if (!existsSync(targetFolder)) {
+    throw new Error(`folder not found (${targetFolder})`)
+  }
+
+  const entries = await readdir(targetFolder, { withFileTypes: true })
+  const items = entries
+    .filter((entry) => entry.isFile())
+    .map((entry) => entry.name)
+    .filter((name) => imageExts.has(path.extname(name).toLowerCase()))
+    .sort((left, right) => left.localeCompare(right, undefined, { sensitivity: 'base' }))
+    .map((name) => path.join(targetFolder, name))
+
+  if (limit > 0) {
+    return items.slice(0, limit)
+  }
+  return items
 }
 
 async function withPayloadFile(payload: unknown, run: (filePath: string) => Promise<BridgePayload>): Promise<BridgePayload> {
@@ -135,8 +159,9 @@ function desktopBridgeDevPlugin(): Plugin {
 
           if (req.method === 'GET' && routePath === '/list') {
             const folder = url.searchParams.get('folder') || ''
-            const limit = url.searchParams.get('limit') || '0'
-            jsonResponse(res, 200, await runBridgeCli(['list', '--folder', folder, '--limit', limit]))
+            const limit = Math.max(0, Number(url.searchParams.get('limit') || '0') || 0)
+            const items = await listImagesInFolder(folder, limit)
+            jsonResponse(res, 200, { ok: true, folder: path.resolve(folder), count: items.length, items })
             return
           }
 

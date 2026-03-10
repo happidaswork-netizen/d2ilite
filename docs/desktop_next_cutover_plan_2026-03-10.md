@@ -23,6 +23,15 @@
 
 这意味着当前可以切换的是“图片元数据主工作流”，不是“整个桌面应用全量切换”。
 
+当前 bridge 责任边界：
+
+1. Vite dev / Tauri 原生负责：
+   - 目录列表
+   - 本地图片预览
+2. Python backend 当前负责：
+   - 元数据读取
+   - 元数据保存
+
 ## 2. 交付门槛
 
 每次准备给其他机器或操作者使用前，先执行统一 gate：
@@ -42,9 +51,10 @@ Gate 当前会顺序执行：
 6. `desktop-next npm run build`
 7. `desktop-next npm run smoke:provider`
 8. `desktop-next npm run smoke:roles`
-9. `desktop_tauri_startup_smoke.py`
-10. `desktop_tauri_roundtrip_smoke.py`
-11. `desktop-next npm run tauri:build:debug`
+9. `desktop_vite_bridge_smoke.py`
+10. `desktop_tauri_startup_smoke.py`
+11. `desktop_tauri_roundtrip_smoke.py`
+12. `desktop-next npm run tauri:build:debug`
 
 通过后会生成报告：
 
@@ -109,7 +119,8 @@ cd d:\soft\gemini-business2api-workspace\d2ilite
 
 1. 结构、批量能力、Tauri 壳、回归 gate：已完成
 2. 可控切换边界：已完成
-3. 正式 installer / bridge 替换 / 抓取台迁移：未完成
+3. 临时 Python bridge 的责任面已缩小，但还未被完全替换
+4. 正式 installer / 抓取台迁移：未完成
 
 更直接地说：
 

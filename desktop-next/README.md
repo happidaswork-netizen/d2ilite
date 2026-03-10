@@ -10,13 +10,14 @@
 2. 读取单张图片元数据
 3. 编辑并保存结构化元数据
 4. 开发模式下直接预览本地图片
-5. 开发模式下通过 Python CLI bridge 访问真实后端
-6. `src-tauri/` 已初始化，可通过 Tauri 命令直接调用 Python bridge
+5. 开发模式下通过本地 Vite bridge 访问真实后端
+6. `src-tauri/` 已初始化，可通过 Tauri 命令承接本地目录扫描与元数据读写
 7. 编辑区已支持 `Profile / TITI / XMP / EXIF / IPTC / Match` 视图切换
 8. 已支持单图“图片原角色名 + 扮演角色名列表”结构化编辑
 9. 已支持目录级“原角色名 / 扮演角色名”筛选、勾选集维护和批量角色编辑
 10. 已补目录角色摘要索引 / 缓存，以及批量执行进度、跳过统计和失败项反馈
 11. 已补统一 release gate，并已验证 `tauri:build:debug` 产出桌面可执行文件
+12. 当前 Python bridge 已收窄为元数据读写职责，目录列表和图片预览不再依赖 Python
 
 ## 运行方式
 
@@ -75,7 +76,8 @@ npm run smoke:roles
 cd ..
 .\.venv\Scripts\python.exe scripts\desktop_tauri_startup_smoke.py
 .\.venv\Scripts\python.exe scripts\desktop_tauri_roundtrip_smoke.py
-.\\.venv\\Scripts\\python.exe scripts\\desktop_next_release_gate.py
+.\.venv\Scripts\python.exe scripts\desktop_vite_bridge_smoke.py
+.\.venv\Scripts\python.exe scripts\desktop_next_release_gate.py
 ```
 
 当前覆盖：
@@ -85,7 +87,8 @@ cd ..
 3. `tauri:dev` 启动链路（Vite + cargo run + Tauri 二进制启动）
 4. Tauri 壳内前端已切到 `tauri` provider，并完成启动期 `ping`
 5. Tauri 壳内完整 roundtrip：`ping/list/read/save/preview`
-6. 统一 release gate：完整回归矩阵 + `tauri:build:debug`
+6. Vite dev bridge：真实 `ping/list/read/preview`
+7. 统一 release gate：完整回归矩阵 + `tauri:build:debug`
 
 ## 交付与切换
 
@@ -130,3 +133,4 @@ d:\soft\gemini-business2api-workspace\d2ilite\desktop-next\src-tauri\target\debu
 5. 角色元数据当前已支持单图结构化编辑，以及目录级筛选、勾选和批量编辑
 6. 目录角色摘要索引 / 缓存与批量执行反馈已完成第一轮强化
 7. 当前已具备统一 gate 和调试构建产物，但正式 installer / 签名发布还没进入当前阶段
+8. Python backend 当前主要保留元数据读写语义，不再承担目录列表和图片预览
