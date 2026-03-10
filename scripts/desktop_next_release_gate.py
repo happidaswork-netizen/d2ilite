@@ -98,7 +98,6 @@ def main() -> int:
                     "metadata_writer.py",
                     "scripts/desktop_bridge_cli.py",
                     "scripts/desktop_metadata_backend.py",
-                    "scripts/desktop_metadata_backend_smoke.py",
                     "scripts/desktop_scraper_backend.py",
                     "scripts/desktop_scraper_backend_smoke.py",
                     "scripts/desktop_scraper_control_smoke.py",
@@ -112,12 +111,12 @@ def main() -> int:
         )
         steps.append(_run_step("phase0_contract_smoke", [str(python_exe), "scripts/phase0_contract_smoke.py"], REPO_ROOT))
         steps.append(_run_step("bridge_cli_smoke", [str(python_exe), "scripts/bridge_cli_smoke.py"], REPO_ROOT))
-        steps.append(_run_step("metadata_backend_smoke", [str(python_exe), "scripts/desktop_metadata_backend_smoke.py"], REPO_ROOT))
         steps.append(_run_step("scraper_backend_smoke", [str(python_exe), "scripts/desktop_scraper_backend_smoke.py"], REPO_ROOT))
         steps.append(_run_step("scraper_control_smoke", [str(python_exe), "scripts/desktop_scraper_control_smoke.py"], REPO_ROOT))
         steps.append(_run_step("cargo_check", ["cargo", "check", "--manifest-path", "desktop-next/src-tauri/Cargo.toml"], REPO_ROOT))
         steps.append(_run_step("npm_lint", [npm_cmd, "run", "lint"], DESKTOP_ROOT))
         steps.append(_run_step("npm_build", [npm_cmd, "run", "build"], DESKTOP_ROOT))
+        steps.append(_run_step("smoke_metadata", [npm_cmd, "run", "smoke:metadata"], DESKTOP_ROOT))
         steps.append(_run_step("vite_bridge_smoke", [str(python_exe), "scripts/desktop_vite_bridge_smoke.py"], REPO_ROOT))
         steps.append(_run_step("smoke_provider", [npm_cmd, "run", "smoke:provider"], DESKTOP_ROOT))
         steps.append(_run_step("smoke_roles", [npm_cmd, "run", "smoke:roles"], DESKTOP_ROOT))

@@ -8,6 +8,7 @@
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview",
+    "smoke:metadata": "node --experimental-strip-types --experimental-specifier-resolution=node ./scripts/nativeMetadataSmoke.ts",
     "smoke:provider": "node --experimental-strip-types --experimental-specifier-resolution=node ./scripts/bridgeProviderSmoke.ts",
     "smoke:roles": "node --experimental-strip-types --experimental-specifier-resolution=node ./scripts/batchRoleSmoke.ts",
     "tauri": "tauri",
@@ -17,6 +18,8 @@
   },
   "dependencies": {
     "@tauri-apps/api": "^2.10.1",
+    "exiftool-vendored": "^35.13.1",
+    "exiftool-vendored.exe": "^13.52.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0"
   },

@@ -17,10 +17,10 @@ const cases: SmokeCase[] = [
     expected: 'tauri',
   },
   {
-    name: 'vite python cli is used in dev when tauri is absent',
+    name: 'vite native bridge is used in dev when tauri is absent',
     hasTauriInvoke: false,
     isDev: true,
-    expected: 'vite-python-cli',
+    expected: 'vite-native',
   },
   {
     name: 'mock is used outside dev without tauri runtime',

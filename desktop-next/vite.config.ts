@@ -7,11 +7,16 @@ import { fileURLToPath } from 'node:url'
 import react from '@vitejs/plugin-react'
 import { defineConfig, type Plugin } from 'vite'
 
+import {
+  buildNativeMetadataPing,
+  readNativeMetadata,
+  saveNativeMetadata,
+} from './scripts/nativeMetadataBackend.ts'
+
 type BridgePayload = Record<string, unknown>
 
 const desktopRoot = path.dirname(fileURLToPath(import.meta.url))
 const projectRoot = path.resolve(desktopRoot, '..')
-const metadataBackendScriptPath = path.join(projectRoot, 'scripts', 'desktop_metadata_backend.py')
 const scraperBackendScriptPath = path.join(projectRoot, 'scripts', 'desktop_scraper_backend.py')
 const tempRoot = path.join(projectRoot, '.tmp', 'desktop-next')
 const frontendStatusPath = path.join(tempRoot, 'frontend-status.json')
@@ -143,10 +148,6 @@ function runPythonBackend(scriptPath: string, args: string[]): Promise<BridgePay
   })
 }
 
-function runMetadataBackend(args: string[]): Promise<BridgePayload> {
-  return runPythonBackend(metadataBackendScriptPath, args)
-}
-
 function runScraperBackend(args: string[]): Promise<BridgePayload> {
   return runPythonBackend(scraperBackendScriptPath, args)
 }
@@ -162,7 +163,7 @@ function desktopBridgeDevPlugin(): Plugin {
           const routePath = url.pathname
 
           if (req.method === 'GET' && routePath === '/ping') {
-            jsonResponse(res, 200, await runMetadataBackend(['ping']))
+            jsonResponse(res, 200, { ok: true, ...buildNativeMetadataPing() })
             return
           }
 
@@ -231,7 +232,7 @@ function desktopBridgeDevPlugin(): Plugin {
 
           if (req.method === 'GET' && routePath === '/read') {
             const filePath = url.searchParams.get('path') || ''
-            jsonResponse(res, 200, await runMetadataBackend(['read', '--path', filePath]))
+            jsonResponse(res, 200, { ok: true, ...(await readNativeMetadata(filePath)) })
             return
           }
 
@@ -242,10 +243,7 @@ function desktopBridgeDevPlugin(): Plugin {
             }
             const targetPath = String(body?.path || '').trim()
             const payload = body?.payload ?? {}
-            const response = await withPayloadFile(payload, (payloadFile) =>
-              runMetadataBackend(['save', '--path', targetPath, '--payload-file', payloadFile]),
-            )
-            jsonResponse(res, 200, response)
+            jsonResponse(res, 200, { ok: true, ...(await saveNativeMetadata(targetPath, payload as BridgePayload)) })
             return
           }
 

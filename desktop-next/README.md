@@ -17,7 +17,7 @@
 9. 已支持目录级“原角色名 / 扮演角色名”筛选、勾选集维护和批量角色编辑
 10. 已补目录角色摘要索引 / 缓存，以及批量执行进度、跳过统计和失败项反馈
 11. 已补统一 release gate，并已验证 `tauri:build:debug` 产出桌面可执行文件
-12. 当前 Python bridge 已收窄为元数据读写职责，目录列表和图片预览不再依赖 Python
+12. 元数据读写运行时已切到原生 `ExifTool`，不再依赖 `desktop_metadata_backend.py`
 13. 已新增新版公共抓取工作台：任务列表、进度表、任务概览、日志尾部与已有任务控制
 14. 抓取工作台运行时已接入专用 `desktop_scraper_backend.py`，可承接 `pause / continue / retry / rewrite`
 
@@ -55,9 +55,13 @@ npm run dev
 这些路由会在后台调用：
 
 ```powershell
-.\.venv\Scripts\python.exe scripts\desktop_metadata_backend.py
 .\.venv\Scripts\python.exe scripts\desktop_scraper_backend.py
 ```
+
+其中：
+
+1. `ping / read / save` 已改为本地原生 `ExifTool` runtime
+2. `scraper/default-root / scraper/workspace / scraper/action` 仍由 `desktop_scraper_backend.py` 承接
 
 ### 3. 启动 Tauri 开发壳
 
@@ -70,7 +74,7 @@ npm run tauri:dev
 当前 Tauri 壳会：
 
 1. 启动现有 Vite dev server
-2. 通过 `bridge_ping / bridge_list_images / bridge_read_metadata / bridge_save_metadata` 命令承接本地目录扫描，并调用 `scripts\desktop_metadata_backend.py`
+2. 通过 `bridge_ping / bridge_list_images / bridge_read_metadata / bridge_save_metadata` 命令承接本地目录扫描与原生 `ExifTool` 元数据读写
 3. 通过 `bridge_get_default_scraper_base_root / bridge_read_scraper_workspace / bridge_run_scraper_action` 命令承接抓取任务工作台，并调用 `scripts\desktop_scraper_backend.py`
 4. 通过 `convertFileSrc` 渲染本地图片预览
 
@@ -78,13 +82,13 @@ npm run tauri:dev
 
 ```powershell
 cd desktop-next
+npm run smoke:metadata
 npm run smoke:provider
 npm run smoke:roles
 cd ..
 .\.venv\Scripts\python.exe scripts\desktop_tauri_startup_smoke.py
 .\.venv\Scripts\python.exe scripts\desktop_tauri_roundtrip_smoke.py
 .\.venv\Scripts\python.exe scripts\desktop_vite_bridge_smoke.py
-.\.venv\Scripts\python.exe scripts\desktop_metadata_backend_smoke.py
 .\.venv\Scripts\python.exe scripts\desktop_scraper_backend_smoke.py
 .\.venv\Scripts\python.exe scripts\desktop_scraper_control_smoke.py
 .\.venv\Scripts\python.exe scripts\desktop_next_release_gate.py
@@ -98,7 +102,7 @@ cd ..
 4. Tauri 壳内前端已切到 `tauri` provider，并完成启动期 `ping`
 5. Tauri 壳内完整 roundtrip：`ping/list/read/save/preview`
 6. Vite dev bridge：真实 `ping/list/read/preview`，以及 `/api/bridge/scraper/action`
-7. Python metadata backend：真实 `ping/read/save`
+7. 原生 metadata runtime：真实 `ping/read/save`，含中文值与 `titi_json` 写入
 8. Python scraper backend：真实任务目录发现、任务概览、进度表、日志尾部与 `pause / continue / retry / rewrite`
 9. Python scraper control smoke：真实子进程启动、暂停、继续、重试、元数据重写
 10. 统一 release gate：完整回归矩阵 + `tauri:build:debug`
@@ -124,15 +128,15 @@ d:\soft\gemini-business2api-workspace\d2ilite\desktop-next\src-tauri\target\debu
 
 ## Provider 说明
 
-1. `vite-python-cli`
+1. `vite-native`
    - 仅在 `vite dev` 下可用
-   - 走本地 Vite bridge + Python metadata backend
+   - 走本地 Vite bridge + 原生 `ExifTool` metadata runtime
    - 支持真实图片预览与真实元数据读写
 
 2. `tauri`
    - 由 `src-tauri` 中的自定义命令承接
    - 目录扫描由 Tauri 原生承接
-   - 元数据读写调用 Python metadata backend
+   - 元数据读写由 Tauri + 原生 `ExifTool` 承接
    - 图片预览通过 Tauri `convertFileSrc`
 
 3. `mock`
@@ -141,11 +145,11 @@ d:\soft\gemini-business2api-workspace\d2ilite\desktop-next\src-tauri\target\debu
 ## 现阶段边界
 
 1. `src-tauri/` 已初始化，并已补上基础 smoke
-2. 当前元数据读写仍依赖仓库内的 `scripts/desktop_metadata_backend.py` 和本地 `.venv`
+2. 当前元数据读写已不再依赖 `scripts/desktop_metadata_backend.py`
 3. 当前已确认 Tauri 壳内前端会切到 `tauri` provider，并已补完整 `list/read/save/preview` 端到端 smoke
 4. 编辑区已能查看 bridge 返回的 `titi_json / other_xmp / other_exif / other_iptc / matched_row` 原始内容
 5. 角色元数据当前已支持单图结构化编辑，以及目录级筛选、勾选和批量编辑
 6. 目录角色摘要索引 / 缓存与批量执行反馈已完成第一轮强化
 7. 当前已具备统一 gate 和调试构建产物，但正式 installer / 签名发布还没进入当前阶段
-8. Python backend 当前主要保留元数据读写语义，不再承担目录列表和图片预览
+8. 当前剩余 Python runtime 主要集中在 scraper backend 和旧抓取引擎，不再承担元数据读写
 9. 抓取工作台当前已迁移“监控面 + 已有任务控制”；新任务启动表单、复核审计和更完整任务配置仍留在旧版

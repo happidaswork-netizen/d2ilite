@@ -122,7 +122,7 @@ def main() -> int:
             status_ready = (
                 status_report.get("provider") == "tauri"
                 and status_report.get("ping_ok") is True
-                and status_report.get("bridge_provider") == "python-cli"
+                and status_report.get("bridge_provider") == "native-exiftool"
             )
             if log_ready and status_ready:
                 ready = True

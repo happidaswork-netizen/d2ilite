@@ -19,8 +19,8 @@
 13. 当前已补“稳定基线”文档，可直接作为下一阶段架构收敛的起点。
 14. 目录角色摘要索引 / 缓存与批量执行反馈已完成第一轮强化，下一阶段应直接进入交付与切换准备。
 15. 交付与切换准备现已完成：统一 release gate、调试构建路径和切换边界都已落盘。
-16. 当前 Python bridge 已收窄为元数据读写职责，目录列表和图片预览已由 Vite / Tauri 原生承接。
-17. 元数据读写运行时已切到专用 `desktop_metadata_backend.py`，`desktop_bridge_cli.py` 退回兼容层。
+16. 元数据读写运行时已切到原生 `ExifTool`，目录列表、图片预览和 metadata 都已由 Vite / Tauri 原生承接。
+17. `desktop_metadata_backend.py` 与 `desktop_bridge_cli.py` 当前仅保留为兼容脚本 / 参考实现。
 18. 新版公共抓取工作台已完成第一轮可用迁移：任务列表、任务概览、进度表、日志尾部和已有任务控制已进入 `desktop-next`。
 
 ## 2. 本轮累计完成内容
@@ -51,10 +51,10 @@
 已完成的前端与桥接工作：
 
 1. 重写 `desktop-next` 工作台界面，形成“固定操作栏 + 左侧列表/预览 + 右侧元数据编辑”的可用布局。
-2. 新增开发态 bridge provider：`vite-python-cli`。
+2. 新增开发态 bridge provider：`vite-native`。
 3. 在 `vite.config.ts` 中加入 `/api/bridge/*` 中间件：
    - `list / preview` 由 Vite 本地承接
-   - `ping / read / save` 调用 `scripts/desktop_metadata_backend.py`
+   - `ping / read / save` 由本地原生 `ExifTool` runtime 承接
 4. 已支持：
    - `ping`
    - `list`
@@ -101,10 +101,9 @@
    - 调试构建产物：`desktop-next/src-tauri/target/debug/d2i-lite-next.exe`
    - 单独切换边界文档：`docs/desktop_next_cutover_plan_2026-03-10.md`
 12. bridge 责任边界已收窄：
-   - `list` 和 `preview` 不再依赖 Python CLI
-   - Python backend 当前主要保留 `read/save`
+   - `list / preview / read / save` 都已不再依赖 Python runtime
 13. 运行时入口已更新：
-   - `desktop_metadata_backend.py`：当前 `read/save/ping` runtime backend
+   - `desktop_metadata_backend.py`：兼容脚本与旧 smoke 保留
    - `desktop_bridge_cli.py`：兼容脚本与旧 smoke 保留
 14. 抓取工作台当前已新增：
    - `desktop_scraper_backend.py`：任务目录与监控 snapshot runtime backend
@@ -137,11 +136,10 @@
 
 1. `services/desktop_metadata_backend_service.py`
 2. `scripts/desktop_metadata_backend.py`
-3. `scripts/desktop_metadata_backend_smoke.py`
-4. `services/desktop_scraper_backend_service.py`
-5. `scripts/desktop_scraper_backend.py`
-6. `scripts/desktop_scraper_backend_smoke.py`
-7. `scripts/desktop_scraper_control_smoke.py`
+3. `services/desktop_scraper_backend_service.py`
+4. `scripts/desktop_scraper_backend.py`
+5. `scripts/desktop_scraper_backend_smoke.py`
+6. `scripts/desktop_scraper_control_smoke.py`
 
 ### 3.4 文档
 
@@ -160,10 +158,9 @@
 Python 侧：
 
 ```powershell
-.\.venv\Scripts\python.exe -m py_compile app.py services\task_service.py services\task_orchestration_service.py services\scraper_monitor_service.py services\public_scraper_config_service.py services\desktop_metadata_backend_service.py services\desktop_scraper_backend_service.py scripts\phase0_contract_smoke.py scripts\desktop_metadata_backend.py scripts\desktop_metadata_backend_smoke.py scripts\desktop_scraper_backend.py scripts\desktop_scraper_backend_smoke.py scripts\desktop_scraper_control_smoke.py
+.\.venv\Scripts\python.exe -m py_compile app.py services\task_service.py services\task_orchestration_service.py services\scraper_monitor_service.py services\public_scraper_config_service.py services\desktop_metadata_backend_service.py services\desktop_scraper_backend_service.py scripts\phase0_contract_smoke.py scripts\desktop_metadata_backend.py scripts\desktop_scraper_backend.py scripts\desktop_scraper_backend_smoke.py scripts\desktop_scraper_control_smoke.py
 .\.venv\Scripts\python.exe scripts\phase0_contract_smoke.py
 .\.venv\Scripts\python.exe scripts\bridge_cli_smoke.py
-.\.venv\Scripts\python.exe scripts\desktop_metadata_backend_smoke.py
 .\.venv\Scripts\python.exe scripts\desktop_scraper_backend_smoke.py
 .\.venv\Scripts\python.exe scripts\desktop_scraper_control_smoke.py
 ```
@@ -173,9 +170,8 @@ Python 侧：
 1. `py_compile` 通过
 2. `phase0_contract_smoke.py` 通过
 3. `bridge_cli_smoke.py` 通过
-4. `desktop_metadata_backend_smoke.py` 通过
-5. `desktop_scraper_backend_smoke.py` 通过
-6. `desktop_scraper_control_smoke.py` 通过
+4. `desktop_scraper_backend_smoke.py` 通过
+5. `desktop_scraper_control_smoke.py` 通过
 
 前端侧：
 
@@ -191,14 +187,15 @@ npm run build
 2. `build` 通过
 3. `cargo check --manifest-path desktop-next/src-tauri/Cargo.toml` 通过
 4. `npm run tauri:dev` 启动链路通过（Vite + cargo run + src-tauri watch）
-5. `npm run smoke:provider` 通过
-6. `npm run smoke:roles` 通过
-7. `.\.venv\Scripts\python.exe scripts/desktop_tauri_startup_smoke.py` 通过
-8. 已确认 Tauri 壳内前端切到 `tauri` provider，并完成启动期 `ping`
-9. `.\.venv\Scripts\python.exe scripts/desktop_tauri_roundtrip_smoke.py` 通过
-10. 已确认 Tauri 壳内 `ping/list/read/save/preview` roundtrip 可跑通
-11. 当前 `desktop-next` 编辑区已能展示 bridge 返回的原始元数据分组，不再只有表单字段
-12. `desktop_next_release_gate.py` 通过
+5. `npm run smoke:metadata` 通过
+6. `npm run smoke:provider` 通过
+7. `npm run smoke:roles` 通过
+8. `.\.venv\Scripts\python.exe scripts/desktop_tauri_startup_smoke.py` 通过
+9. 已确认 Tauri 壳内前端切到 `tauri` provider，并完成启动期 `ping`
+10. `.\.venv\Scripts\python.exe scripts/desktop_tauri_roundtrip_smoke.py` 通过
+11. 已确认 Tauri 壳内 `ping/list/read/save/preview` roundtrip 可跑通
+12. 当前 `desktop-next` 编辑区已能展示 bridge 返回的原始元数据分组，不再只有表单字段
+13. `desktop_next_release_gate.py` 通过
 
 开发态桥接已额外做过端到端检查：
 
@@ -251,12 +248,12 @@ npm run dev
 ## 7. 当前边界
 
 1. `desktop-next` 现在已同时具备 React 开发态工作台和已初始化的 Tauri 壳。
-2. Tauri 模式下的 bridge 仍依赖仓库内的 Python CLI 与 `.venv`。
+2. Tauri 模式下的 metadata bridge 已不再依赖 Python CLI；scraper backend 仍依赖 `.venv`。
 3. 真实桥接当前已同时支持 Vite dev server 中转和 Tauri 自定义命令两条链路。
 4. Tk 老界面仍可独立使用，并且仍是完整功能入口。
 
 ## 8. 下一步接力点
 
-1. 下一步直接在两个方向里二选一：继续迁移抓取新任务启动表单 / 复核队列，或继续替换剩余 Python metadata backend。
+1. 下一步直接在两个方向里二选一：继续迁移抓取新任务启动表单 / 复核队列，或继续替换剩余 Python scraper backend。
 2. 不再回头扩写 Tk 侧或继续堆新的临时过渡层。
 3. 正式 installer / 签名发布仍是后续独立收尾项。

@@ -41,8 +41,8 @@
 8. `src-tauri` 已可承接最小桌面壳运行
 9. Tauri 壳内 `ping/list/read/save/preview` 已通过端到端 roundtrip
 10. 已补统一 release gate，并已验证 `tauri:build:debug` 调试构建产物
-11. 当前 Python bridge 已收窄为元数据读写职责，目录列表和图片预览不再经它转发
-12. 元数据读写运行时已切到专用 `desktop_metadata_backend.py`，`desktop_bridge_cli.py` 退回兼容层
+11. 元数据读写运行时已切到原生 `ExifTool`，目录列表、图片预览和 metadata 都不再经 Python 转发
+12. `desktop_bridge_cli.py` 与 `desktop_metadata_backend.py` 当前仅保留为兼容脚本 / 参考实现，不再承担 `desktop-next` 运行时职责
 13. 新版公共抓取工作台已完成第一轮可用迁移：任务列表、任务概览、进度表、日志尾部与已有任务控制
 
 ## 3. 当前结构边界
@@ -69,16 +69,16 @@
    - 目录角色摘要索引 / 缓存
    - 抓取工作台 bridge snapshot 与控制动作
 5. `services/` 与 Python 写入链路
-   - 仍作为当前字段语义和写入规则基线
+   - 仍作为旧版字段语义与兼容参考基线
    - 抓取工作台当前由 `desktop_scraper_backend.py` 承接监控 snapshot 与已有任务控制
 6. `src-tauri/`
-   - 作为当前桌面壳和最小命令桥接
+   - 作为当前桌面壳与原生 metadata / scraper 命令桥接
 
 当前仍然属于“临时但可用”的边界：
 
 1. `scripts/desktop_bridge_cli.py`
-2. `vite.config.ts` 中的 `/api/bridge/*`
-3. `src-tauri` 中直接转调 Python CLI 的薄命令
+2. `scripts/desktop_metadata_backend.py`
+3. `vite.config.ts` 中的 `/api/bridge/*`
 
 这些可以继续用于开发与回归，但不再视为长期架构终点。
 
@@ -88,16 +88,16 @@
 
 ```powershell
 cd d:\soft\gemini-business2api-workspace\d2ilite
-.\.venv\Scripts\python.exe -m py_compile app.py services\metadata_service.py services\desktop_metadata_backend_service.py services\desktop_scraper_backend_service.py metadata_manager.py metadata_writer.py scripts\desktop_bridge_cli.py scripts\desktop_metadata_backend.py scripts\desktop_metadata_backend_smoke.py scripts\desktop_scraper_backend.py scripts\desktop_scraper_backend_smoke.py scripts\desktop_scraper_control_smoke.py scripts\desktop_tauri_startup_smoke.py scripts\desktop_tauri_roundtrip_smoke.py scripts\desktop_vite_bridge_smoke.py
+.\.venv\Scripts\python.exe -m py_compile app.py services\metadata_service.py services\desktop_metadata_backend_service.py services\desktop_scraper_backend_service.py metadata_manager.py metadata_writer.py scripts\desktop_bridge_cli.py scripts\desktop_metadata_backend.py scripts\desktop_scraper_backend.py scripts\desktop_scraper_backend_smoke.py scripts\desktop_scraper_control_smoke.py scripts\desktop_tauri_startup_smoke.py scripts\desktop_tauri_roundtrip_smoke.py scripts\desktop_vite_bridge_smoke.py scripts\desktop_next_release_gate.py
 .\.venv\Scripts\python.exe scripts\phase0_contract_smoke.py
 .\.venv\Scripts\python.exe scripts\bridge_cli_smoke.py
-.\.venv\Scripts\python.exe scripts\desktop_metadata_backend_smoke.py
 .\.venv\Scripts\python.exe scripts\desktop_scraper_backend_smoke.py
 .\.venv\Scripts\python.exe scripts\desktop_scraper_control_smoke.py
 cargo check --manifest-path desktop-next/src-tauri/Cargo.toml
 cd desktop-next
 npm run lint
 npm run build
+npm run smoke:metadata
 npm run smoke:provider
 npm run smoke:roles
 cd ..
@@ -122,8 +122,8 @@ cd ..
 下一阶段从这里接：
 
 1. 在“图片元数据主工作流”范围内，当前已经具备可受控切换条件
-2. Python metadata backend 的剩余职责已收窄到元数据读写，这也是下一步替换的明确边界
-3. 抓取工作台当前已完成监控面 + 已有任务控制迁移，剩余新任务启动表单与复核 / 审计迁移
+2. 抓取工作台当前已完成监控面 + 已有任务控制迁移，剩余新任务启动表单与复核 / 审计迁移
+3. 当前剩余 Python runtime 主要集中在 scraper backend 与旧抓取引擎
 4. 正式 installer / 签名发布仍是后续独立工作
 
 ## 7. 当前完成度判断
@@ -134,7 +134,7 @@ cd ..
 2. 长期结构第一轮收敛：已完成
 3. 目录索引 / 缓存与批量反馈强化：已完成第一轮
 4. 交付与切换准备：已完成
-5. 替换临时 bridge：已缩到 metadata backend + scraper backend 两条 Python 运行时边界
+5. 替换临时 bridge：已收口到 scraper backend 这一条 Python 运行时边界
 
 更直接的判断：
 

@@ -40,7 +40,7 @@ export function resolveDesktopBridgeProvider(hasTauriInvoke: boolean, isDev: boo
     return 'tauri'
   }
   if (isDev) {
-    return 'vite-python-cli'
+    return 'vite-native'
   }
   return 'mock'
 }
@@ -396,7 +396,7 @@ function createTauriBridge(invokeImpl: TauriInvoke): DesktopBridge {
 
 function createHttpBridge(): DesktopBridge {
   return {
-    provider: 'vite-python-cli',
+    provider: 'vite-native',
     async ping(): Promise<BridgeHealth> {
       return fetchJson<BridgeHealth>('/api/bridge/ping')
     },
@@ -479,7 +479,7 @@ export function createDesktopBridge(): DesktopBridge {
   if (provider === 'tauri' && invokeImpl) {
     return createTauriBridge(invokeImpl)
   }
-  if (provider === 'vite-python-cli') {
+  if (provider === 'vite-native') {
     return createHttpBridge()
   }
   return createMockBridge()

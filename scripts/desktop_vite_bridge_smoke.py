@@ -192,7 +192,7 @@ def main() -> int:
     try:
         with tempfile.TemporaryDirectory(prefix="d2i_vite_bridge_") as td:
             temp_root = Path(td)
-            image_path = temp_root / "样例.jpg"
+            image_path = temp_root / "sample.jpg"
             Image.new("RGB", (32, 32), (200, 200, 200)).save(image_path, format="JPEG", quality=90)
             scraper_base_root = temp_root / "public_archive"
             scraper_task_root = _prepare_scraper_task(scraper_base_root)
@@ -238,6 +238,11 @@ def main() -> int:
             preview_ok = False
             scraper_ok = False
             control_ok = False
+            last_ping: dict = {}
+            last_list: dict = {}
+            last_read: dict = {}
+            last_scraper: dict = {}
+            last_action: dict = {}
             try:
                 while time.time() < deadline:
                     while True:
@@ -255,13 +260,16 @@ def main() -> int:
 
                     try:
                         ping = _request_json(f"{BASE_URL}/api/bridge/ping")
-                        ping_ok = str(ping.get("provider", "")) == "python-cli"
+                        last_ping = ping
+                        ping_ok = str(ping.get("provider", "")) == "native-exiftool"
                         folder_qs = urllib.parse.urlencode({"folder": str(temp_root), "limit": "10"})
                         listed = _request_json(f"{BASE_URL}/api/bridge/list?{folder_qs}")
+                        last_list = listed
                         if not isinstance(listed.get("items"), list) or str(image_path) not in listed.get("items", []):
                             raise RuntimeError(f"list response invalid: {listed}")
                         read_qs = urllib.parse.urlencode({"path": str(image_path)})
                         read = _request_json(f"{BASE_URL}/api/bridge/read?{read_qs}")
+                        last_read = read
                         if str(read.get("item", {}).get("filename", "")) != image_path.name:
                             raise RuntimeError(f"read response invalid: {read}")
                         preview_ok = _request_preview(f"{BASE_URL}/api/bridge/preview?{read_qs}")
@@ -273,6 +281,7 @@ def main() -> int:
                             }
                         )
                         scraper = _request_json(f"{BASE_URL}/api/bridge/scraper/workspace?{scraper_qs}")
+                        last_scraper = scraper
                         scraper_ok = (
                             str(scraper.get("selected_root", "")) == str(scraper_task_root)
                             and int(scraper.get("task_count", 0)) == 1
@@ -292,6 +301,7 @@ def main() -> int:
                                     },
                                 },
                             )
+                            last_action = action_payload
                             detail = (action_payload.get("workspace") or {}).get("detail") or {}
                             control_ok = bool(detail.get("session_running")) and int(detail.get("pid", 0) or 0) > 0
                             if control_ok:
@@ -321,6 +331,22 @@ def main() -> int:
 
             if not ping_ok or not preview_ok or not scraper_ok or not control_ok:
                 _safe_print("[ERROR] desktop vite bridge smoke failed")
+                _safe_print(
+                    json.dumps(
+                        {
+                            "ping_ok": ping_ok,
+                            "preview_ok": preview_ok,
+                            "scraper_ok": scraper_ok,
+                            "control_ok": control_ok,
+                            "ping": last_ping,
+                            "list": last_list,
+                            "read": last_read,
+                            "scraper": last_scraper,
+                            "action": last_action,
+                        },
+                        ensure_ascii=False,
+                    )
+                )
                 if lines:
                     _safe_print(_strip_ansi("\n".join(lines)))
                 return 1

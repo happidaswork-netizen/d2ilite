@@ -1,4 +1,4 @@
-export type BridgeProvider = 'mock' | 'tauri' | 'vite-python-cli'
+export type BridgeProvider = 'mock' | 'tauri' | 'vite-native'
 
 export interface BridgeHealth {
   provider: string

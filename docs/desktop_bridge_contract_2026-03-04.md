@@ -17,7 +17,7 @@ python scripts/desktop_bridge_cli.py ping
 返回示例：
 
 ```json
-{"ok": true, "provider": "python-cli", "version": "phase1-bridge-v1"}
+{"ok": true, "provider": "native-exiftool", "version": "metadata-native-v1"}
 ```
 
 ## 2) list

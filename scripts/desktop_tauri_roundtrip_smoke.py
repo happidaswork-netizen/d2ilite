@@ -162,7 +162,7 @@ def main() -> int:
                 report.get("smoke_id") == request["smoke_id"]
                 and report.get("provider") == "tauri"
                 and report.get("ping_ok") is True
-                and report.get("bridge_provider") == "python-cli"
+                and report.get("bridge_provider") == "native-exiftool"
                 and report.get("ok") is True
                 and report.get("list_ok") is True
                 and report.get("read_ok") is True
