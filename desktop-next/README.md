@@ -18,6 +18,8 @@
 10. 已补目录角色摘要索引 / 缓存，以及批量执行进度、跳过统计和失败项反馈
 11. 已补统一 release gate，并已验证 `tauri:build:debug` 产出桌面可执行文件
 12. 当前 Python bridge 已收窄为元数据读写职责，目录列表和图片预览不再依赖 Python
+13. 已新增新版公共抓取工作台：任务列表、进度表、任务概览和日志尾部
+14. 抓取工作台运行时已接入专用 `desktop_scraper_backend.py`
 
 ## 运行方式
 
@@ -46,11 +48,14 @@ npm run dev
 - `GET /api/bridge/read`
 - `POST /api/bridge/save`
 - `GET /api/bridge/preview`
+- `GET /api/bridge/scraper/default-root`
+- `GET /api/bridge/scraper/workspace`
 
 这些路由会在后台调用：
 
 ```powershell
 .\.venv\Scripts\python.exe scripts\desktop_metadata_backend.py
+.\.venv\Scripts\python.exe scripts\desktop_scraper_backend.py
 ```
 
 ### 3. 启动 Tauri 开发壳
@@ -65,7 +70,8 @@ npm run tauri:dev
 
 1. 启动现有 Vite dev server
 2. 通过 `bridge_ping / bridge_list_images / bridge_read_metadata / bridge_save_metadata` 命令承接本地目录扫描，并调用 `scripts\desktop_metadata_backend.py`
-3. 通过 `convertFileSrc` 渲染本地图片预览
+3. 通过 `bridge_get_default_scraper_base_root / bridge_read_scraper_workspace` 命令承接抓取任务工作台，并调用 `scripts\desktop_scraper_backend.py`
+4. 通过 `convertFileSrc` 渲染本地图片预览
 
 ## 冒烟检查
 
@@ -78,6 +84,7 @@ cd ..
 .\.venv\Scripts\python.exe scripts\desktop_tauri_roundtrip_smoke.py
 .\.venv\Scripts\python.exe scripts\desktop_vite_bridge_smoke.py
 .\.venv\Scripts\python.exe scripts\desktop_metadata_backend_smoke.py
+.\.venv\Scripts\python.exe scripts\desktop_scraper_backend_smoke.py
 .\.venv\Scripts\python.exe scripts\desktop_next_release_gate.py
 ```
 
@@ -90,7 +97,8 @@ cd ..
 5. Tauri 壳内完整 roundtrip：`ping/list/read/save/preview`
 6. Vite dev bridge：真实 `ping/list/read/preview`
 7. Python metadata backend：真实 `ping/read/save`
-8. 统一 release gate：完整回归矩阵 + `tauri:build:debug`
+8. Python scraper backend：真实任务目录发现、任务概览、进度表与日志尾部
+9. 统一 release gate：完整回归矩阵 + `tauri:build:debug`
 
 ## 交付与切换
 
@@ -137,3 +145,4 @@ d:\soft\gemini-business2api-workspace\d2ilite\desktop-next\src-tauri\target\debu
 6. 目录角色摘要索引 / 缓存与批量执行反馈已完成第一轮强化
 7. 当前已具备统一 gate 和调试构建产物，但正式 installer / 签名发布还没进入当前阶段
 8. Python backend 当前主要保留元数据读写语义，不再承担目录列表和图片预览
+9. 抓取工作台当前先迁移了“监控面”，启动 / 继续 / 重试 / 暂停控制还没进入新版

@@ -9,7 +9,7 @@
 2. `app.py` 当前主要保留 Tk UI、事件绑定和少量界面协调。
 3. 契约回归可执行：`scripts/phase0_contract_smoke.py`、`scripts/bridge_cli_smoke.py`。
 4. `desktop-next/` 已具备开发态最小闭环：目录浏览、图片预览、元数据读取与保存。
-5. `desktop-next` 开发模式下已通过 `/api/bridge/*` 接入本地 Python CLI bridge。
+5. `desktop-next` 开发模式下已通过 `/api/bridge/*` 接入本地 Python backends。
 6. `desktop-next/src-tauri` 已初始化，并已接入最小 Tauri 命令桥接。
 7. `npm run tauri:dev` 启动链路已验证可起。
 8. 已补基础 smoke：provider 选择 + `tauri:dev` 启动链路。
@@ -25,6 +25,7 @@
 18. 已补统一 release gate，并已验证 `tauri:build:debug` 调试构建产物与切换边界。
 19. 当前 Python bridge 已收窄为元数据读写职责，目录列表和图片预览已由 Vite / Tauri 原生承接。
 20. 元数据读写运行时已切到专用 `desktop_metadata_backend.py`，`desktop_bridge_cli.py` 退回兼容层。
+21. 新版公共抓取工作台已起步：`desktop-next` 已能读取任务目录、展示任务列表、进度表和日志尾部。
 
 ## 1. 目标与原则
 
@@ -84,8 +85,8 @@
 1. 新建 `desktop-next/` 前端工程，并初始化 `src-tauri/`。
 2. 前端实现基础布局：顶部动作区、左预览、右元数据面板、底部状态栏。
 3. 打通开发态最小闭环：打开目录 -> 读取元数据 -> 前端展示 -> 保存回图片。
-4. 开发模式通过 Vite 中间件转发 `/api/bridge/*` 到 `scripts/desktop_bridge_cli.py`。
-5. Tauri 壳已具备最小命令桥接：`bridge_ping / bridge_list_images / bridge_read_metadata / bridge_save_metadata`。
+4. 开发模式通过 Vite 中间件转发 `/api/bridge/*` 到 `scripts/desktop_metadata_backend.py` 与 `scripts/desktop_scraper_backend.py`。
+5. Tauri 壳已具备最小命令桥接：`bridge_ping / bridge_list_images / bridge_read_metadata / bridge_save_metadata / bridge_get_default_scraper_base_root / bridge_read_scraper_workspace`。
 
 验收：
 
@@ -127,6 +128,8 @@
 ## Phase 4：抓取与复核工作台整合（1-2 周）
 
 目标：把公共抓取监控、失败重试、复核队列搬到新 UI。
+
+状态：已起步（2026-03-10，监控面已迁入 `desktop-next`）
 
 清单：
 
@@ -201,5 +204,5 @@
 ## 7. 下一步（立即执行）
 
 1. 当前图片元数据工作台已经达到可交付、可受控切换状态。
-2. 下一步再决定是先替换剩余的 Python metadata backend，还是先推进更高阶工作台能力。
+2. 抓取工作台已完成第一轮只读迁移，下一步决定是否继续迁移 `start / continue / retry / pause` 控制。
 3. 正式 installer / 签名发布仍是后续独立工作。

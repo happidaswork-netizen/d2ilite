@@ -16,9 +16,10 @@
    - 原始元数据查看
    - 单图角色结构化编辑
    - 目录级角色筛选、勾选和批量编辑
+   - 公共抓取任务目录浏览、任务概览、进度表、日志尾部
 2. 旧版继续负责：
-   - 公共抓取流程
-   - 失败重试与任务生命周期
+   - 公共抓取启动控制
+   - 失败重试与任务生命周期控制
    - 复核队列与审计工作台
 
 这意味着当前可以切换的是“图片元数据主工作流”，不是“整个桌面应用全量切换”。
@@ -31,10 +32,13 @@
 2. Python backend 当前负责：
    - 元数据读取
    - 元数据保存
+   - 抓取任务目录与监控 snapshot
 
 当前 Python backend 入口：
 
 `d:\soft\gemini-business2api-workspace\d2ilite\scripts\desktop_metadata_backend.py`
+
+`d:\soft\gemini-business2api-workspace\d2ilite\scripts\desktop_scraper_backend.py`
 
 ## 2. 交付门槛
 
@@ -57,9 +61,10 @@ Gate 当前会顺序执行：
 8. `desktop-next npm run smoke:roles`
 9. `desktop_vite_bridge_smoke.py`
 10. `desktop_metadata_backend_smoke.py`
-11. `desktop_tauri_startup_smoke.py`
-12. `desktop_tauri_roundtrip_smoke.py`
-13. `desktop-next npm run tauri:build:debug`
+11. `desktop_scraper_backend_smoke.py`
+12. `desktop_tauri_startup_smoke.py`
+13. `desktop_tauri_roundtrip_smoke.py`
+14. `desktop-next npm run tauri:build:debug`
 
 通过后会生成报告：
 
@@ -91,7 +96,7 @@ npm run tauri:build:debug
 当前推荐操作方式：
 
 1. 图片元数据工作流默认用 `desktop-next`
-2. 抓取、复核、任务恢复继续用旧版 `app.py`
+2. 抓取启动、重试、暂停、复核与任务恢复继续用旧版 `app.py`
 3. 不做“单机只留新版”的激进切换
 
 启动命令：

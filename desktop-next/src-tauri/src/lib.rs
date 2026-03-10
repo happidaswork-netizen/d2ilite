@@ -26,6 +26,10 @@ fn metadata_backend_script_path(root: &Path) -> PathBuf {
     root.join("scripts").join("desktop_metadata_backend.py")
 }
 
+fn scraper_backend_script_path(root: &Path) -> PathBuf {
+    root.join("scripts").join("desktop_scraper_backend.py")
+}
+
 fn resolve_python_executable(root: &Path) -> PathBuf {
     let candidates = [
         root.join(".venv").join("Scripts").join("python.exe"),
@@ -99,23 +103,22 @@ fn list_images_in_folder(folder: &Path, limit: usize) -> Result<Vec<String>, Str
         .collect())
 }
 
-fn run_metadata_backend(args: &[String]) -> Result<Value, String> {
+fn run_python_backend(script_path: &Path, args: &[String]) -> Result<Value, String> {
     let root = project_root();
-    let script_path = metadata_backend_script_path(&root);
     if !script_path.exists() {
         return Err(format!(
-            "metadata backend script not found: {}",
+            "backend script not found: {}",
             script_path.display()
         ));
     }
 
     let output = Command::new(resolve_python_executable(&root))
-        .arg(&script_path)
+        .arg(script_path)
         .args(args)
         .current_dir(&root)
         .env("PYTHONUTF8", "1")
         .output()
-        .map_err(|error| format!("failed to run bridge cli: {error}"))?;
+        .map_err(|error| format!("failed to run backend script: {error}"))?;
 
     let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
@@ -139,6 +142,18 @@ fn run_metadata_backend(args: &[String]) -> Result<Value, String> {
         return Err(parse_bridge_error(&payload));
     }
     Ok(payload)
+}
+
+fn run_metadata_backend(args: &[String]) -> Result<Value, String> {
+    let root = project_root();
+    let script_path = metadata_backend_script_path(&root);
+    run_python_backend(&script_path, args)
+}
+
+fn run_scraper_backend(args: &[String]) -> Result<Value, String> {
+    let root = project_root();
+    let script_path = scraper_backend_script_path(&root);
+    run_python_backend(&script_path, args)
 }
 
 fn write_payload_temp_file(payload: &Value) -> Result<PathBuf, String> {
@@ -178,6 +193,31 @@ fn bridge_read_metadata(path: String) -> Result<Value, String> {
 }
 
 #[tauri::command]
+fn bridge_get_default_scraper_base_root() -> Result<Value, String> {
+    run_scraper_backend(&[String::from("default-root")])
+}
+
+#[tauri::command]
+fn bridge_read_scraper_workspace(
+    base_root: String,
+    selected_root: Option<String>,
+    progress_limit: Option<i64>,
+    log_lines: Option<i64>,
+) -> Result<Value, String> {
+    run_scraper_backend(&[
+        String::from("workspace"),
+        String::from("--base-root"),
+        base_root,
+        String::from("--selected-root"),
+        selected_root.unwrap_or_default(),
+        String::from("--progress-limit"),
+        progress_limit.unwrap_or(300).max(20).to_string(),
+        String::from("--log-lines"),
+        log_lines.unwrap_or(80).max(20).to_string(),
+    ])
+}
+
+#[tauri::command]
 fn bridge_save_metadata(path: String, payload: Value) -> Result<Value, String> {
     let payload_file = write_payload_temp_file(&payload)?;
     let result = run_metadata_backend(&[
@@ -198,6 +238,8 @@ pub fn run() {
             bridge_ping,
             bridge_list_images,
             bridge_read_metadata,
+            bridge_get_default_scraper_base_root,
+            bridge_read_scraper_workspace,
             bridge_save_metadata,
         ])
         .setup(|app| {

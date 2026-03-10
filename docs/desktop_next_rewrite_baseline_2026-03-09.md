@@ -43,6 +43,7 @@
 10. 已补统一 release gate，并已验证 `tauri:build:debug` 调试构建产物
 11. 当前 Python bridge 已收窄为元数据读写职责，目录列表和图片预览不再经它转发
 12. 元数据读写运行时已切到专用 `desktop_metadata_backend.py`，`desktop_bridge_cli.py` 退回兼容层
+13. 新版公共抓取工作台已完成第一轮迁移：任务列表、任务概览、进度表、日志尾部
 
 ## 3. 当前结构边界
 
@@ -55,6 +56,7 @@
    - `library`
    - `metadata`
    - `batch`
+   - `scraper`
 3. `domain/`
    - 元数据表单模型
    - 角色规则
@@ -65,8 +67,10 @@
    - smoke roundtrip
    - 目录偏好读写
    - 目录角色摘要索引 / 缓存
+   - 抓取工作台 bridge snapshot
 5. `services/` 与 Python 写入链路
    - 仍作为当前字段语义和写入规则基线
+   - 抓取工作台当前由 `desktop_scraper_backend.py` 承接监控 snapshot
 6. `src-tauri/`
    - 作为当前桌面壳和最小命令桥接
 
@@ -84,10 +88,11 @@
 
 ```powershell
 cd d:\soft\gemini-business2api-workspace\d2ilite
-.\.venv\Scripts\python.exe -m py_compile app.py services\metadata_service.py services\desktop_metadata_backend_service.py metadata_manager.py metadata_writer.py scripts\desktop_bridge_cli.py scripts\desktop_metadata_backend.py scripts\desktop_metadata_backend_smoke.py scripts\desktop_tauri_startup_smoke.py scripts\desktop_tauri_roundtrip_smoke.py scripts\desktop_vite_bridge_smoke.py
+.\.venv\Scripts\python.exe -m py_compile app.py services\metadata_service.py services\desktop_metadata_backend_service.py services\desktop_scraper_backend_service.py metadata_manager.py metadata_writer.py scripts\desktop_bridge_cli.py scripts\desktop_metadata_backend.py scripts\desktop_metadata_backend_smoke.py scripts\desktop_scraper_backend.py scripts\desktop_scraper_backend_smoke.py scripts\desktop_tauri_startup_smoke.py scripts\desktop_tauri_roundtrip_smoke.py scripts\desktop_vite_bridge_smoke.py
 .\.venv\Scripts\python.exe scripts\phase0_contract_smoke.py
 .\.venv\Scripts\python.exe scripts\bridge_cli_smoke.py
 .\.venv\Scripts\python.exe scripts\desktop_metadata_backend_smoke.py
+.\.venv\Scripts\python.exe scripts\desktop_scraper_backend_smoke.py
 cargo check --manifest-path desktop-next/src-tauri/Cargo.toml
 cd desktop-next
 npm run lint
@@ -117,7 +122,7 @@ cd ..
 
 1. 在“图片元数据主工作流”范围内，当前已经具备可受控切换条件
 2. Python metadata backend 的剩余职责已收窄到元数据读写，这也是下一步替换的明确边界
-3. 下一决策点只剩两条：先替换 Python bridge，或先迁移更高阶工作台能力
+3. 抓取工作台当前已完成监控面迁移，下一决策点是是否继续迁移任务控制
 4. 正式 installer / 签名发布仍是后续独立工作
 
 ## 7. 当前完成度判断
@@ -128,7 +133,7 @@ cd ..
 2. 长期结构第一轮收敛：已完成
 3. 目录索引 / 缓存与批量反馈强化：已完成第一轮
 4. 交付与切换准备：已完成
-5. 替换临时 bridge：未开始
+5. 替换临时 bridge：已缩到 metadata backend + scraper backend 两条 Python 运行时边界
 
 更直接的判断：
 

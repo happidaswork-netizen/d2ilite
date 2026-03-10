@@ -71,6 +71,65 @@ def _request_preview(url: str) -> bool:
         return response.status == 200 and str(response.headers.get("Content-Type", "")).startswith("image/")
 
 
+def _write_json(path: Path, payload: object) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _write_jsonl(path: Path, rows: list[dict]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    body = "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows)
+    path.write_text(body, encoding="utf-8")
+
+
+def _prepare_scraper_task(base_root: Path) -> Path:
+    task_root = base_root / "sample_scraper_task"
+    image_path = task_root / "downloads" / "named_images" / "done.jpg"
+    image_path.parent.mkdir(parents=True, exist_ok=True)
+    image_path.write_bytes(b"fake-image")
+
+    _write_json(task_root / "state" / "runtime_config.json", {"rules": {}})
+    _write_jsonl(
+        task_root / "raw" / "list_records.jsonl",
+        [
+            {"name": "已完成人物", "detail_url": "https://example.com/detail/done"},
+            {"name": "缺失详情人物", "detail_url": ""},
+        ],
+    )
+    _write_jsonl(
+        task_root / "raw" / "profiles.jsonl",
+        [
+            {
+                "name": "已完成人物",
+                "detail_url": "https://example.com/detail/done",
+                "image_url": "https://example.com/image/done.jpg",
+            }
+        ],
+    )
+    _write_jsonl(
+        task_root / "downloads" / "image_downloads.jsonl",
+        [
+            {
+                "name": "已完成人物",
+                "detail_url": "https://example.com/detail/done",
+                "named_path": str(image_path),
+            }
+        ],
+    )
+    _write_jsonl(
+        task_root / "raw" / "metadata_write_results.jsonl",
+        [{"detail_url": "https://example.com/detail/done", "status": "ok", "output_path": str(image_path)}],
+    )
+    _write_jsonl(task_root / "raw" / "review_queue.jsonl", [{"detail_url": "https://example.com/detail/review"}])
+    _write_jsonl(task_root / "raw" / "failures.jsonl", [{"detail_url": "https://example.com/detail/failure"}])
+    (task_root / "reports").mkdir(parents=True, exist_ok=True)
+    (task_root / "reports" / "gui_public_scraper.log").write_text(
+        "[2026-03-10 12:00:00] 开始抓取\n[2026-03-10 12:01:00] 详情页=https://example.com/detail/done\n",
+        encoding="utf-8",
+    )
+    return task_root
+
+
 def main() -> int:
     if not DESKTOP_ROOT.is_dir():
         _safe_print(f"[ERROR] desktop-next not found: {DESKTOP_ROOT}")
@@ -80,6 +139,8 @@ def main() -> int:
         temp_root = Path(td)
         image_path = temp_root / "样例.jpg"
         Image.new("RGB", (32, 32), (200, 200, 200)).save(image_path, format="JPEG", quality=90)
+        scraper_base_root = temp_root / "public_archive"
+        scraper_task_root = _prepare_scraper_task(scraper_base_root)
 
         cmd = ["npm.cmd", "run", "dev"] if os.name == "nt" else ["npm", "run", "dev"]
         creationflags = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
@@ -116,6 +177,7 @@ def main() -> int:
         listed: dict = {}
         read: dict = {}
         preview_ok = False
+        scraper_ok = False
         try:
             while time.time() < deadline:
                 while True:
@@ -143,7 +205,20 @@ def main() -> int:
                     if str(read.get("item", {}).get("filename", "")) != image_path.name:
                         raise RuntimeError(f"read response invalid: {read}")
                     preview_ok = _request_preview(f"{BASE_URL}/api/bridge/preview?{read_qs}")
-                    if ping_ok and preview_ok:
+                    scraper_qs = urllib.parse.urlencode(
+                        {
+                            "baseRoot": str(scraper_base_root),
+                            "progressLimit": "50",
+                            "logLines": "20",
+                        }
+                    )
+                    scraper = _request_json(f"{BASE_URL}/api/bridge/scraper/workspace?{scraper_qs}")
+                    scraper_ok = (
+                        str(scraper.get("selected_root", "")) == str(scraper_task_root)
+                        and int(scraper.get("task_count", 0)) == 1
+                        and len((scraper.get("detail") or {}).get("pending_rows") or []) >= 1
+                    )
+                    if ping_ok and preview_ok and scraper_ok:
                         break
                 except Exception:
                     if proc.poll() is not None:
@@ -158,7 +233,7 @@ def main() -> int:
             except Exception:
                 pass
 
-        if not ping_ok or not preview_ok:
+        if not ping_ok or not preview_ok or not scraper_ok:
             _safe_print("[ERROR] desktop vite bridge smoke failed")
             if lines:
                 _safe_print(_strip_ansi("\n".join(lines)))

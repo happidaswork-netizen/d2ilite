@@ -1,6 +1,14 @@
 import { convertFileSrc, invoke, isTauri } from '@tauri-apps/api/core'
 
-import type { BridgeHealth, DesktopBridge, MetadataItem, SavePayload } from '../../types.ts'
+import type {
+  BridgeHealth,
+  DesktopBridge,
+  MetadataItem,
+  SavePayload,
+  ScraperTaskDetail,
+  ScraperTaskSummary,
+  ScraperWorkspaceSnapshot,
+} from '../../types.ts'
 
 export type TauriInvoke = (command: string, args?: Record<string, unknown>) => Promise<unknown>
 export type TauriConvertFileSrc = (filePath: string, protocol?: string) => string
@@ -60,6 +68,92 @@ function buildMockRecord(path: string): MetadataItem {
     police_id: '',
     titi_asset_id: nowId(),
     titi_world_id: 'default',
+  }
+}
+
+function buildMockScraperTask(root: string, status: string, updatedAt: string, profiles: number, failures: number): ScraperTaskSummary {
+  return {
+    root,
+    task: splitFileName(root),
+    status,
+    profiles,
+    images: Math.max(0, profiles - 1),
+    metadata_ok: Math.max(0, profiles - failures),
+    pending: Math.max(0, failures),
+    review: failures > 0 ? 1 : 0,
+    failures,
+    updated_at: updatedAt,
+  }
+}
+
+function buildMockScraperDetail(task: ScraperTaskSummary): ScraperTaskDetail {
+  const pendingRows = task.failures
+    ? [
+        {
+          idx: '1',
+          name: '示例人物',
+          detail: '√',
+          image: '×',
+          meta: '×',
+          reason: '图片下载失败：HTTP 错误',
+          detail_url: 'https://example.com/detail/1',
+          image_path: '',
+        },
+      ]
+    : []
+  const doneRows = [
+    {
+      idx: '2',
+      name: '已完成人物',
+      detail: '√',
+      image: '√',
+      meta: '√',
+      reason: '',
+      detail_url: 'https://example.com/detail/2',
+      image_path: `${task.root}\\named_images\\done.jpg`,
+    },
+  ]
+  return {
+    root: task.root,
+    task: task.task,
+    status: task.status,
+    updated_at: task.updated_at,
+    output_path: `${task.root}\\named_images`,
+    log_path: `${task.root}\\reports\\gui_public_scraper.log`,
+    progress_text: `抓取中 下载:${task.images}/${task.profiles}(80.0%) 发现:${task.profiles}/${task.profiles}(100.0%) 完成:${doneRows.length} 列表:${task.profiles} 详情:${task.profiles} 图片:${task.images} 元数据:${task.metadata_ok}`,
+    latest_action: task.failures ? '下载图片' : '写入元数据',
+    total_target: task.profiles,
+    discovered_rows: task.profiles,
+    downloaded_rows: task.images,
+    completed_rows: doneRows.length,
+    list_rows: task.profiles,
+    profile_rows: task.profiles,
+    image_rows: task.images,
+    metadata_rows: task.metadata_ok,
+    review_rows: task.review,
+    failure_rows: task.failures,
+    pending_rows: pendingRows,
+    done_rows: doneRows,
+    log_tail: `[${task.updated_at}] ${task.task}\n已载入示例抓取日志。\n`,
+  }
+}
+
+function buildMockScraperWorkspace(baseRoot: string, selectedRoot?: string): ScraperWorkspaceSnapshot {
+  const root = String(baseRoot || '').trim() || 'C:\\mock\\public_archive'
+  const tasks = [
+    buildMockScraperTask(`${root}\\tiantonglaw_team`, '未完成', '2026-03-10 12:30:00', 16, 2),
+    buildMockScraperTask(`${root}\\wenming_candidates`, '已完成', '2026-03-09 18:12:00', 12, 0),
+  ]
+  const activeRoot = selectedRoot && tasks.some((task) => task.root === selectedRoot) ? selectedRoot : tasks[0]?.root || ''
+  const selectedTask = tasks.find((task) => task.root === activeRoot) || null
+  return {
+    base_root: root,
+    task_count: tasks.length,
+    status_text: `任务数: ${tasks.length}`,
+    tasks,
+    selected_root: activeRoot,
+    selected_task: selectedTask,
+    detail: selectedTask ? buildMockScraperDetail(selectedTask) : null,
   }
 }
 
@@ -191,6 +285,17 @@ function createMockBridge(): DesktopBridge {
       }
       store.set(key, next)
     },
+    async getDefaultScraperBaseRoot(): Promise<string> {
+      return 'C:\\mock\\public_archive'
+    },
+    async readScraperWorkspace(
+      baseRoot: string,
+      options?: {
+        selectedRoot?: string
+      },
+    ): Promise<ScraperWorkspaceSnapshot> {
+      return buildMockScraperWorkspace(baseRoot, options?.selectedRoot)
+    },
     getPreviewUrl(): string {
       return ''
     },
@@ -214,6 +319,25 @@ function createTauriBridge(invokeImpl: TauriInvoke): DesktopBridge {
     },
     async saveMetadata(path: string, payload: SavePayload): Promise<void> {
       await invokeJson<{ saved: boolean }>(invokeImpl, 'bridge_save_metadata', { path, payload })
+    },
+    async getDefaultScraperBaseRoot(): Promise<string> {
+      const data = await invokeJson<{ base_root: string }>(invokeImpl, 'bridge_get_default_scraper_base_root')
+      return String(data.base_root || '')
+    },
+    async readScraperWorkspace(
+      baseRoot: string,
+      options?: {
+        selectedRoot?: string
+        progressLimit?: number
+        logLines?: number
+      },
+    ): Promise<ScraperWorkspaceSnapshot> {
+      return invokeJson<ScraperWorkspaceSnapshot>(invokeImpl, 'bridge_read_scraper_workspace', {
+        baseRoot,
+        selectedRoot: options?.selectedRoot || '',
+        progressLimit: options?.progressLimit || 300,
+        logLines: options?.logLines || 80,
+      })
     },
     getPreviewUrl(path: string): string {
       if (typeof convertFileSrcImpl === 'function') {
@@ -254,6 +378,26 @@ function createHttpBridge(): DesktopBridge {
           payload,
         }),
       })
+    },
+    async getDefaultScraperBaseRoot(): Promise<string> {
+      const data = await fetchJson<{ base_root: string }>('/api/bridge/scraper/default-root')
+      return String(data.base_root || '')
+    },
+    async readScraperWorkspace(
+      baseRoot: string,
+      options?: {
+        selectedRoot?: string
+        progressLimit?: number
+        logLines?: number
+      },
+    ): Promise<ScraperWorkspaceSnapshot> {
+      const params = new URLSearchParams({
+        baseRoot: String(baseRoot || ''),
+        selectedRoot: String(options?.selectedRoot || ''),
+        progressLimit: String(options?.progressLimit || 300),
+        logLines: String(options?.logLines || 80),
+      })
+      return fetchJson<ScraperWorkspaceSnapshot>(`/api/bridge/scraper/workspace?${params.toString()}`)
     },
     getPreviewUrl(path: string): string {
       const params = new URLSearchParams({ path: String(path || '') })

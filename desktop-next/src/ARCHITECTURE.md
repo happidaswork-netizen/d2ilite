@@ -14,7 +14,7 @@
    - `metadata`
    - `roles`
    - `batch`
-   - `review`
+   - `scraper`
 3. `domain/`
    - 元数据模型
    - 角色模型
@@ -36,8 +36,8 @@
 当前已经完成的拆分：
 
 1. `App.tsx` 已变成薄入口
-2. `DesktopWorkspace.tsx` 已压薄为装配层
-3. 工作台状态与交互 orchestration 已收进 `app/useDesktopWorkspace.ts`
+2. `DesktopWorkspace.tsx` 当前承担顶层模式切换壳
+3. 图片元数据工作台已收进 `app/MetadataWorkspace.tsx + app/useDesktopWorkspace.ts`
 4. `preview pane` 已拆到 `features/preview`
 5. `library list` 已拆到 `features/library`
 6. `metadata editor` 已拆到 `features/metadata/components/MetadataEditorPane.tsx`
@@ -46,10 +46,12 @@
 9. bridge provider、smoke roundtrip、目录偏好读写已收进 `infrastructure/`
 10. 目录角色摘要索引 / 缓存已收进 `infrastructure/cache`
 11. 目录级角色筛选、勾选和批量编辑已补匹配条件、进度、跳过 / 失败反馈
-12. 目录级角色工作流仍由 `app/useDesktopWorkspace.ts` 统一协调
+12. 公共抓取工作台已收进 `app/ScraperWorkspace.tsx + app/useScraperWorkspace.ts`
+13. `features/scraper` 已承接任务列表、进度表和日志尾部展示
+14. `services/desktop_scraper_backend_service.py + scripts/desktop_scraper_backend.py` 已承接抓取目录扫描与监控 snapshot
 
 ## 下一步拆分顺序
 
-1. 下一步进入交付与切换准备
-2. 固化打包路径、切换边界和回归矩阵
-3. 然后再决定是先替换 Python bridge，还是先推进更高阶工作台能力
+1. 下一步不再补“只读监控”，而是决定是否继续迁移 `start / continue / retry / pause`
+2. 如果继续迁移抓取台，优先把任务控制 plan 从 Python service 暴露给 `features/scraper`
+3. 如果不继续迁抓取台，则回到 Python metadata backend 替换和正式发布链路

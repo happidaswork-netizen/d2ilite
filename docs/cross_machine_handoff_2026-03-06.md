@@ -21,6 +21,7 @@
 15. 交付与切换准备现已完成：统一 release gate、调试构建路径和切换边界都已落盘。
 16. 当前 Python bridge 已收窄为元数据读写职责，目录列表和图片预览已由 Vite / Tauri 原生承接。
 17. 元数据读写运行时已切到专用 `desktop_metadata_backend.py`，`desktop_bridge_cli.py` 退回兼容层。
+18. 新版公共抓取工作台已完成第一轮迁移：任务列表、任务概览、进度表和日志尾部已进入 `desktop-next`。
 
 ## 2. 本轮累计完成内容
 
@@ -105,6 +106,9 @@
 13. 运行时入口已更新：
    - `desktop_metadata_backend.py`：当前 `read/save/ping` runtime backend
    - `desktop_bridge_cli.py`：兼容脚本与旧 smoke 保留
+14. 抓取工作台当前已新增：
+   - `desktop_scraper_backend.py`：任务目录与监控 snapshot runtime backend
+   - 新版抓取台：任务列表、任务概览、进度表、日志尾部
 
 ## 3. 本次修改文件清单
 
@@ -121,13 +125,24 @@
 
 1. `desktop-next/vite.config.ts`
 2. `desktop-next/src/types.ts`
-3. `desktop-next/src/bridge/desktopBridge.ts`
-4. `desktop-next/src/App.tsx`
-5. `desktop-next/src/App.css`
-6. `desktop-next/src-tauri/`
-7. `desktop-next/README.md`
+3. `desktop-next/src/app/`
+4. `desktop-next/src/features/`
+5. `desktop-next/src/infrastructure/`
+6. `desktop-next/src/App.tsx`
+7. `desktop-next/src/App.css`
+8. `desktop-next/src-tauri/`
+9. `desktop-next/README.md`
 
-### 3.3 文档
+### 3.3 Desktop Runtime Backends
+
+1. `services/desktop_metadata_backend_service.py`
+2. `scripts/desktop_metadata_backend.py`
+3. `scripts/desktop_metadata_backend_smoke.py`
+4. `services/desktop_scraper_backend_service.py`
+5. `scripts/desktop_scraper_backend.py`
+6. `scripts/desktop_scraper_backend_smoke.py`
+
+### 3.4 文档
 
 1. `docs/phase0_refactor_status_2026-03-04.md`
 2. `docs/tauri_modernization_checklist_2026-03-04.md`
@@ -135,7 +150,7 @@
 4. `docs/cross_machine_handoff_2026-03-06.md`（本文档，新增）
 5. `docs/desktop_next_rewrite_baseline_2026-03-09.md`
 
-### 3.4 其他
+### 3.5 其他
 
 1. `AGENTS.md` 仅有结尾换行差异，不包含业务逻辑变化。
 
@@ -144,16 +159,20 @@
 Python 侧：
 
 ```powershell
-.\.venv\Scripts\python.exe -m py_compile app.py services\task_service.py services\task_orchestration_service.py services\scraper_monitor_service.py services\public_scraper_config_service.py scripts\phase0_contract_smoke.py
+.\.venv\Scripts\python.exe -m py_compile app.py services\task_service.py services\task_orchestration_service.py services\scraper_monitor_service.py services\public_scraper_config_service.py services\desktop_metadata_backend_service.py services\desktop_scraper_backend_service.py scripts\phase0_contract_smoke.py scripts\desktop_metadata_backend.py scripts\desktop_metadata_backend_smoke.py scripts\desktop_scraper_backend.py scripts\desktop_scraper_backend_smoke.py
 .\.venv\Scripts\python.exe scripts\phase0_contract_smoke.py
 .\.venv\Scripts\python.exe scripts\bridge_cli_smoke.py
+.\.venv\Scripts\python.exe scripts\desktop_metadata_backend_smoke.py
+.\.venv\Scripts\python.exe scripts\desktop_scraper_backend_smoke.py
 ```
 
 预期 / 当前结果：
 
 1. `py_compile` 通过
-2. `phase0_contract_smoke.py` 通过，当前 `28 tests`
+2. `phase0_contract_smoke.py` 通过
 3. `bridge_cli_smoke.py` 通过
+4. `desktop_metadata_backend_smoke.py` 通过
+5. `desktop_scraper_backend_smoke.py` 通过
 
 前端侧：
 
@@ -176,6 +195,7 @@ npm run build
 9. `.\.venv\Scripts\python.exe scripts/desktop_tauri_roundtrip_smoke.py` 通过
 10. 已确认 Tauri 壳内 `ping/list/read/save/preview` roundtrip 可跑通
 11. 当前 `desktop-next` 编辑区已能展示 bridge 返回的原始元数据分组，不再只有表单字段
+12. `desktop_next_release_gate.py` 通过
 
 开发态桥接已额外做过端到端检查：
 
@@ -183,6 +203,7 @@ npm run build
 2. `/api/bridge/list` 通过
 3. `/api/bridge/read` 通过
 4. `/api/bridge/preview` 通过
+5. `/api/bridge/scraper/workspace` 通过
 
 ## 5. 换电脑后最小恢复步骤
 
@@ -233,6 +254,6 @@ npm run dev
 
 ## 8. 下一步接力点
 
-1. 下一步直接在两个方向里二选一：替换 Python bridge，或推进更高阶工作台能力。
+1. 下一步直接在两个方向里二选一：继续迁移抓取任务控制，或继续替换剩余 Python backend。
 2. 不再回头扩写 Tk 侧或继续堆新的临时过渡层。
 3. 正式 installer / 签名发布仍是后续独立收尾项。

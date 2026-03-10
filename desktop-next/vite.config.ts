@@ -12,6 +12,7 @@ type BridgePayload = Record<string, unknown>
 const desktopRoot = path.dirname(fileURLToPath(import.meta.url))
 const projectRoot = path.resolve(desktopRoot, '..')
 const metadataBackendScriptPath = path.join(projectRoot, 'scripts', 'desktop_metadata_backend.py')
+const scraperBackendScriptPath = path.join(projectRoot, 'scripts', 'desktop_scraper_backend.py')
 const tempRoot = path.join(projectRoot, '.tmp', 'desktop-next')
 const frontendStatusPath = path.join(tempRoot, 'frontend-status.json')
 const smokeRequestPath = path.join(tempRoot, 'smoke-request.json')
@@ -103,10 +104,10 @@ async function withPayloadFile(payload: unknown, run: (filePath: string) => Prom
   }
 }
 
-function runMetadataBackend(args: string[]): Promise<BridgePayload> {
+function runPythonBackend(scriptPath: string, args: string[]): Promise<BridgePayload> {
   return new Promise((resolve, reject) => {
     const pythonExec = resolvePythonExecutable()
-    const child = spawn(pythonExec, [metadataBackendScriptPath, ...args], {
+    const child = spawn(pythonExec, [scriptPath, ...args], {
       cwd: projectRoot,
       env: {
         ...process.env,
@@ -142,6 +143,14 @@ function runMetadataBackend(args: string[]): Promise<BridgePayload> {
   })
 }
 
+function runMetadataBackend(args: string[]): Promise<BridgePayload> {
+  return runPythonBackend(metadataBackendScriptPath, args)
+}
+
+function runScraperBackend(args: string[]): Promise<BridgePayload> {
+  return runPythonBackend(scraperBackendScriptPath, args)
+}
+
 function desktopBridgeDevPlugin(): Plugin {
   return {
     name: 'desktop-bridge-dev-plugin',
@@ -162,6 +171,34 @@ function desktopBridgeDevPlugin(): Plugin {
             const limit = Math.max(0, Number(url.searchParams.get('limit') || '0') || 0)
             const items = await listImagesInFolder(folder, limit)
             jsonResponse(res, 200, { ok: true, folder: path.resolve(folder), count: items.length, items })
+            return
+          }
+
+          if (req.method === 'GET' && routePath === '/scraper/default-root') {
+            jsonResponse(res, 200, await runScraperBackend(['default-root']))
+            return
+          }
+
+          if (req.method === 'GET' && routePath === '/scraper/workspace') {
+            const baseRoot = url.searchParams.get('baseRoot') || ''
+            const selectedRoot = url.searchParams.get('selectedRoot') || ''
+            const progressLimit = Math.max(20, Number(url.searchParams.get('progressLimit') || '300') || 300)
+            const logLines = Math.max(20, Number(url.searchParams.get('logLines') || '80') || 80)
+            jsonResponse(
+              res,
+              200,
+              await runScraperBackend([
+                'workspace',
+                '--base-root',
+                baseRoot,
+                '--selected-root',
+                selectedRoot,
+                '--progress-limit',
+                String(progressLimit),
+                '--log-lines',
+                String(logLines),
+              ]),
+            )
             return
           }
 

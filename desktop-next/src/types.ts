@@ -5,6 +5,64 @@ export interface BridgeHealth {
   version: string
 }
 
+export interface ScraperTaskSummary {
+  root: string
+  task: string
+  status: string
+  profiles: number
+  images: number
+  metadata_ok: number
+  pending: number
+  review: number
+  failures: number
+  updated_at: string
+}
+
+export interface ScraperProgressRow {
+  idx: string
+  name: string
+  detail: string
+  image: string
+  meta: string
+  reason: string
+  detail_url: string
+  image_path: string
+}
+
+export interface ScraperTaskDetail {
+  root: string
+  task: string
+  status: string
+  updated_at: string
+  output_path: string
+  log_path: string
+  progress_text: string
+  latest_action: string
+  total_target: number
+  discovered_rows: number
+  downloaded_rows: number
+  completed_rows: number
+  list_rows: number
+  profile_rows: number
+  image_rows: number
+  metadata_rows: number
+  review_rows: number
+  failure_rows: number
+  pending_rows: ScraperProgressRow[]
+  done_rows: ScraperProgressRow[]
+  log_tail: string
+}
+
+export interface ScraperWorkspaceSnapshot {
+  base_root: string
+  task_count: number
+  status_text: string
+  tasks: ScraperTaskSummary[]
+  selected_root: string
+  selected_task: ScraperTaskSummary | null
+  detail: ScraperTaskDetail | null
+}
+
 export interface RoleAliasPayload {
   name: string
   note?: string
@@ -58,5 +116,14 @@ export interface DesktopBridge {
   listImages(folder: string, limit?: number): Promise<string[]>
   readMetadata(path: string): Promise<MetadataItem>
   saveMetadata(path: string, payload: SavePayload): Promise<void>
+  getDefaultScraperBaseRoot(): Promise<string>
+  readScraperWorkspace(
+    baseRoot: string,
+    options?: {
+      selectedRoot?: string
+      progressLimit?: number
+      logLines?: number
+    },
+  ): Promise<ScraperWorkspaceSnapshot>
   getPreviewUrl(path: string): string
 }

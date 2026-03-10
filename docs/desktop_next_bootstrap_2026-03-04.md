@@ -12,6 +12,8 @@
    - `GET /api/bridge/read`
    - `POST /api/bridge/save`
    - `GET /api/bridge/preview`
+   - `GET /api/bridge/scraper/default-root`
+   - `GET /api/bridge/scraper/workspace`
 4. 已验证：
    - `npm run lint`
    - `npm run build`
@@ -21,6 +23,8 @@
    - `bridge_list_images`
    - `bridge_read_metadata`
    - `bridge_save_metadata`
+   - `bridge_get_default_scraper_base_root`
+   - `bridge_read_scraper_workspace`
 6. 已验证：
    - `cargo check --manifest-path desktop-next/src-tauri/Cargo.toml`
    - `npm run tauri:dev` 可完成启动链路（Vite + cargo run + src-tauri watch）
@@ -30,6 +34,7 @@
    - 已确认 Tauri 壳内前端切到 `tauri` provider，并完成启动期 `ping`
    - `.\.venv\Scripts\python.exe scripts/desktop_tauri_roundtrip_smoke.py`
    - 已确认 Tauri 壳内 `ping/list/read/save/preview` 全链路可跑通
+   - `.\.venv\Scripts\python.exe scripts/desktop_scraper_backend_smoke.py`
 7. 编辑区已扩展为“结构化表单 + 原始元数据标签页”：
    - `Profile`
    - `TITI`
@@ -45,6 +50,7 @@
 9. 已补目录角色摘要索引 / 缓存，以及批量执行进度、跳过统计和失败项反馈
 10. 已补统一 release gate，并已验证 `tauri:build:debug` 调试构建产物
 11. 当前 Python bridge 已收窄为元数据读写职责，目录列表和图片预览已由 Vite / Tauri 原生承接
+12. 新版公共抓取工作台已接入：任务列表、任务概览、进度表和日志尾部
 
 ## 本地运行
 
@@ -54,7 +60,7 @@ npm install
 npm run dev
 ```
 
-启动后，开发态页面默认通过 Vite dev server 内的 `/api/bridge/*` 中间件承接目录列表与图片预览，并调用本地 `scripts/desktop_metadata_backend.py` 完成元数据读写，不依赖 Tauri runtime。
+启动后，开发态页面默认通过 Vite dev server 内的 `/api/bridge/*` 中间件承接目录列表、图片预览和抓取任务监控，并调用本地 `scripts/desktop_metadata_backend.py` 与 `scripts/desktop_scraper_backend.py` 完成运行时读取，不依赖 Tauri runtime。
 
 如果要起 Tauri 壳：
 
@@ -101,4 +107,4 @@ powershell -ExecutionPolicy Bypass -File .\scripts\bootstrap_tauri2.ps1
 1. 当前已具备 React 开发态工作台和已初始化的 Tauri 壳，且 `tauri:dev` 启动链路、`tauri` provider 切换、完整 roundtrip 都已验证。
 2. 当前目录级角色工作流已可用，但仍建立在 Python bridge + 本地文件读写之上。
 3. 真实桥接在 Tauri 模式下仍依赖本地仓库中的 Python CLI 与 `.venv`。
-4. 当前下一阶段的重点不再是打包准备，而是决定先替换剩余的 Python 元数据读写 bridge，还是先迁移更高阶工作台能力。
+4. 当前下一阶段的重点不再是打包准备，而是决定先继续迁移抓取任务控制，还是先替换剩余的 Python backend。
