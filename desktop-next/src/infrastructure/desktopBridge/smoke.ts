@@ -16,6 +16,28 @@ async function checkPreviewLoad(src: string): Promise<boolean> {
   })
 }
 
+async function waitForScraperPause(
+  bridge: DesktopBridge,
+  baseRoot: string,
+  taskRoot: string,
+  timeoutMs = 15000,
+): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    const workspace = await bridge.readScraperWorkspace(baseRoot, {
+      selectedRoot: taskRoot,
+      progressLimit: 80,
+      logLines: 40,
+    })
+    const detail = workspace.detail
+    if (detail && !detail.session_running) {
+      return true
+    }
+    await new Promise((resolve) => window.setTimeout(resolve, 400))
+  }
+  return false
+}
+
 export async function runDesktopSmokeRoundtrip(
   bridge: DesktopBridge,
   provider: DesktopBridge['provider'],
@@ -74,6 +96,40 @@ export async function runDesktopSmokeRoundtrip(
     await bridge.saveMetadata(targetPath, payload)
     const after = await bridge.readMetadata(targetPath)
     const saveOk = String(after.title || '') === nextTitle
+    let scraperOk = true
+    let scraperControlOk = true
+    if (request.scraper_base_root && request.scraper_task_root) {
+      const workspace = await bridge.readScraperWorkspace(request.scraper_base_root, {
+        selectedRoot: request.scraper_task_root,
+        progressLimit: 80,
+        logLines: 40,
+      })
+      scraperOk =
+        String(workspace.selected_root || '') === String(request.scraper_task_root || '') &&
+        Number(workspace.task_count || 0) >= 1 &&
+        Boolean(workspace.detail)
+      if (scraperOk) {
+        const continued = await bridge.runScraperAction('continue', request.scraper_task_root, {
+          baseRoot: request.scraper_base_root,
+          control: {
+            mode: 'browser',
+            auto_fallback: false,
+            disable_page_images: false,
+          },
+        })
+        const continueDetail = continued.workspace.detail
+        scraperControlOk = Boolean(continueDetail?.session_running) && Number(continueDetail?.pid || 0) > 0
+        if (scraperControlOk) {
+          await bridge.runScraperAction('pause', request.scraper_task_root, {
+            baseRoot: request.scraper_base_root,
+            control: {},
+          })
+          scraperControlOk = await waitForScraperPause(bridge, request.scraper_base_root, request.scraper_task_root)
+        }
+      } else {
+        scraperControlOk = false
+      }
+    }
 
     await reportDesktopSmokeResult({
       ...smokeBase,
@@ -82,6 +138,8 @@ export async function runDesktopSmokeRoundtrip(
       read_ok: true,
       save_ok: saveOk,
       preview_ok: previewOk,
+      scraper_ok: scraperOk,
+      scraper_control_ok: scraperControlOk,
       item_path: targetPath,
       filename: getFileName(targetPath),
       title_before: String(before.title || ''),

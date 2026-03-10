@@ -31,12 +31,12 @@
    - 本地图片预览
    - 元数据读取
    - 元数据保存
-2. Python backend 当前负责：
+2. 共享 scraper runtime 当前负责：
    - 抓取任务目录、监控 snapshot 与已有任务控制
 
-当前 Python backend 入口：
+当前 scraper runtime 入口：
 
-`d:\soft\gemini-business2api-workspace\d2ilite\scripts\desktop_scraper_backend.py`
+`d:\soft\gemini-business2api-workspace\d2ilite\desktop-next\scripts\nativeScraperBackend.ts`
 
 ## 2. 交付门槛
 
@@ -56,14 +56,13 @@ Gate 当前会顺序执行：
 5. `desktop-next npm run lint`
 6. `desktop-next npm run build`
 7. `desktop-next npm run smoke:metadata`
-8. `desktop-next npm run smoke:provider`
-9. `desktop-next npm run smoke:roles`
-10. `desktop_vite_bridge_smoke.py`
-11. `desktop_scraper_backend_smoke.py`
-12. `desktop_scraper_control_smoke.py`
-13. `desktop_tauri_startup_smoke.py`
-14. `desktop_tauri_roundtrip_smoke.py`
-15. `desktop-next npm run tauri:build:debug`
+8. `desktop-next npm run smoke:scraper`
+9. `desktop-next npm run smoke:provider`
+10. `desktop-next npm run smoke:roles`
+11. `desktop_vite_bridge_smoke.py`
+12. `desktop_tauri_startup_smoke.py`
+13. `desktop_tauri_roundtrip_smoke.py`
+14. `desktop-next npm run tauri:build:debug`
 
 通过后会生成报告：
 
@@ -128,7 +127,7 @@ cd d:\soft\gemini-business2api-workspace\d2ilite
 
 1. 结构、批量能力、Tauri 壳、回归 gate：已完成
 2. 可控切换边界：已完成
-3. 元数据 runtime 已完成原生替换，剩余 Python 主要在 scraper backend 与旧抓取引擎
+3. 元数据 runtime 与 scraper runtime 已完成替换，剩余 Python 主要在旧抓取引擎
 4. 正式 installer / 抓取新任务启动表单 / 复核台迁移：未完成
 
 更直接地说：

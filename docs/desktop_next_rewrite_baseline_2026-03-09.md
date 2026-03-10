@@ -70,7 +70,7 @@
    - 抓取工作台 bridge snapshot 与控制动作
 5. `services/` 与 Python 写入链路
    - 仍作为旧版字段语义与兼容参考基线
-   - 抓取工作台当前由 `desktop_scraper_backend.py` 承接监控 snapshot 与已有任务控制
+   - 抓取工作台当前由 `nativeScraperBackend.ts` 承接监控 snapshot 与已有任务控制
 6. `src-tauri/`
    - 作为当前桌面壳与原生 metadata / scraper 命令桥接
 
@@ -91,13 +91,12 @@ cd d:\soft\gemini-business2api-workspace\d2ilite
 .\.venv\Scripts\python.exe -m py_compile app.py services\metadata_service.py services\desktop_metadata_backend_service.py services\desktop_scraper_backend_service.py metadata_manager.py metadata_writer.py scripts\desktop_bridge_cli.py scripts\desktop_metadata_backend.py scripts\desktop_scraper_backend.py scripts\desktop_scraper_backend_smoke.py scripts\desktop_scraper_control_smoke.py scripts\desktop_tauri_startup_smoke.py scripts\desktop_tauri_roundtrip_smoke.py scripts\desktop_vite_bridge_smoke.py scripts\desktop_next_release_gate.py
 .\.venv\Scripts\python.exe scripts\phase0_contract_smoke.py
 .\.venv\Scripts\python.exe scripts\bridge_cli_smoke.py
-.\.venv\Scripts\python.exe scripts\desktop_scraper_backend_smoke.py
-.\.venv\Scripts\python.exe scripts\desktop_scraper_control_smoke.py
 cargo check --manifest-path desktop-next/src-tauri/Cargo.toml
 cd desktop-next
 npm run lint
 npm run build
 npm run smoke:metadata
+npm run smoke:scraper
 npm run smoke:provider
 npm run smoke:roles
 cd ..
@@ -123,7 +122,7 @@ cd ..
 
 1. 在“图片元数据主工作流”范围内，当前已经具备可受控切换条件
 2. 抓取工作台当前已完成监控面 + 已有任务控制迁移，剩余新任务启动表单与复核 / 审计迁移
-3. 当前剩余 Python runtime 主要集中在 scraper backend 与旧抓取引擎
+3. 当前剩余 Python runtime 主要集中在旧抓取引擎
 4. 正式 installer / 签名发布仍是后续独立工作
 
 ## 7. 当前完成度判断
@@ -134,7 +133,7 @@ cd ..
 2. 长期结构第一轮收敛：已完成
 3. 目录索引 / 缓存与批量反馈强化：已完成第一轮
 4. 交付与切换准备：已完成
-5. 替换临时 bridge：已收口到 scraper backend 这一条 Python 运行时边界
+5. 替换临时 bridge：desktop runtime backend 已不再依赖 Python
 
 更直接的判断：
 

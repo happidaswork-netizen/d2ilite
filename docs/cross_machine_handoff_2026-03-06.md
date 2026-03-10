@@ -5,7 +5,7 @@
 ## 1. 当前结论
 
 1. `Phase 0` 已完成，Python 工程已完成主服务分层。
-2. `Phase 1` 已完成第一个可交付阶段：`desktop-next` 在开发模式下已接入真实 Python bridge，不再只是 mock UI。
+2. `Phase 1` 已完成第一个可交付阶段：`desktop-next` 在开发模式下已接入真实 runtime，不再只是 mock UI。
 3. `desktop-next/src-tauri` 已初始化，并已接入最小 Tauri bridge 命令骨架。
 4. `npm run tauri:dev` 启动链路已验证可起。
 5. 已补基础 smoke：provider 选择 + `tauri:dev` 启动链路。
@@ -22,6 +22,7 @@
 16. 元数据读写运行时已切到原生 `ExifTool`，目录列表、图片预览和 metadata 都已由 Vite / Tauri 原生承接。
 17. `desktop_metadata_backend.py` 与 `desktop_bridge_cli.py` 当前仅保留为兼容脚本 / 参考实现。
 18. 新版公共抓取工作台已完成第一轮可用迁移：任务列表、任务概览、进度表、日志尾部和已有任务控制已进入 `desktop-next`。
+19. `desktop-next` 的 scraper runtime 已切到共享 `nativeScraperBackend.ts`；`desktop_scraper_backend.py` 仅保留为兼容脚本 / 旧 smoke 参考。
 
 ## 2. 本轮累计完成内容
 
@@ -106,7 +107,7 @@
    - `desktop_metadata_backend.py`：兼容脚本与旧 smoke 保留
    - `desktop_bridge_cli.py`：兼容脚本与旧 smoke 保留
 14. 抓取工作台当前已新增：
-   - `desktop_scraper_backend.py`：任务目录与监控 snapshot runtime backend
+   - `nativeScraperBackend.ts`：共享任务目录与监控 snapshot runtime backend
    - 新版抓取台：任务列表、任务概览、进度表、日志尾部、`pause / continue / retry / rewrite`
 
 ## 3. 本次修改文件清单
@@ -140,6 +141,8 @@
 4. `scripts/desktop_scraper_backend.py`
 5. `scripts/desktop_scraper_backend_smoke.py`
 6. `scripts/desktop_scraper_control_smoke.py`
+7. `desktop-next/scripts/nativeScraperBackend.ts`
+8. `desktop-next/scripts/nativeScraperSmoke.ts`
 
 ### 3.4 文档
 
@@ -172,6 +175,7 @@ Python 侧：
 3. `bridge_cli_smoke.py` 通过
 4. `desktop_scraper_backend_smoke.py` 通过
 5. `desktop_scraper_control_smoke.py` 通过
+6. `desktop-next npm run smoke:scraper` 通过
 
 前端侧：
 
@@ -248,12 +252,12 @@ npm run dev
 ## 7. 当前边界
 
 1. `desktop-next` 现在已同时具备 React 开发态工作台和已初始化的 Tauri 壳。
-2. Tauri 模式下的 metadata bridge 已不再依赖 Python CLI；scraper backend 仍依赖 `.venv`。
+2. Tauri 模式下的 metadata bridge 与 scraper runtime 都已不再依赖 Python backend；剩余 Python 只在旧抓取执行器本身。
 3. 真实桥接当前已同时支持 Vite dev server 中转和 Tauri 自定义命令两条链路。
 4. Tk 老界面仍可独立使用，并且仍是完整功能入口。
 
 ## 8. 下一步接力点
 
-1. 下一步直接在两个方向里二选一：继续迁移抓取新任务启动表单 / 复核队列，或继续替换剩余 Python scraper backend。
+1. 下一步直接在两个方向里二选一：继续迁移抓取新任务启动表单 / 复核队列，或继续替换剩余 Python 抓取执行器本体。
 2. 不再回头扩写 Tk 侧或继续堆新的临时过渡层。
 3. 正式 installer / 签名发布仍是后续独立收尾项。

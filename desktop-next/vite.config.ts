@@ -1,6 +1,5 @@
-import { spawn } from 'node:child_process'
 import { createReadStream, existsSync } from 'node:fs'
-import { mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -12,30 +11,21 @@ import {
   readNativeMetadata,
   saveNativeMetadata,
 } from './scripts/nativeMetadataBackend.ts'
+import {
+  getDefaultScraperBaseRoot,
+  readNativeScraperWorkspace,
+  runNativeScraperAction,
+} from './scripts/nativeScraperBackend.ts'
 
 type BridgePayload = Record<string, unknown>
 
 const desktopRoot = path.dirname(fileURLToPath(import.meta.url))
 const projectRoot = path.resolve(desktopRoot, '..')
-const scraperBackendScriptPath = path.join(projectRoot, 'scripts', 'desktop_scraper_backend.py')
 const tempRoot = path.join(projectRoot, '.tmp', 'desktop-next')
 const frontendStatusPath = path.join(tempRoot, 'frontend-status.json')
 const smokeRequestPath = path.join(tempRoot, 'smoke-request.json')
 const smokeReportPath = path.join(tempRoot, 'smoke-report.json')
 const imageExts = new Set(['.jpg', '.jpeg', '.png', '.webp', '.bmp', '.tif', '.tiff'])
-
-function resolvePythonExecutable(): string {
-  const candidates = [
-    path.join(projectRoot, '.venv', 'Scripts', 'python.exe'),
-    path.join(projectRoot, '.venv', 'bin', 'python'),
-  ]
-  for (const candidate of candidates) {
-    if (existsSync(candidate)) {
-      return candidate
-    }
-  }
-  return 'python'
-}
 
 function jsonResponse(res: import('node:http').ServerResponse, statusCode: number, payload: BridgePayload): void {
   res.statusCode = statusCode
@@ -98,60 +88,6 @@ async function listImagesInFolder(folder: string, limit = 0): Promise<string[]> 
   return items
 }
 
-async function withPayloadFile(payload: unknown, run: (filePath: string) => Promise<BridgePayload>): Promise<BridgePayload> {
-  await mkdir(tempRoot, { recursive: true })
-  const payloadFile = path.join(tempRoot, `payload-${Date.now()}-${Math.random().toString(16).slice(2)}.json`)
-  await writeFile(payloadFile, JSON.stringify(payload ?? {}, null, 2), 'utf-8')
-  try {
-    return await run(payloadFile)
-  } finally {
-    await rm(payloadFile, { force: true })
-  }
-}
-
-function runPythonBackend(scriptPath: string, args: string[]): Promise<BridgePayload> {
-  return new Promise((resolve, reject) => {
-    const pythonExec = resolvePythonExecutable()
-    const child = spawn(pythonExec, [scriptPath, ...args], {
-      cwd: projectRoot,
-      env: {
-        ...process.env,
-        PYTHONUTF8: '1',
-      },
-      windowsHide: true,
-    })
-
-    const stdout: Buffer[] = []
-    const stderr: Buffer[] = []
-    child.stdout.on('data', (chunk) => stdout.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)))
-    child.stderr.on('data', (chunk) => stderr.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)))
-    child.on('error', reject)
-    child.on('close', (code) => {
-      const outText = Buffer.concat(stdout).toString('utf-8').trim()
-      const errText = Buffer.concat(stderr).toString('utf-8').trim()
-      if (!outText) {
-        reject(new Error(errText || `desktop bridge returned empty stdout (code=${String(code)})`))
-        return
-      }
-      try {
-        const payload = JSON.parse(outText) as BridgePayload
-        if (code && code !== 0 && !payload.ok) {
-          const detail = typeof payload.detail === 'string' ? ` (${payload.detail})` : ''
-          reject(new Error(`${String(payload.error || 'bridge command failed')}${detail}`))
-          return
-        }
-        resolve(payload)
-      } catch (error) {
-        reject(new Error(`invalid bridge json: ${outText}\n${errText || String(error)}`))
-      }
-    })
-  })
-}
-
-function runScraperBackend(args: string[]): Promise<BridgePayload> {
-  return runPythonBackend(scraperBackendScriptPath, args)
-}
-
 function desktopBridgeDevPlugin(): Plugin {
   return {
     name: 'desktop-bridge-dev-plugin',
@@ -176,7 +112,7 @@ function desktopBridgeDevPlugin(): Plugin {
           }
 
           if (req.method === 'GET' && routePath === '/scraper/default-root') {
-            jsonResponse(res, 200, await runScraperBackend(['default-root']))
+            jsonResponse(res, 200, await getDefaultScraperBaseRoot())
             return
           }
 
@@ -185,21 +121,7 @@ function desktopBridgeDevPlugin(): Plugin {
             const selectedRoot = url.searchParams.get('selectedRoot') || ''
             const progressLimit = Math.max(20, Number(url.searchParams.get('progressLimit') || '300') || 300)
             const logLines = Math.max(20, Number(url.searchParams.get('logLines') || '80') || 80)
-            jsonResponse(
-              res,
-              200,
-              await runScraperBackend([
-                'workspace',
-                '--base-root',
-                baseRoot,
-                '--selected-root',
-                selectedRoot,
-                '--progress-limit',
-                String(progressLimit),
-                '--log-lines',
-                String(logLines),
-              ]),
-            )
+            jsonResponse(res, 200, await readNativeScraperWorkspace(baseRoot, { selectedRoot, progressLimit, logLines }))
             return
           }
 
@@ -213,19 +135,10 @@ function desktopBridgeDevPlugin(): Plugin {
             const action = String(body?.action || '').trim()
             const outputRoot = String(body?.outputRoot || '').trim()
             const baseRoot = String(body?.baseRoot || '').trim()
-            const response = await withPayloadFile(body?.control ?? {}, (payloadFile) =>
-              runScraperBackend([
-                'action',
-                '--action',
-                action,
-                '--output-root',
-                outputRoot,
-                '--base-root',
-                baseRoot,
-                '--options-file',
-                payloadFile,
-              ]),
-            )
+            const response = await runNativeScraperAction(action, outputRoot, {
+              baseRoot,
+              control: (body?.control as BridgePayload) ?? {},
+            })
             jsonResponse(res, 200, response)
             return
           }

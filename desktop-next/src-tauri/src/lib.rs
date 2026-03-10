@@ -25,7 +25,9 @@ fn project_root() -> PathBuf {
 }
 
 fn scraper_backend_script_path(root: &Path) -> PathBuf {
-    root.join("scripts").join("desktop_scraper_backend.py")
+    root.join("desktop-next")
+        .join("scripts")
+        .join("nativeScraperBackend.ts")
 }
 
 fn exiftool_config_path(root: &Path) -> PathBuf {
@@ -53,15 +55,18 @@ fn resolve_exiftool_executable(root: &Path) -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("exiftool"))
 }
 
-fn resolve_python_executable(root: &Path) -> PathBuf {
+fn resolve_node_executable(root: &Path) -> PathBuf {
     let candidates = [
-        root.join(".venv").join("Scripts").join("python.exe"),
-        root.join(".venv").join("bin").join("python"),
+        root.join("desktop-next").join("node_modules").join(".bin").join("node"),
+        root.join("desktop-next")
+            .join("node_modules")
+            .join(".bin")
+            .join("node.exe"),
     ];
     candidates
         .into_iter()
         .find(|candidate| candidate.exists())
-        .unwrap_or_else(|| PathBuf::from("python"))
+        .unwrap_or_else(|| PathBuf::from("node"))
 }
 
 fn parse_bridge_error(payload: &Value) -> String {
@@ -319,8 +324,9 @@ fn list_images_in_folder(folder: &Path, limit: usize) -> Result<Vec<String>, Str
         .collect())
 }
 
-fn run_python_backend(script_path: &Path, args: &[String]) -> Result<Value, String> {
+fn run_scraper_backend(args: &[String]) -> Result<Value, String> {
     let root = project_root();
+    let script_path = scraper_backend_script_path(&root);
     if !script_path.exists() {
         return Err(format!(
             "backend script not found: {}",
@@ -328,13 +334,18 @@ fn run_python_backend(script_path: &Path, args: &[String]) -> Result<Value, Stri
         ));
     }
 
-    let output = Command::new(resolve_python_executable(&root))
-        .arg(script_path)
-        .args(args)
+    let mut command_args = vec![
+        String::from("--experimental-strip-types"),
+        String::from("--experimental-specifier-resolution=node"),
+        script_path.to_string_lossy().to_string(),
+    ];
+    command_args.extend(args.iter().cloned());
+
+    let output = Command::new(resolve_node_executable(&root))
+        .args(&command_args)
         .current_dir(&root)
-        .env("PYTHONUTF8", "1")
         .output()
-        .map_err(|error| format!("failed to run backend script: {error}"))?;
+        .map_err(|error| format!("failed to run scraper backend: {error}"))?;
 
     let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
@@ -358,12 +369,6 @@ fn run_python_backend(script_path: &Path, args: &[String]) -> Result<Value, Stri
         return Err(parse_bridge_error(&payload));
     }
     Ok(payload)
-}
-
-fn run_scraper_backend(args: &[String]) -> Result<Value, String> {
-    let root = project_root();
-    let script_path = scraper_backend_script_path(&root);
-    run_python_backend(&script_path, args)
 }
 
 fn run_exiftool_raw(args: &[String]) -> Result<String, String> {

@@ -27,6 +27,8 @@ export type DesktopSmokeRequest = {
   folder: string
   marker: string
   filename?: string
+  scraper_base_root?: string
+  scraper_task_root?: string
 }
 
 const MOCK_SCRAPER_CONTROL_DEFAULTS: ScraperControlOptions = {
