@@ -12,7 +12,8 @@
     "smoke:roles": "node --experimental-strip-types --experimental-specifier-resolution=node ./scripts/batchRoleSmoke.ts",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
-    "tauri:build": "tauri build"
+    "tauri:build": "tauri build",
+    "tauri:build:debug": "tauri build --debug --no-bundle"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.10.1",

@@ -43,6 +43,7 @@
    - 勾选集维护
    - 批量设置 / 追加 / 替换 / 清空角色元数据
 9. 已补目录角色摘要索引 / 缓存，以及批量执行进度、跳过统计和失败项反馈
+10. 已补统一 release gate，并已验证 `tauri:build:debug` 调试构建产物
 
 ## 本地运行
 
@@ -77,7 +78,7 @@ npm run tauri:dev
 
 1. 已在 `desktop-next` 初始化 `src-tauri`（Tauri 2）。
 2. 已将现有开发态 bridge 命令映射到 Tauri `invoke`。
-3. 下一步不是继续补最小读写链路，而是进入交付与切换准备，固定打包路径、切换边界和回归矩阵。
+3. 当前已完成交付与切换准备：统一 gate、调试构建路径和切换边界都已固定。
 
 ## 一键脚本
 
@@ -99,4 +100,4 @@ powershell -ExecutionPolicy Bypass -File .\scripts\bootstrap_tauri2.ps1
 1. 当前已具备 React 开发态工作台和已初始化的 Tauri 壳，且 `tauri:dev` 启动链路、`tauri` provider 切换、完整 roundtrip 都已验证。
 2. 当前目录级角色工作流已可用，但仍建立在 Python bridge + 本地文件读写之上。
 3. 真实桥接在 Tauri 模式下仍依赖本地仓库中的 Python CLI 与 `.venv`。
-4. 当前下一阶段的重点是进入交付与切换准备，并再决定何时替换临时 Python bridge。
+4. 当前下一阶段的重点不再是打包准备，而是决定先替换临时 Python bridge，还是先迁移更高阶工作台能力。

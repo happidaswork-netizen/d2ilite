@@ -16,6 +16,7 @@
 8. 已支持单图“图片原角色名 + 扮演角色名列表”结构化编辑
 9. 已支持目录级“原角色名 / 扮演角色名”筛选、勾选集维护和批量角色编辑
 10. 已补目录角色摘要索引 / 缓存，以及批量执行进度、跳过统计和失败项反馈
+11. 已补统一 release gate，并已验证 `tauri:build:debug` 产出桌面可执行文件
 
 ## 运行方式
 
@@ -74,6 +75,7 @@ npm run smoke:roles
 cd ..
 .\.venv\Scripts\python.exe scripts\desktop_tauri_startup_smoke.py
 .\.venv\Scripts\python.exe scripts\desktop_tauri_roundtrip_smoke.py
+.\\.venv\\Scripts\\python.exe scripts\\desktop_next_release_gate.py
 ```
 
 当前覆盖：
@@ -83,6 +85,26 @@ cd ..
 3. `tauri:dev` 启动链路（Vite + cargo run + Tauri 二进制启动）
 4. Tauri 壳内前端已切到 `tauri` provider，并完成启动期 `ping`
 5. Tauri 壳内完整 roundtrip：`ping/list/read/save/preview`
+6. 统一 release gate：完整回归矩阵 + `tauri:build:debug`
+
+## 交付与切换
+
+统一 gate：
+
+```powershell
+cd d:\soft\gemini-business2api-workspace\d2ilite
+.\.venv\Scripts\python.exe scripts\desktop_next_release_gate.py
+```
+
+当前已验证的调试构建产物：
+
+```text
+d:\soft\gemini-business2api-workspace\d2ilite\desktop-next\src-tauri\target\debug\d2i-lite-next.exe
+```
+
+切换边界说明见：
+
+- [desktop_next_cutover_plan_2026-03-10.md](/d:/soft/gemini-business2api-workspace/d2ilite/docs/desktop_next_cutover_plan_2026-03-10.md)
 
 ## Provider 说明
 
@@ -107,4 +129,4 @@ cd ..
 4. 编辑区已能查看 bridge 返回的 `titi_json / other_xmp / other_exif / other_iptc / matched_row` 原始内容
 5. 角色元数据当前已支持单图结构化编辑，以及目录级筛选、勾选和批量编辑
 6. 目录角色摘要索引 / 缓存与批量执行反馈已完成第一轮强化
-7. 生产构建产物虽然已可被 Tauri 消费，但还没进入正式打包和发布阶段
+7. 当前已具备统一 gate 和调试构建产物，但正式 installer / 签名发布还没进入当前阶段
