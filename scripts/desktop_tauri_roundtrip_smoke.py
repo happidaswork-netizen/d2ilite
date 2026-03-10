@@ -273,6 +273,7 @@ def main() -> int:
                 and report.get("preview_ok") is True
                 and report.get("scraper_ok") is True
                 and report.get("scraper_control_ok") is True
+                and report.get("scraper_launch_ok") is True
                 and report.get("filename") == request["filename"]
                 and report.get("title_after") == request["marker"]
             )

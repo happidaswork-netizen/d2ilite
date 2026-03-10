@@ -43,7 +43,7 @@
 10. 已补统一 release gate，并已验证 `tauri:build:debug` 调试构建产物
 11. 元数据读写运行时已切到原生 `ExifTool`，目录列表、图片预览和 metadata 都不再经 Python 转发
 12. `desktop_bridge_cli.py` 与 `desktop_metadata_backend.py` 当前仅保留为兼容脚本 / 参考实现，不再承担 `desktop-next` 运行时职责
-13. 新版公共抓取工作台已完成第一轮可用迁移：任务列表、任务概览、进度表、日志尾部与已有任务控制
+13. 新版公共抓取工作台已完成第二轮主路径迁移：新任务启动表单、模板枚举、任务配置生成、任务列表、任务概览、进度表、日志尾部与已有任务控制
 
 ## 3. 当前结构边界
 
@@ -70,7 +70,7 @@
    - 抓取工作台 bridge snapshot 与控制动作
 5. `services/` 与 Python 写入链路
    - 仍作为旧版字段语义与兼容参考基线
-   - 抓取工作台当前由 `nativeScraperBackend.ts` 承接监控 snapshot 与已有任务控制
+   - 抓取工作台当前由 `nativeScraperBackend.ts` 承接模板枚举、任务配置生成、监控 snapshot 与 `start / pause / continue / retry / rewrite`
 6. `src-tauri/`
    - 作为当前桌面壳与原生 metadata / scraper 命令桥接
 
@@ -121,7 +121,7 @@ cd ..
 下一阶段从这里接：
 
 1. 在“图片元数据主工作流”范围内，当前已经具备可受控切换条件
-2. 抓取工作台当前已完成监控面 + 已有任务控制迁移，剩余新任务启动表单与复核 / 审计迁移
+2. 抓取工作台当前已完成新任务启动 + 监控面 + 已有任务控制迁移，剩余复核 / 审计迁移
 3. 当前剩余 Python runtime 主要集中在旧抓取引擎
 4. 正式 installer / 签名发布仍是后续独立工作
 

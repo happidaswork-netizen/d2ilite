@@ -836,6 +836,20 @@ fn bridge_get_default_scraper_base_root() -> Result<Value, String> {
 }
 
 #[tauri::command]
+fn bridge_read_scraper_launch_state(
+    source_hint: Option<String>,
+    template_path: Option<String>,
+) -> Result<Value, String> {
+    run_scraper_backend(&[
+        String::from("launch-state"),
+        String::from("--source-hint"),
+        source_hint.unwrap_or_default(),
+        String::from("--template-path"),
+        template_path.unwrap_or_default(),
+    ])
+}
+
+#[tauri::command]
 fn bridge_read_scraper_workspace(
     base_root: String,
     selected_root: Option<String>,
@@ -853,6 +867,20 @@ fn bridge_read_scraper_workspace(
         String::from("--log-lines"),
         log_lines.unwrap_or(80).max(20).to_string(),
     ])
+}
+
+#[tauri::command]
+fn bridge_start_scraper_task(base_root: Option<String>, values: Value) -> Result<Value, String> {
+    let payload_file = write_payload_temp_file(&values)?;
+    let result = run_scraper_backend(&[
+        String::from("start"),
+        String::from("--base-root"),
+        base_root.unwrap_or_default(),
+        String::from("--values-file"),
+        payload_file.to_string_lossy().to_string(),
+    ]);
+    let _ = fs::remove_file(payload_file);
+    result
 }
 
 #[tauri::command]
@@ -899,7 +927,9 @@ pub fn run() {
             bridge_list_images,
             bridge_read_metadata,
             bridge_get_default_scraper_base_root,
+            bridge_read_scraper_launch_state,
             bridge_read_scraper_workspace,
+            bridge_start_scraper_task,
             bridge_run_scraper_action,
             bridge_save_metadata,
         ])

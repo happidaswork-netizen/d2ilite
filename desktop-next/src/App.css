@@ -678,6 +678,42 @@ button.primary {
   font-weight: 700;
 }
 
+.scraper-launch-pane {
+  margin-top: 18px;
+}
+
+.scraper-launch-grid {
+  display: grid;
+  gap: 14px;
+}
+
+.scraper-launch-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.8fr) minmax(220px, 1fr);
+  gap: 12px;
+  align-items: end;
+}
+
+.scraper-launch-hint {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.scraper-launch-tuning-grid {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+
+.scraper-launch-checks {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.scraper-launch-llm {
+  grid-template-columns: minmax(180px, 0.7fr) minmax(0, 1fr) minmax(0, 1fr);
+}
+
 .batch-panel {
   display: grid;
   gap: 12px;
@@ -1084,7 +1120,9 @@ button.primary {
   .scraper-main,
   .scraper-columns,
   .scraper-summary-grid-wide,
-  .scraper-control-grid {
+  .scraper-control-grid,
+  .scraper-launch-row,
+  .scraper-launch-llm {
     grid-template-columns: 1fr;
   }
 
@@ -1092,7 +1130,9 @@ button.primary {
   .batch-grid,
   .meta-summary-grid,
   .profile-grid,
-  .scraper-summary-grid {
+  .scraper-summary-grid,
+  .scraper-launch-checks,
+  .scraper-launch-tuning-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
@@ -1115,7 +1155,9 @@ button.primary {
   .toolbar,
   .list-filters,
   .batch-grid,
-  .list-toolbar {
+  .list-toolbar,
+  .scraper-launch-checks,
+  .scraper-launch-tuning-grid {
     grid-template-columns: 1fr;
   }
 

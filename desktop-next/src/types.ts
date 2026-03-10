@@ -73,9 +73,53 @@ export interface ScraperControlOptions {
   disable_page_images: boolean
 }
 
+export interface ScraperLaunchTemplateOption {
+  label: string
+  path: string
+  status: string
+  updated_at: string
+}
+
+export interface ScraperLaunchForm {
+  start_url: string
+  output_root: string
+  interval_min: string
+  interval_max: string
+  timeout_seconds: string
+  suspect_block_consecutive_failures: string
+  jsl_enabled: boolean
+  image_download_mode: string
+  auto_fallback_to_browser: boolean
+  disable_page_images_during_crawl: boolean
+  output_minimal: boolean
+  direct_write_images: boolean
+  llm_enrich_enabled: boolean
+  llm_model: string
+  llm_api_base: string
+  llm_api_key: string
+  template_hint: string
+  template_start_url: string
+  save_generated_template: boolean
+  cleanup_generated_template: boolean
+  disable_template_persistence_controls: boolean
+  url_locked: boolean
+  selected_template_path: string
+}
+
+export interface ScraperLaunchState extends ScraperLaunchForm {
+  templates: ScraperLaunchTemplateOption[]
+}
+
 export interface ScraperActionResult {
   action: ScraperActionName
   message: string
+  workspace: ScraperWorkspaceSnapshot
+}
+
+export interface ScraperStartResult {
+  message: string
+  created_root: string
+  config_path: string
   workspace: ScraperWorkspaceSnapshot
 }
 
@@ -152,6 +196,8 @@ export interface DesktopBridge {
       logLines?: number
     },
   ): Promise<ScraperWorkspaceSnapshot>
+  readScraperLaunchState(sourceHint?: string, templatePath?: string): Promise<ScraperLaunchState>
+  startScraperTask(values: ScraperLaunchForm, options?: { baseRoot?: string }): Promise<ScraperStartResult>
   runScraperAction(
     action: ScraperActionName,
     outputRoot: string,

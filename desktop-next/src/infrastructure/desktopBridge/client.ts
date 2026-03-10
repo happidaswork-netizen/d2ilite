@@ -8,6 +8,9 @@ import type {
   ScraperActionName,
   ScraperActionResult,
   ScraperControlOptions,
+  ScraperLaunchForm,
+  ScraperLaunchState,
+  ScraperStartResult,
   ScraperTaskDetail,
   ScraperTaskSummary,
   ScraperWorkspaceSnapshot,
@@ -183,6 +186,35 @@ function buildMockScraperWorkspace(baseRoot: string, selectedRoot?: string): Scr
   }
 }
 
+function buildMockScraperLaunchState(sourceHint = ''): ScraperLaunchState {
+  return {
+    start_url: sourceHint || 'https://example.com/list',
+    output_root: 'C:\\mock\\public_archive\\example',
+    interval_min: '5',
+    interval_max: '8',
+    timeout_seconds: '30',
+    suspect_block_consecutive_failures: '3',
+    jsl_enabled: true,
+    image_download_mode: 'requests_jsl',
+    auto_fallback_to_browser: true,
+    disable_page_images_during_crawl: true,
+    output_minimal: true,
+    direct_write_images: true,
+    llm_enrich_enabled: false,
+    llm_model: 'qwen2.5:7b-instruct',
+    llm_api_base: 'http://127.0.0.1:11434/v1',
+    llm_api_key: '',
+    template_hint: '未选择模板时，需手动输入链接。',
+    template_start_url: '',
+    save_generated_template: true,
+    cleanup_generated_template: true,
+    disable_template_persistence_controls: false,
+    url_locked: false,
+    selected_template_path: '',
+    templates: [],
+  }
+}
+
 function getTauriInvoke(): TauriInvoke | null {
   if (isTauri()) {
     return (command: string, args?: Record<string, unknown>) => invoke(command, args)
@@ -322,6 +354,18 @@ function createMockBridge(): DesktopBridge {
     ): Promise<ScraperWorkspaceSnapshot> {
       return buildMockScraperWorkspace(baseRoot, options?.selectedRoot)
     },
+    async readScraperLaunchState(sourceHint?: string): Promise<ScraperLaunchState> {
+      return buildMockScraperLaunchState(String(sourceHint || ''))
+    },
+    async startScraperTask(values: ScraperLaunchForm): Promise<ScraperStartResult> {
+      const outputRoot = String(values.output_root || 'C:\\mock\\public_archive\\example')
+      return {
+        message: 'mock start',
+        created_root: outputRoot,
+        config_path: `${outputRoot}\\state\\runtime_config.json`,
+        workspace: buildMockScraperWorkspace('C:\\mock\\public_archive', outputRoot),
+      }
+    },
     async runScraperAction(action: ScraperActionName, outputRoot: string): Promise<ScraperActionResult> {
       return {
         action,
@@ -370,6 +414,18 @@ function createTauriBridge(invokeImpl: TauriInvoke): DesktopBridge {
         selectedRoot: options?.selectedRoot || '',
         progressLimit: options?.progressLimit || 300,
         logLines: options?.logLines || 80,
+      })
+    },
+    async readScraperLaunchState(sourceHint?: string, templatePath?: string): Promise<ScraperLaunchState> {
+      return invokeJson<ScraperLaunchState>(invokeImpl, 'bridge_read_scraper_launch_state', {
+        sourceHint: sourceHint || '',
+        templatePath: templatePath || '',
+      })
+    },
+    async startScraperTask(values: ScraperLaunchForm, options?: { baseRoot?: string }): Promise<ScraperStartResult> {
+      return invokeJson<ScraperStartResult>(invokeImpl, 'bridge_start_scraper_task', {
+        values,
+        baseRoot: options?.baseRoot || '',
       })
     },
     async runScraperAction(
@@ -446,6 +502,25 @@ function createHttpBridge(): DesktopBridge {
         logLines: String(options?.logLines || 80),
       })
       return fetchJson<ScraperWorkspaceSnapshot>(`/api/bridge/scraper/workspace?${params.toString()}`)
+    },
+    async readScraperLaunchState(sourceHint?: string, templatePath?: string): Promise<ScraperLaunchState> {
+      const params = new URLSearchParams({
+        sourceHint: String(sourceHint || ''),
+        templatePath: String(templatePath || ''),
+      })
+      return fetchJson<ScraperLaunchState>(`/api/bridge/scraper/launch-state?${params.toString()}`)
+    },
+    async startScraperTask(values: ScraperLaunchForm, options?: { baseRoot?: string }): Promise<ScraperStartResult> {
+      return fetchJson<ScraperStartResult>('/api/bridge/scraper/start', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          values,
+          baseRoot: options?.baseRoot || '',
+        }),
+      })
     },
     async runScraperAction(
       action: ScraperActionName,

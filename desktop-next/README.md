@@ -18,8 +18,8 @@
 10. 已补目录角色摘要索引 / 缓存，以及批量执行进度、跳过统计和失败项反馈
 11. 已补统一 release gate，并已验证 `tauri:build:debug` 产出桌面可执行文件
 12. 元数据读写运行时已切到原生 `ExifTool`，不再依赖 `desktop_metadata_backend.py`
-13. 已新增新版公共抓取工作台：任务列表、进度表、任务概览、日志尾部与已有任务控制
-14. 抓取工作台运行时已切到共享 `nativeScraperBackend.ts`，可承接 `pause / continue / retry / rewrite`
+13. 已新增新版公共抓取工作台：新任务启动表单、任务列表、进度表、任务概览、日志尾部与已有任务控制
+14. 抓取工作台运行时已切到共享 `nativeScraperBackend.ts`，可承接模板枚举、任务配置生成、`start / pause / continue / retry / rewrite`
 
 ## 运行方式
 
@@ -49,13 +49,15 @@ npm run dev
 - `POST /api/bridge/save`
 - `GET /api/bridge/preview`
 - `GET /api/bridge/scraper/default-root`
+- `GET /api/bridge/scraper/launch-state`
 - `GET /api/bridge/scraper/workspace`
+- `POST /api/bridge/scraper/start`
 - `POST /api/bridge/scraper/action`
 
 其中：
 
 1. `ping / read / save` 已改为本地原生 `ExifTool` runtime
-2. `scraper/default-root / scraper/workspace / scraper/action` 已改为共享 `nativeScraperBackend.ts`
+2. `scraper/default-root / scraper/launch-state / scraper/workspace / scraper/start / scraper/action` 已改为共享 `nativeScraperBackend.ts`
 
 ### 3. 启动 Tauri 开发壳
 
@@ -69,7 +71,7 @@ npm run tauri:dev
 
 1. 启动现有 Vite dev server
 2. 通过 `bridge_ping / bridge_list_images / bridge_read_metadata / bridge_save_metadata` 命令承接本地目录扫描与原生 `ExifTool` 元数据读写
-3. 通过 `bridge_get_default_scraper_base_root / bridge_read_scraper_workspace / bridge_run_scraper_action` 命令承接抓取任务工作台，并调用共享 `nativeScraperBackend.ts`
+3. 通过 `bridge_get_default_scraper_base_root / bridge_read_scraper_launch_state / bridge_read_scraper_workspace / bridge_start_scraper_task / bridge_run_scraper_action` 命令承接抓取任务工作台，并调用共享 `nativeScraperBackend.ts`
 4. 通过 `convertFileSrc` 渲染本地图片预览
 
 ## 冒烟检查
@@ -94,10 +96,10 @@ cd ..
 3. `tauri:dev` 启动链路（Vite + cargo run + Tauri 二进制启动）
 4. Tauri 壳内前端已切到 `tauri` provider，并完成启动期 `ping`
 5. Tauri 壳内完整 roundtrip：`ping/list/read/save/preview`
-6. Vite dev bridge：真实 `ping/list/read/preview`，以及 `/api/bridge/scraper/action`
+6. Vite dev bridge：真实 `ping/list/read/preview`，以及 `/api/bridge/scraper/launch-state / start / action`
 7. 原生 metadata runtime：真实 `ping/read/save`，含中文值与 `titi_json` 写入
-8. 原生 scraper runtime：真实任务目录发现、任务概览、进度表、日志尾部与 `pause / continue / retry / rewrite`
-9. Tauri 壳内完整 roundtrip 现已覆盖 scraper workspace 与 scraper control
+8. 原生 scraper runtime：真实模板枚举、任务配置生成、新任务启动、任务目录发现、任务概览、进度表、日志尾部与 `pause / continue / retry / rewrite`
+9. Tauri 壳内完整 roundtrip 现已覆盖 scraper workspace、scraper control 与新任务启动
 10. 统一 release gate：完整回归矩阵 + `tauri:build:debug`
 
 ## 交付与切换
@@ -145,4 +147,4 @@ d:\soft\gemini-business2api-workspace\d2ilite\desktop-next\src-tauri\target\debu
 6. 目录角色摘要索引 / 缓存与批量执行反馈已完成第一轮强化
 7. 当前已具备统一 gate 和调试构建产物，但正式 installer / 签名发布还没进入当前阶段
 8. 当前剩余 Python runtime 主要集中在旧抓取执行器本身，不再承担 desktop runtime backend
-9. 抓取工作台当前已迁移“监控面 + 已有任务控制”；新任务启动表单、复核审计和更完整任务配置仍留在旧版
+9. 抓取工作台当前已迁移“新任务启动 + 监控面 + 已有任务控制”；剩余旧版能力主要是复核审计和旧抓取引擎本体

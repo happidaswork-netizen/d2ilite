@@ -47,11 +47,11 @@
 10. 目录角色摘要索引 / 缓存已收进 `infrastructure/cache`
 11. 目录级角色筛选、勾选和批量编辑已补匹配条件、进度、跳过 / 失败反馈
 12. 公共抓取工作台已收进 `app/ScraperWorkspace.tsx + app/useScraperWorkspace.ts`
-13. `features/scraper` 已承接任务列表、进度表、日志尾部与已有任务控制面
-14. `services/desktop_scraper_backend_service.py + scripts/desktop_scraper_backend.py` 已承接抓取目录扫描、监控 snapshot 与 `pause / continue / retry / rewrite`
+13. `features/scraper` 已承接新任务启动表单、任务列表、进度表、日志尾部与已有任务控制面
+14. `desktop-next/scripts/nativeScraperBackend.ts` 已承接模板枚举、任务配置生成、抓取目录扫描、监控 snapshot 与 `start / pause / continue / retry / rewrite`
 
 ## 下一步拆分顺序
 
-1. 下一步不再补已有任务控制，而是决定是否继续迁移“新任务启动表单 + 任务配置”
-2. 如果继续迁移抓取台，优先把 `start` 表单和复核 / 审计队列暴露给 `features/scraper`
-3. 如果不继续迁抓取台，则回到 Python metadata backend 替换和正式发布链路
+1. 抓取台主工作流当前已补到“新任务启动 + 监控 + 已有任务控制”
+2. 下一步如果继续扩抓取台，优先迁移复核 / 审计队列
+3. 另一条独立工作线是继续替换旧抓取引擎本体，并补正式发布链路

@@ -86,7 +86,7 @@ export function ScraperTaskDetailPane(props: ScraperTaskDetailPaneProps) {
             <div className="scraper-block-head">
               <div>
                 <p className="scraper-detail-title">任务控制</p>
-                <p className="scraper-detail-copy">当前只迁移已有任务的暂停、继续、失败重试和元数据重写。</p>
+                <p className="scraper-detail-copy">当前任务支持暂停、继续、失败重试和元数据重写；新任务启动已迁到上方启动面板。</p>
               </div>
               <div className="scraper-control-chips">
                 <span className="scraper-status-chip scraper-status-live">{detail.runtime_state || detail.status}</span>

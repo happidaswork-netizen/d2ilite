@@ -238,11 +238,14 @@ def main() -> int:
             preview_ok = False
             scraper_ok = False
             control_ok = False
+            launch_ok = False
             last_ping: dict = {}
             last_list: dict = {}
             last_read: dict = {}
             last_scraper: dict = {}
             last_action: dict = {}
+            last_launch: dict = {}
+            last_start: dict = {}
             try:
                 while time.time() < deadline:
                     while True:
@@ -287,6 +290,10 @@ def main() -> int:
                             and int(scraper.get("task_count", 0)) == 1
                             and len((scraper.get("detail") or {}).get("pending_rows") or []) >= 1
                         )
+                        launch_qs = urllib.parse.urlencode({"sourceHint": "https://example.com/list", "templatePath": ""})
+                        launch_state = _request_json(f"{BASE_URL}/api/bridge/scraper/launch-state?{launch_qs}")
+                        last_launch = launch_state
+                        launch_ok = str(launch_state.get("start_url", "")).startswith("https://")
                         if scraper_ok and not control_ok:
                             action_payload = _request_json_post(
                                 f"{BASE_URL}/api/bridge/scraper/action",
@@ -314,7 +321,44 @@ def main() -> int:
                                         "control": {},
                                     },
                                 )
-                        if ping_ok and preview_ok and scraper_ok and control_ok:
+                        if launch_ok and not last_start:
+                            created_root = temp_root / "public_archive" / "vite_launch_task"
+                            start_payload = _request_json_post(
+                                f"{BASE_URL}/api/bridge/scraper/start",
+                                {
+                                    "baseRoot": str(scraper_base_root),
+                                    "values": {
+                                        **launch_state,
+                                        "start_url": "https://example.com/list",
+                                        "output_root": str(created_root),
+                                        "interval_min": "1.5",
+                                        "interval_max": "2.5",
+                                        "timeout_seconds": "20",
+                                        "suspect_block_consecutive_failures": "3",
+                                        "image_download_mode": "browser",
+                                        "auto_fallback_to_browser": False,
+                                        "disable_page_images_during_crawl": False,
+                                        "save_generated_template": False,
+                                        "cleanup_generated_template": False,
+                                        "selected_template_path": "",
+                                        "template_start_url": "",
+                                    },
+                                },
+                            )
+                            last_start = start_payload
+                            created_detail = (start_payload.get("workspace") or {}).get("detail") or {}
+                            launch_ok = bool(created_detail.get("session_running")) and int(created_detail.get("pid", 0) or 0) > 0
+                            if launch_ok:
+                                _request_json_post(
+                                    f"{BASE_URL}/api/bridge/scraper/action",
+                                    {
+                                        "action": "pause",
+                                        "outputRoot": str(created_root),
+                                        "baseRoot": str(scraper_base_root),
+                                        "control": {},
+                                    },
+                                )
+                        if ping_ok and preview_ok and scraper_ok and control_ok and launch_ok:
                             break
                     except Exception:
                         if proc.poll() is not None:
@@ -329,7 +373,7 @@ def main() -> int:
                 except Exception:
                     pass
 
-            if not ping_ok or not preview_ok or not scraper_ok or not control_ok:
+            if not ping_ok or not preview_ok or not scraper_ok or not control_ok or not launch_ok:
                 _safe_print("[ERROR] desktop vite bridge smoke failed")
                 _safe_print(
                     json.dumps(
@@ -338,11 +382,14 @@ def main() -> int:
                             "preview_ok": preview_ok,
                             "scraper_ok": scraper_ok,
                             "control_ok": control_ok,
+                            "launch_ok": launch_ok,
                             "ping": last_ping,
                             "list": last_list,
                             "read": last_read,
                             "scraper": last_scraper,
                             "action": last_action,
+                            "launch": last_launch,
+                            "start": last_start,
                         },
                         ensure_ascii=False,
                     )

@@ -21,7 +21,7 @@
 15. 交付与切换准备现已完成：统一 release gate、调试构建路径和切换边界都已落盘。
 16. 元数据读写运行时已切到原生 `ExifTool`，目录列表、图片预览和 metadata 都已由 Vite / Tauri 原生承接。
 17. `desktop_metadata_backend.py` 与 `desktop_bridge_cli.py` 当前仅保留为兼容脚本 / 参考实现。
-18. 新版公共抓取工作台已完成第一轮可用迁移：任务列表、任务概览、进度表、日志尾部和已有任务控制已进入 `desktop-next`。
+18. 新版公共抓取工作台已完成第二轮主路径迁移：新任务启动表单、模板枚举、任务配置生成、任务列表、任务概览、进度表、日志尾部和已有任务控制已进入 `desktop-next`。
 19. `desktop-next` 的 scraper runtime 已切到共享 `nativeScraperBackend.ts`；`desktop_scraper_backend.py` 仅保留为兼容脚本 / 旧 smoke 参考。
 
 ## 2. 本轮累计完成内容
@@ -107,8 +107,8 @@
    - `desktop_metadata_backend.py`：兼容脚本与旧 smoke 保留
    - `desktop_bridge_cli.py`：兼容脚本与旧 smoke 保留
 14. 抓取工作台当前已新增：
-   - `nativeScraperBackend.ts`：共享任务目录与监控 snapshot runtime backend
-   - 新版抓取台：任务列表、任务概览、进度表、日志尾部、`pause / continue / retry / rewrite`
+   - `nativeScraperBackend.ts`：共享模板枚举、任务配置生成、任务目录与监控 snapshot runtime backend
+   - 新版抓取台：新任务启动表单、任务列表、任务概览、进度表、日志尾部、`start / pause / continue / retry / rewrite`
 
 ## 3. 本次修改文件清单
 
@@ -207,7 +207,8 @@ npm run build
 2. `/api/bridge/list` 通过
 3. `/api/bridge/read` 通过
 4. `/api/bridge/preview` 通过
-5. `/api/bridge/scraper/workspace` 通过
+5. `/api/bridge/scraper/launch-state` 通过
+6. `/api/bridge/scraper/workspace` 通过
 
 ## 5. 换电脑后最小恢复步骤
 
@@ -258,6 +259,6 @@ npm run dev
 
 ## 8. 下一步接力点
 
-1. 下一步直接在两个方向里二选一：继续迁移抓取新任务启动表单 / 复核队列，或继续替换剩余 Python 抓取执行器本体。
+1. 下一步直接在两个方向里二选一：继续迁移复核队列 / 审计工作台，或继续替换剩余 Python 抓取执行器本体。
 2. 不再回头扩写 Tk 侧或继续堆新的临时过渡层。
 3. 正式 installer / 签名发布仍是后续独立收尾项。

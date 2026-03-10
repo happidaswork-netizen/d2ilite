@@ -4,8 +4,10 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import {
+  readNativeScraperLaunchState,
   readNativeScraperWorkspace,
   runNativeScraperAction,
+  startNativeScraperTask,
 } from './nativeScraperBackend.ts'
 
 type JsonRecord = Record<string, unknown>
@@ -127,8 +129,44 @@ async function main(): Promise<void> {
   process.env.PYTHONUTF8 = '1'
 
   try {
+    const launchState = await readNativeScraperLaunchState('https://example.com/list', '')
+    safeAssert(typeof launchState.start_url === 'string', `unexpected launch state: ${JSON.stringify(launchState)}`)
+
+    const newTaskRoot = path.join(baseRoot, 'new_launch_task')
+    const started = await startNativeScraperTask(
+      {
+        ...launchState,
+        start_url: 'https://example.com/list',
+        output_root: newTaskRoot,
+        interval_min: '1.5',
+        interval_max: '2.5',
+        timeout_seconds: '20',
+        suspect_block_consecutive_failures: '3',
+        image_download_mode: 'browser',
+        auto_fallback_to_browser: false,
+        disable_page_images_during_crawl: false,
+        output_minimal: true,
+        direct_write_images: true,
+        llm_enrich_enabled: false,
+        save_generated_template: false,
+        cleanup_generated_template: false,
+        selected_template_path: '',
+        template_start_url: '',
+      } as JsonRecord,
+      { baseRoot },
+    )
+    const newDetail = ((started.workspace as JsonRecord).detail || {}) as JsonRecord
+    safeAssert(String(started.created_root || '') === newTaskRoot, `unexpected created root: ${JSON.stringify(started)}`)
+    safeAssert(Boolean(newDetail.session_running) && Number(newDetail.pid || 0) > 0, `new task did not start: ${JSON.stringify(started)}`)
+    const newConfig = await readRuntimeConfig(newTaskRoot)
+    const newRules = (newConfig.rules || {}) as JsonRecord
+    safeAssert(String(newRules.image_download_mode || '') === 'browser', 'new task missing image mode')
+    safeAssert(newRules.auto_fallback_to_browser === false, 'new task missing auto_fallback override')
+    await runNativeScraperAction('pause', newTaskRoot, { baseRoot, control: {} })
+    await waitForWorkspace(baseRoot, newTaskRoot, (detail) => !detail.session_running)
+
     const initial = await readNativeScraperWorkspace(baseRoot, { selectedRoot: taskRoot, progressLimit: 50, logLines: 20 })
-    safeAssert(Number(initial.task_count || 0) === 1, `unexpected initial workspace: ${JSON.stringify(initial)}`)
+    safeAssert(Number(initial.task_count || 0) >= 2, `unexpected initial workspace: ${JSON.stringify(initial)}`)
 
     const continueOptions = { mode: 'browser', auto_fallback: false, disable_page_images: false }
     const continued = await runNativeScraperAction('continue', taskRoot, { baseRoot, control: continueOptions })

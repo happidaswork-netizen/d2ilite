@@ -42,12 +42,47 @@ type StartExistingTaskOptions = {
   disable_page_images_override?: boolean
 }
 
+type ScraperLaunchTemplateOption = {
+  label: string
+  path: string
+  status: string
+  updated_at: string
+}
+
+type ScraperLaunchValues = {
+  start_url: string
+  output_root: string
+  interval_min: string
+  interval_max: string
+  timeout_seconds: string
+  suspect_block_consecutive_failures: string
+  jsl_enabled: boolean
+  image_download_mode: string
+  auto_fallback_to_browser: boolean
+  disable_page_images_during_crawl: boolean
+  output_minimal: boolean
+  direct_write_images: boolean
+  llm_enrich_enabled: boolean
+  llm_model: string
+  llm_api_base: string
+  llm_api_key: string
+  template_hint: string
+  template_start_url: string
+  save_generated_template: boolean
+  cleanup_generated_template: boolean
+  disable_template_persistence_controls: boolean
+  url_locked: boolean
+  selected_template_path: string
+}
+
 const scriptsRoot = path.dirname(fileURLToPath(import.meta.url))
 const desktopRoot = path.resolve(scriptsRoot, '..')
 const projectRoot = path.resolve(desktopRoot, '..')
 const tempRoot = path.join(projectRoot, '.tmp', 'desktop-next')
 const registryPath = path.join(tempRoot, 'scraper-runtime-registry.json')
 const runningLikeStates = new Set(['运行中', '继续运行中', '失败重试中', '元数据重写中'])
+const VALID_IMAGE_DOWNLOAD_MODES = new Set(['requests_jsl', 'browser'])
+const DEFAULT_TEMPLATE_HINT = '未选择模板时，需手动输入链接。'
 const okTokens = new Set(['√', '✓'])
 const controlDefaults: ContinueOptions = {
   mode: 'requests_jsl',
@@ -333,6 +368,435 @@ function normalizeExistingPath(value: unknown): string {
   return existsSync(resolved) ? resolved : ''
 }
 
+function jsonClone<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T
+}
+
+function normalizeHttpUrl(value: unknown): string {
+  const raw = String(value || '').trim()
+  if (!raw) {
+    return ''
+  }
+  try {
+    const parsed = new URL(raw)
+    if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+      return parsed.toString()
+    }
+  } catch {
+    return raw
+  }
+  return raw
+}
+
+function defaultPublicScraperTemplate(): JsonRecord {
+  return {
+    site_name: 'generic_profiles',
+    start_urls: ['https://example.org/list'],
+    allowed_domains: ['example.org'],
+    user_agent: 'D2ILiteArchiveBot/1.0 (+local archival use)',
+    default_headers: {
+      Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+    },
+    image_headers: {},
+    output_root: 'data/public_archive/generic_profiles',
+    selectors: {
+      list_item:
+        'article a[href], .list a[href], .news a[href], .item a[href], li a[href], dl dd a[href], a[href]',
+      name: ['::text', 'img::attr(alt)', 'img::attr(title)'],
+      detail_link: '::attr(href)',
+      list_fields: {},
+      next_page: [
+        'a.next::attr(href)',
+        "a[rel='next']::attr(href)",
+        "xpath://a[contains(@class,'next')]/@href",
+        "xpath://a[contains(normalize-space(),'下一页')]/@href",
+        "xpath://a[contains(normalize-space(),'下页')]/@href",
+      ],
+      detail_name: [
+        'h1::text',
+        'h2::text',
+        '.title::text',
+        '.name::text',
+        "meta[property='og:title']::attr(content)",
+        'title::text',
+      ],
+      detail_image: [
+        "meta[property='og:image']::attr(content)",
+        '.article img::attr(src)',
+        '.content img::attr(src)',
+        '.detail img::attr(src)',
+        '.main img::attr(src)',
+        'img::attr(src)',
+      ],
+      detail_gender: ['.gender::text', "xpath:string(//*[contains(normalize-space(),'性别')][1])"],
+      detail_summary: [
+        '.article p::text',
+        '.content p::text',
+        '.detail p::text',
+        '.main p::text',
+        'article p::text',
+        'p::text',
+      ],
+      detail_full_text: [],
+      detail_fields: {},
+      detail_field_labels: {},
+    },
+    rules: {
+      obey_robots_txt: false,
+      snapshot_html: true,
+      extract_images: true,
+      write_metadata: true,
+      retry_failed_first: true,
+      metadata_write_retries: 3,
+      metadata_write_retry_delay_seconds: 1.2,
+      metadata_write_retry_backoff_factor: 1.5,
+      named_images_dir: '',
+      image_referer_from_detail_url: true,
+      required_fields: ['name', 'detail_url', 'image_url'],
+      default_gender: '',
+      gender_map: { 男: 'male', 女: 'female' },
+      field_map: {},
+      detail_field_labels: {},
+      auto_unit_subdir: false,
+      unit_name: '',
+      output_subdir_pattern: '{unit}{year_suffix}',
+      year_hint: '',
+      jsl_clearance_enabled: true,
+      jsl_max_retries: 3,
+      image_download_mode: 'requests_jsl',
+      auto_fallback_to_browser: true,
+      disable_page_images_during_crawl: true,
+      browser_engine: 'edge',
+      llm_enrich_enabled: false,
+      llm_api_base: 'http://127.0.0.1:11434/v1',
+      llm_api_key: '',
+      llm_model: 'qwen2.5:7b-instruct',
+      llm_timeout_seconds: 45,
+      llm_max_retries: 2,
+      llm_temperature: 0.1,
+      llm_only_when_missing_fields: true,
+      llm_generate_biography: true,
+      llm_append_biography_to_description: true,
+      llm_cache_enabled: true,
+      llm_max_input_chars: 6000,
+      output_mode: 'images_only_with_record',
+      keep_record_file: true,
+    },
+    crawl: {
+      concurrent_requests: 1,
+      download_delay: 5,
+      autothrottle_start_delay: 5,
+      autothrottle_max_delay: 8,
+      retry_times: 3,
+      timeout_seconds: 30,
+      blocked_statuses: [403, 429],
+      blocked_backoff_hours: 6,
+      suspect_block_consecutive_failures: 3,
+      interval_min_seconds: 5,
+      interval_max_seconds: 8,
+      image_interval_min_seconds: 5,
+      image_interval_max_seconds: 8,
+    },
+  }
+}
+
+function guessPublicSiteName(startUrl: unknown): string {
+  try {
+    const parsed = new URL(String(startUrl || '').trim())
+    const host = (parsed.hostname || 'site').trim().toLowerCase()
+    const firstPath = parsed.pathname.replace(/^\/+|\/+$/g, '').split('/', 1)[0]?.trim().toLowerCase() || 'index'
+    const seed = `${host}_${firstPath}`
+    const normalized = seed.replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '')
+    if (normalized) {
+      return normalized
+    }
+  } catch {
+    // fall through
+  }
+  const fallback = new Date().toISOString().replace(/[-:TZ.]/g, '').slice(0, 14)
+  return `site_${fallback}`
+}
+
+function sanitizePublicSubdirName(value: unknown): string {
+  let text = String(value || '').trim()
+  if (!text) {
+    return ''
+  }
+  const invalidChars = new Set(['<', '>', ':', '"', '/', '\\', '|', '?', '*'])
+  text = Array.from(text)
+    .map((char) => {
+      const code = char.charCodeAt(0)
+      if (code < 32 || invalidChars.has(char)) {
+        return '_'
+      }
+      return char
+    })
+    .join('')
+  text = text.replace(/\s+/g, ' ').trim().replace(/[. ]+$/g, '')
+  text = text.replace(/_+/g, '_').replace(/^_+|_+$/g, '')
+  return text
+}
+
+function extractPublicYearToken(...texts: unknown[]): string {
+  for (const raw of texts) {
+    const match = String(raw || '').match(/(?<!\d)(19|20)\d{2}(?!\d)/)
+    if (match) {
+      return match[0]
+    }
+  }
+  return ''
+}
+
+function guessPublicUnitName(startUrl: unknown, payload: JsonRecord, templatePath = ''): string {
+  const rules = asRecord(payload.rules) || {}
+  for (const key of ['unit_name', 'organization_name', 'org_name', 'unit']) {
+    const candidate = String(rules[key] || '').trim()
+    if (candidate) {
+      return candidate
+    }
+  }
+
+  let host = ''
+  try {
+    host = (new URL(String(startUrl || '').trim()).hostname || '').trim().toLowerCase()
+  } catch {
+    host = ''
+  }
+  if (host.includes('tiantonglaw.com')) {
+    return '天同律师事务所'
+  }
+  if (host.endsWith('mps.gov.cn') || host.includes('mps.gov.cn')) {
+    return '公安部'
+  }
+
+  const siteName = String(payload.site_name || '').trim()
+  if (siteName) {
+    const cleaned = siteName.replace(/[_-]+/g, ' ').trim()
+    if (cleaned) {
+      return cleaned
+    }
+  }
+
+  const templateName = path.parse(String(templatePath || '').trim()).name
+  if (templateName) {
+    return templateName
+  }
+
+  if (host) {
+    const parts = host.split('.').filter(Boolean)
+    if (parts.length >= 2) {
+      return parts[parts.length - 2]
+    }
+    return host
+  }
+  return '单位'
+}
+
+function defaultPublicScraperOutputRoot(startUrl: unknown): string {
+  return path.resolve(projectRoot, 'data', 'public_archive', guessPublicSiteName(startUrl))
+}
+
+function normalizePublicScraperTemplateOutputRoot(pathText: unknown): string {
+  const raw = String(pathText || '').trim()
+  if (!raw) {
+    return ''
+  }
+  return path.resolve(projectRoot, raw)
+}
+
+function resolvePublicTaskOutputRoot(
+  baseOutputRoot: unknown,
+  startUrl: unknown,
+  payload: JsonRecord,
+  options?: { templatePath?: string; fallbackOutputRoot?: string },
+): { outputRoot: string; payload: JsonRecord } {
+  const data = jsonClone(payload || {})
+  const baseRoot = path.resolve(
+    String(baseOutputRoot || '').trim() || String(options?.fallbackOutputRoot || '').trim() || projectRoot,
+  )
+  const rules = asRecord(data.rules) || {}
+  data.rules = rules
+
+  const autoUnitSubdir = Boolean(rules.auto_unit_subdir)
+  if (!autoUnitSubdir) {
+    delete rules.output_root_parent
+    delete rules.resolved_output_subdir
+    delete rules.resolved_unit_name
+    delete rules.resolved_year
+    return { outputRoot: baseRoot, payload: data }
+  }
+
+  const templatePath = String(options?.templatePath || '').trim()
+  const unitName = sanitizePublicSubdirName(guessPublicUnitName(startUrl, data, templatePath))
+  const siteName = sanitizePublicSubdirName(String(data.site_name || ''))
+  let host = ''
+  try {
+    host = sanitizePublicSubdirName((new URL(String(startUrl || '').trim()).hostname || '').trim().toLowerCase())
+  } catch {
+    host = ''
+  }
+  const year = sanitizePublicSubdirName(
+    String(rules.year_hint || extractPublicYearToken(startUrl, data.site_name || '', path.basename(templatePath))),
+  )
+  const yearSuffix = year ? `_${year}` : ''
+
+  let pattern = String(rules.output_subdir_pattern || '').trim()
+  if (!pattern) {
+    pattern = '{unit}{year_suffix}'
+  }
+  const formatCtx: Record<string, string> = {
+    unit: unitName,
+    year,
+    year_suffix: yearSuffix,
+    site_name: siteName,
+    host,
+  }
+  const subdirRaw = pattern.replace(/\{([^}]+)\}/g, (_match, key: string) => formatCtx[key] || '')
+  let subdirName = sanitizePublicSubdirName(subdirRaw)
+  if (!subdirName) {
+    subdirName = sanitizePublicSubdirName(unitName || siteName || host)
+  }
+  if (!subdirName) {
+    delete rules.output_root_parent
+    delete rules.resolved_output_subdir
+    delete rules.resolved_unit_name
+    delete rules.resolved_year
+    return { outputRoot: baseRoot, payload: data }
+  }
+
+  const resolvedRoot = path.resolve(baseRoot, subdirName)
+  rules.output_root_parent = baseRoot
+  rules.resolved_output_subdir = subdirName
+  rules.resolved_unit_name = unitName || siteName || host
+  if (year) {
+    rules.resolved_year = year
+  } else {
+    delete rules.resolved_year
+  }
+  return { outputRoot: resolvedRoot, payload: data }
+}
+
+function publicScraperTemplatesDir(): string {
+  const dir = path.join(projectRoot, 'scraper', 'templates')
+  return dir
+}
+
+function publicScraperTemplateStatePath(): string {
+  return path.join(projectRoot, 'scraper', 'state', 'template_run_state.json')
+}
+
+async function loadPublicScraperTemplateStates(): Promise<Record<string, { status: string; updated_at: string }>> {
+  const payload = await readJsonFile(publicScraperTemplateStatePath())
+  const templates = asRecord(payload.templates) || {}
+  const states: Record<string, { status: string; updated_at: string }> = {}
+  for (const [rawKey, rawValue] of Object.entries(templates)) {
+    const absKey = path.resolve(String(rawKey || '').trim())
+    if (!absKey) {
+      continue
+    }
+    if (rawValue && typeof rawValue === 'object' && !Array.isArray(rawValue)) {
+      const entry = asRecord(rawValue) || {}
+      const status = String(entry.status || '').trim().toLowerCase()
+      const updatedAt = String(entry.updated_at || '').trim()
+      if (status) {
+        states[absKey] = { status, updated_at: updatedAt }
+      }
+      continue
+    }
+    const status = String(rawValue || '').trim().toLowerCase()
+    if (status) {
+      states[absKey] = { status, updated_at: '' }
+    }
+  }
+  return states
+}
+
+async function savePublicScraperTemplateStates(states: Record<string, { status: string; updated_at: string }>): Promise<void> {
+  const normalized: Record<string, { status: string; updated_at: string }> = {}
+  for (const [rawKey, rawValue] of Object.entries(states || {})) {
+    const absKey = path.resolve(String(rawKey || '').trim())
+    const status = String(rawValue?.status || '').trim().toLowerCase()
+    const updatedAt = String(rawValue?.updated_at || '').trim()
+    if (!absKey || !status) {
+      continue
+    }
+    normalized[absKey] = {
+      status,
+      updated_at: updatedAt || new Date().toISOString().slice(0, 19),
+    }
+  }
+  const statePath = publicScraperTemplateStatePath()
+  await mkdir(path.dirname(statePath), { recursive: true })
+  await writeFile(
+    statePath,
+    JSON.stringify(
+      {
+        updated_at: new Date().toISOString().slice(0, 19),
+        templates: normalized,
+      },
+      null,
+      2,
+    ),
+    'utf-8',
+  )
+}
+
+async function setPublicScraperTemplateState(templatePath: unknown, status: unknown): Promise<void> {
+  const absPath = path.resolve(String(templatePath || '').trim())
+  const statusText = String(status || '').trim().toLowerCase()
+  if (!absPath || !statusText) {
+    return
+  }
+  const states = await loadPublicScraperTemplateStates()
+  states[absPath] = { status: statusText, updated_at: new Date().toISOString().slice(0, 19) }
+  await savePublicScraperTemplateStates(states)
+}
+
+async function listPublicScraperTemplates(): Promise<ScraperLaunchTemplateOption[]> {
+  const unfinished: ScraperLaunchTemplateOption[] = []
+  const done: ScraperLaunchTemplateOption[] = []
+  const templatesDir = publicScraperTemplatesDir()
+  const templateStates = await loadPublicScraperTemplateStates()
+  const seen = new Set<string>()
+  for (const folder of [templatesDir, path.join(projectRoot, 'scraper')]) {
+    if (!existsSync(folder)) {
+      continue
+    }
+    const entries = await readdir(folder, { withFileTypes: true }).catch(() => [])
+    const names = entries
+      .filter((entry) => entry.isFile())
+      .map((entry) => entry.name)
+      .sort((left, right) => left.localeCompare(right, undefined, { sensitivity: 'base' }))
+    for (const name of names) {
+      if (!name.toLowerCase().endsWith('.json')) {
+        continue
+      }
+      const full = path.resolve(folder, name)
+      if (seen.has(full) || name.toLowerCase() === 'template_run_state.json') {
+        continue
+      }
+      if (folder !== templatesDir && !name.toLowerCase().includes('config.')) {
+        continue
+      }
+      seen.add(full)
+      const rawStatus = String(templateStates[full]?.status || '').trim().toLowerCase()
+      const isDone = new Set(['done', 'completed', 'finished', 'success']).has(rawStatus)
+      const item: ScraperLaunchTemplateOption = {
+        label: `${isDone ? '已完成' : '未完成'} | ${path.relative(projectRoot, full)}`,
+        path: full,
+        status: rawStatus || (isDone ? 'done' : 'pending'),
+        updated_at: String(templateStates[full]?.updated_at || '').trim(),
+      }
+      if (isDone) {
+        done.push(item)
+      } else {
+        unfinished.push(item)
+      }
+    }
+  }
+  return [...unfinished, ...done]
+}
+
 function mergeStatusReason(entry: JsonRecord, message: string): void {
   const next = String(message || '').trim()
   if (!next) {
@@ -484,6 +948,357 @@ async function loadGlobalLlmSettings(): Promise<JsonRecord> {
   return asRecord(payload.llm) || {}
 }
 
+function buildPublicScraperSetupInitialState(sourceHint: unknown, globalLlmSettings?: JsonRecord): ScraperLaunchValues {
+  const defaults = defaultPublicScraperTemplate()
+  const crawlDefaults = asRecord(defaults.crawl) || {}
+  const rulesDefaults = asRecord(defaults.rules) || {}
+  const globalLlm = globalLlmSettings || {}
+  const initialUrl = String(sourceHint || '').trim() || 'https://'
+  const initialOutput = defaultPublicScraperOutputRoot(initialUrl)
+
+  let intervalMin = Number(
+    crawlDefaults.interval_min_seconds ??
+      crawlDefaults.image_interval_min_seconds ??
+      crawlDefaults.download_delay ??
+      5,
+  )
+  let intervalMax = Number(
+    crawlDefaults.interval_max_seconds ??
+      crawlDefaults.image_interval_max_seconds ??
+      Math.max(intervalMin || 5, 8),
+  )
+  if (!Number.isFinite(intervalMin)) intervalMin = 5
+  if (!Number.isFinite(intervalMax)) intervalMax = Math.max(intervalMin, 8)
+  if (intervalMax < intervalMin) intervalMax = intervalMin
+
+  let suspectFailures = Number(crawlDefaults.suspect_block_consecutive_failures ?? 3)
+  if (!Number.isFinite(suspectFailures)) suspectFailures = 3
+  if (suspectFailures < 2) suspectFailures = 2
+
+  let imageMode = String(rulesDefaults.image_download_mode || 'requests_jsl').trim().toLowerCase()
+  if (!VALID_IMAGE_DOWNLOAD_MODES.has(imageMode)) {
+    imageMode = 'requests_jsl'
+  }
+
+  const globalLlmEnabled = Boolean(globalLlm.enabled_default)
+  const globalLlmModel = String(globalLlm.model || '').trim()
+  const globalLlmApiBase = String(globalLlm.api_base || '').trim()
+  const globalLlmApiKey = String(globalLlm.api_key || '').trim()
+
+  return {
+    start_url: initialUrl,
+    output_root: initialOutput,
+    interval_min: String(intervalMin),
+    interval_max: String(intervalMax),
+    timeout_seconds: String(crawlDefaults.timeout_seconds ?? 30),
+    suspect_block_consecutive_failures: String(suspectFailures),
+    jsl_enabled: Boolean(rulesDefaults.jsl_clearance_enabled ?? true),
+    image_download_mode: imageMode,
+    auto_fallback_to_browser: Boolean(rulesDefaults.auto_fallback_to_browser ?? true),
+    disable_page_images_during_crawl: Boolean(rulesDefaults.disable_page_images_during_crawl ?? true),
+    output_minimal: ['images_only', 'images_only_with_record'].includes(
+      String(rulesDefaults.output_mode || 'images_only_with_record').trim().toLowerCase(),
+    ),
+    direct_write_images: Boolean(rulesDefaults.direct_write_images ?? true),
+    llm_enrich_enabled:
+      globalLlmApiBase || globalLlmModel
+        ? globalLlmEnabled
+        : Boolean(rulesDefaults.llm_enrich_enabled ?? false),
+    llm_model: globalLlmModel || String(rulesDefaults.llm_model || 'qwen2.5:7b-instruct'),
+    llm_api_base: globalLlmApiBase || String(rulesDefaults.llm_api_base || 'http://127.0.0.1:11434/v1'),
+    llm_api_key: globalLlmApiKey || String(rulesDefaults.llm_api_key || ''),
+    template_hint: DEFAULT_TEMPLATE_HINT,
+    template_start_url: '',
+    save_generated_template: true,
+    cleanup_generated_template: true,
+    disable_template_persistence_controls: false,
+    url_locked: false,
+    selected_template_path: '',
+  }
+}
+
+async function buildPublicScraperTemplateSelectionState(
+  templatePath: string,
+  globalLlmSettings?: JsonRecord,
+): Promise<Partial<ScraperLaunchValues>> {
+  const selectedPath = String(templatePath || '').trim()
+  if (!selectedPath) {
+    return {
+      template_hint: DEFAULT_TEMPLATE_HINT,
+      template_start_url: '',
+      url_locked: false,
+      disable_template_persistence_controls: false,
+    }
+  }
+
+  let payload: JsonRecord = {}
+  try {
+    const loaded = JSON.parse(await readFile(selectedPath, 'utf-8')) as unknown
+    payload = asRecord(loaded) || {}
+    if (!Object.keys(payload).length) {
+      throw new Error('模板不是 JSON 对象')
+    }
+  } catch (error) {
+    return {
+      template_hint: `模板读取失败：${error instanceof Error ? error.message : String(error)}`,
+      template_start_url: '',
+      url_locked: false,
+      disable_template_persistence_controls: false,
+    }
+  }
+
+  let startUrl = ''
+  const startUrls = payload.start_urls
+  if (Array.isArray(startUrls) && startUrls.length > 0) {
+    startUrl = normalizeHttpUrl(startUrls[0])
+  } else if (typeof startUrls === 'string') {
+    startUrl = normalizeHttpUrl(startUrls)
+  }
+  if (!/^https?:\/\//i.test(startUrl)) {
+    return {
+      template_hint: '模板缺少有效 start_urls，无法直接启动。',
+      template_start_url: '',
+      url_locked: false,
+      disable_template_persistence_controls: false,
+    }
+  }
+
+  const defaults = defaultPublicScraperTemplate()
+  const crawlDefaults = asRecord(defaults.crawl) || {}
+  const crawlData = asRecord(payload.crawl) || {}
+  const rulesData = asRecord(payload.rules) || {}
+  const globalLlm = globalLlmSettings || {}
+  const globalLlmEnabled = Boolean(globalLlm.enabled_default)
+  const globalLlmModel = String(globalLlm.model || '').trim()
+  const globalLlmApiBase = String(globalLlm.api_base || '').trim()
+  const globalLlmApiKey = String(globalLlm.api_key || '').trim()
+  let imageMode = String(rulesData.image_download_mode || 'requests_jsl').trim().toLowerCase()
+  if (!VALID_IMAGE_DOWNLOAD_MODES.has(imageMode)) {
+    imageMode = 'requests_jsl'
+  }
+
+  const outputCfg = normalizePublicScraperTemplateOutputRoot(payload.output_root || '')
+  return {
+    template_hint: '已使用模板内置链接，可直接开始任务。',
+    template_start_url: startUrl,
+    start_url: startUrl,
+    url_locked: true,
+    interval_min: String(crawlData.interval_min_seconds ?? crawlData.image_interval_min_seconds ?? crawlData.download_delay ?? ''),
+    interval_max: String(crawlData.interval_max_seconds ?? crawlData.image_interval_max_seconds ?? crawlData.interval_min_seconds ?? ''),
+    timeout_seconds: String(crawlData.timeout_seconds ?? ''),
+    suspect_block_consecutive_failures: String(
+      crawlData.suspect_block_consecutive_failures ?? crawlDefaults.suspect_block_consecutive_failures ?? 3,
+    ),
+    jsl_enabled: Boolean(rulesData.jsl_clearance_enabled ?? true),
+    image_download_mode: imageMode,
+    auto_fallback_to_browser: Boolean(rulesData.auto_fallback_to_browser ?? true),
+    disable_page_images_during_crawl: Boolean(rulesData.disable_page_images_during_crawl ?? true),
+    llm_enrich_enabled:
+      globalLlmApiBase || globalLlmModel
+        ? globalLlmEnabled
+        : Boolean(rulesData.llm_enrich_enabled ?? false),
+    llm_model: globalLlmModel || String(rulesData.llm_model || 'qwen2.5:7b-instruct'),
+    llm_api_base: globalLlmApiBase || String(rulesData.llm_api_base || 'http://127.0.0.1:11434/v1'),
+    llm_api_key: globalLlmApiKey || String(rulesData.llm_api_key || ''),
+    output_minimal: ['images_only', 'images_only_with_record'].includes(
+      String(rulesData.output_mode || 'images_only_with_record').trim().toLowerCase(),
+    ),
+    direct_write_images: Boolean(rulesData.direct_write_images ?? true),
+    output_root: outputCfg || defaultPublicScraperOutputRoot(startUrl),
+    save_generated_template: false,
+    cleanup_generated_template: false,
+    disable_template_persistence_controls: true,
+  }
+}
+
+function buildPublicScraperSetupSubmitPlan(
+  rawValues: JsonRecord,
+  options: { selectedTemplatePath?: string; templateStartUrl?: string },
+): { ok: true; result: JsonRecord } | { ok: false; title: string; message: string } {
+  const selectedPath = String(options.selectedTemplatePath || '').trim()
+  let startUrl = ''
+  if (selectedPath) {
+    startUrl = String(options.templateStartUrl || '').trim() || normalizeHttpUrl(rawValues.start_url || '')
+    if (!/^https?:\/\//i.test(startUrl)) {
+      return { ok: false, title: '模板错误', message: '所选模板缺少有效 start_urls，无法直接启动。' }
+    }
+  } else {
+    startUrl = normalizeHttpUrl(rawValues.start_url || '')
+    if (!/^https?:\/\//i.test(startUrl)) {
+      return { ok: false, title: '链接无效', message: '请输入有效的 http/https 链接。' }
+    }
+  }
+
+  const outputRootRaw = String(rawValues.output_root || '').trim()
+  const outputRoot = path.resolve(outputRootRaw || defaultPublicScraperOutputRoot(startUrl))
+  const intervalMin = Number(String(rawValues.interval_min || '').trim())
+  let intervalMax = Number(String(rawValues.interval_max || '').trim())
+  const timeoutSeconds = Number(String(rawValues.timeout_seconds || '').trim())
+  const suspectFailures = Number(String(rawValues.suspect_block_consecutive_failures || '').trim())
+  if (!Number.isFinite(intervalMin) || !Number.isFinite(intervalMax) || !Number.isFinite(timeoutSeconds) || !Number.isFinite(suspectFailures)) {
+    return { ok: false, title: '参数错误', message: '间隔、超时、连续失败阈值必须是数字。' }
+  }
+  if (intervalMin < 0.1) {
+    return { ok: false, title: '参数错误', message: '统一间隔最小值必须 >= 0.1 秒。' }
+  }
+  if (intervalMax < intervalMin) {
+    intervalMax = intervalMin
+  }
+  if (timeoutSeconds < 5) {
+    return { ok: false, title: '参数错误', message: '请求超时必须 >= 5 秒。' }
+  }
+  if (suspectFailures < 2) {
+    return { ok: false, title: '参数错误', message: '连续失败阈值必须 >= 2。' }
+  }
+
+  let mode = String(rawValues.image_download_mode || 'requests_jsl').trim().toLowerCase()
+  if (!VALID_IMAGE_DOWNLOAD_MODES.has(mode)) {
+    mode = 'requests_jsl'
+  }
+  return {
+    ok: true,
+    result: {
+      start_url: startUrl,
+      output_root: outputRoot,
+      interval_min: Math.round(intervalMin * 1000) / 1000,
+      interval_max: Math.round(intervalMax * 1000) / 1000,
+      timeout_seconds: Math.trunc(timeoutSeconds),
+      suspect_block_consecutive_failures: Math.trunc(suspectFailures),
+      jsl_enabled: Boolean(rawValues.jsl_enabled),
+      image_download_mode: mode,
+      auto_fallback_to_browser: rawValues.auto_fallback_to_browser == null ? true : Boolean(rawValues.auto_fallback_to_browser),
+      disable_page_images_during_crawl:
+        rawValues.disable_page_images_during_crawl == null ? true : Boolean(rawValues.disable_page_images_during_crawl),
+      llm_enrich_enabled: Boolean(rawValues.llm_enrich_enabled),
+      llm_model: String(rawValues.llm_model || '').trim(),
+      llm_api_base: String(rawValues.llm_api_base || '').trim(),
+      llm_api_key: String(rawValues.llm_api_key || '').trim(),
+      output_minimal: rawValues.output_minimal == null ? true : Boolean(rawValues.output_minimal),
+      direct_write_images: rawValues.direct_write_images == null ? true : Boolean(rawValues.direct_write_images),
+      template_path: selectedPath,
+      save_generated_template: Boolean(rawValues.save_generated_template) && !selectedPath,
+      cleanup_generated_template: Boolean(rawValues.cleanup_generated_template) && !selectedPath,
+    },
+  }
+}
+
+function applyPublicScraperSetupToRuntimeConfig(
+  runtimeConfig: JsonRecord,
+  setup: JsonRecord,
+  globalLlmSettings?: JsonRecord,
+): { runtime_config: JsonRecord; llm_model: string; llm_api_base: string; llm_api_key: string } {
+  const config = jsonClone(runtimeConfig || {})
+  const setupData = setup || {}
+  const globalLlm = globalLlmSettings || {}
+  const crawl = asRecord(config.crawl) || {}
+  const rules = asRecord(config.rules) || {}
+
+  const intervalMin = Number(setupData.interval_min || 0)
+  const intervalMax = Number(setupData.interval_max || intervalMin)
+  crawl.interval_min_seconds = intervalMin
+  crawl.interval_max_seconds = intervalMax
+  crawl.download_delay = intervalMin
+  crawl.autothrottle_start_delay = intervalMin
+  crawl.autothrottle_max_delay = intervalMax
+  crawl.image_interval_min_seconds = intervalMin
+  crawl.image_interval_max_seconds = intervalMax
+  crawl.timeout_seconds = Math.trunc(Number(setupData.timeout_seconds || crawl.timeout_seconds || 30))
+  crawl.suspect_block_consecutive_failures = Math.max(
+    2,
+    Math.trunc(Number(setupData.suspect_block_consecutive_failures || crawl.suspect_block_consecutive_failures || 3)),
+  )
+
+  rules.jsl_clearance_enabled = Boolean(setupData.jsl_enabled)
+  let mode = String(setupData.image_download_mode || 'requests_jsl').trim().toLowerCase()
+  if (!VALID_IMAGE_DOWNLOAD_MODES.has(mode)) {
+    mode = 'requests_jsl'
+  }
+  rules.image_download_mode = mode
+  rules.auto_fallback_to_browser = Boolean(setupData.auto_fallback_to_browser ?? true)
+  rules.disable_page_images_during_crawl = Boolean(setupData.disable_page_images_during_crawl ?? true)
+  rules.direct_write_images = Boolean(setupData.direct_write_images ?? true)
+  rules.llm_enrich_enabled = Boolean(setupData.llm_enrich_enabled ?? false)
+
+  const globalLlmModel = String(globalLlm.model || '').trim()
+  const globalLlmApiBase = String(globalLlm.api_base || '').trim()
+  const globalLlmApiKey = String(globalLlm.api_key || '').trim()
+  const llmModel = String(setupData.llm_model || '').trim() || globalLlmModel
+  const llmApiBase = normalizeApiBase(String(setupData.llm_api_base || '').trim() || globalLlmApiBase)
+  const llmApiKey = String(setupData.llm_api_key || '').trim() || globalLlmApiKey
+  if (llmModel) {
+    rules.llm_model = llmModel
+  }
+  if (llmApiBase) {
+    rules.llm_api_base = llmApiBase
+  }
+  delete rules.llm_api_key
+  if (rules.image_download_mode === 'browser') {
+    rules.browser_engine = String(rules.browser_engine || 'edge').trim().toLowerCase() || 'edge'
+  }
+  if (setupData.output_minimal ?? true) {
+    rules.output_mode = 'images_only_with_record'
+    rules.keep_record_file = true
+  } else {
+    rules.output_mode = 'full'
+    rules.keep_record_file = true
+  }
+
+  config.crawl = crawl
+  config.rules = rules
+  return {
+    runtime_config: config,
+    llm_model: llmModel,
+    llm_api_base: llmApiBase,
+    llm_api_key: llmApiKey,
+  }
+}
+
+async function saveGeneratedPublicScraperTemplate(startUrl: string, runtimeConfig: JsonRecord): Promise<string> {
+  const payload = jsonClone(runtimeConfig || {})
+  const siteName = guessPublicSiteName(startUrl)
+  payload.site_name = siteName
+  payload.output_root = `data/public_archive/${siteName}`
+  const rules = asRecord(payload.rules) || {}
+  delete rules.cleanup_paths
+  delete rules.template_source_path
+  delete rules.generated_template_path
+  delete rules.output_root_parent
+  delete rules.resolved_output_subdir
+  delete rules.resolved_unit_name
+  delete rules.resolved_year
+  payload.rules = rules
+
+  const templatesDir = publicScraperTemplatesDir()
+  await mkdir(templatesDir, { recursive: true })
+  const basePath = path.join(templatesDir, `${siteName}.json`)
+  let target = basePath
+  if (existsSync(target)) {
+    const stamp = new Date().toISOString().replace(/[-:TZ.]/g, '').slice(0, 14)
+    target = path.join(templatesDir, `${siteName}_${stamp}.json`)
+  }
+  await writeFile(target, JSON.stringify(payload, null, 2), 'utf-8')
+  return target
+}
+
+function registerGeneratedTemplate(runtimeConfig: JsonRecord, generatedTemplatePath: string, cleanupAfterRun: boolean): JsonRecord {
+  const config = jsonClone(runtimeConfig || {})
+  const target = String(generatedTemplatePath || '').trim()
+  if (!target) {
+    return config
+  }
+  const rules = asRecord(config.rules) || {}
+  rules.generated_template_path = target
+  if (cleanupAfterRun) {
+    const cleanupPaths = Array.isArray(rules.cleanup_paths) ? [...rules.cleanup_paths] : []
+    if (!cleanupPaths.includes(target)) {
+      cleanupPaths.push(target)
+    }
+    rules.cleanup_paths = cleanupPaths
+  }
+  config.rules = rules
+  return config
+}
+
 function applyLlmEnv(baseEnv: NodeJS.ProcessEnv, options: { api_base?: unknown; api_key?: unknown; model?: unknown }): NodeJS.ProcessEnv {
   const env = { ...baseEnv }
   const apiBase = normalizeApiBase(options.api_base)
@@ -495,6 +1310,195 @@ function applyLlmEnv(baseEnv: NodeJS.ProcessEnv, options: { api_base?: unknown; 
   env.PYTHONUTF8 = '1'
   env.PYTHONIOENCODING = 'utf-8'
   return env
+}
+
+async function buildPublicScraperRuntimeConfig(
+  startUrl: string,
+  outputRoot: string,
+  templatePath = '',
+): Promise<{ config_path: string; runtime_config: JsonRecord }> {
+  const templateCandidates = [
+    templatePath,
+    path.join(projectRoot, 'scraper', 'config.template.generic.json'),
+    path.join(projectRoot, 'scraper', 'config.example.json'),
+  ]
+  let payload: JsonRecord = {}
+  let loadedTemplatePath = ''
+  for (const candidate of templateCandidates) {
+    if (!candidate || !existsSync(candidate)) {
+      continue
+    }
+    try {
+      const loaded = JSON.parse(await readFile(candidate, 'utf-8')) as unknown
+      const data = asRecord(loaded) || {}
+      if (Object.keys(data).length > 0) {
+        payload = data
+        loadedTemplatePath = path.resolve(candidate)
+        break
+      }
+    } catch {
+      continue
+    }
+  }
+  if (!Object.keys(payload).length) {
+    payload = defaultPublicScraperTemplate()
+  }
+  payload = jsonClone(payload)
+
+  let parsed: URL
+  try {
+    parsed = new URL(startUrl)
+  } catch {
+    throw new Error('无效链接：无法解析域名')
+  }
+  const host = (parsed.hostname || '').trim().toLowerCase()
+  if (!host) {
+    throw new Error('无效链接：无法解析域名')
+  }
+
+  const customTemplatePath = templatePath ? path.resolve(templatePath) : ''
+  const usingCustomTemplate = Boolean(customTemplatePath && loadedTemplatePath && customTemplatePath === loadedTemplatePath)
+  const templateStartUrls: string[] = []
+  const templateStartUrlsRaw = payload.start_urls
+  if (Array.isArray(templateStartUrlsRaw)) {
+    for (const item of templateStartUrlsRaw) {
+      const value = String(item || '').trim()
+      if (value) {
+        templateStartUrls.push(value)
+      }
+    }
+  } else if (typeof templateStartUrlsRaw === 'string' && templateStartUrlsRaw.trim()) {
+    templateStartUrls.push(templateStartUrlsRaw.trim())
+  }
+
+  const runtimeStartUrls: string[] = []
+  if (usingCustomTemplate && templateStartUrls.length > 0) {
+    for (const item of templateStartUrls) {
+      if (!runtimeStartUrls.includes(item)) {
+        runtimeStartUrls.push(item)
+      }
+    }
+    if (!runtimeStartUrls.includes(startUrl)) {
+      runtimeStartUrls.unshift(startUrl)
+    }
+  } else {
+    runtimeStartUrls.push(startUrl)
+  }
+
+  const allowedDomains: string[] = []
+  for (const seedUrl of runtimeStartUrls) {
+    try {
+      const seedHost = (new URL(seedUrl).hostname || '').trim().toLowerCase()
+      if (!seedHost) {
+        continue
+      }
+      for (const domain of [seedHost, seedHost.startsWith('www.') ? seedHost.slice(4) : `www.${seedHost}`]) {
+        const normalized = String(domain || '').trim().toLowerCase()
+        if (normalized && !allowedDomains.includes(normalized)) {
+          allowedDomains.push(normalized)
+        }
+      }
+    } catch {
+      continue
+    }
+  }
+
+  if (usingCustomTemplate && Array.isArray(payload.allowed_domains)) {
+    for (const item of payload.allowed_domains) {
+      const domain = String(item || '').trim().toLowerCase()
+      if (domain && !allowedDomains.includes(domain)) {
+        allowedDomains.push(domain)
+      }
+    }
+  }
+
+  let siteName = usingCustomTemplate ? String(payload.site_name || '').trim() : ''
+  if (!siteName) {
+    siteName = guessPublicSiteName(startUrl)
+  }
+  const referer = `${parsed.protocol}//${parsed.host}/`
+  const baseOutputRoot = path.resolve(String(outputRoot || '').trim() || defaultPublicScraperOutputRoot(startUrl))
+  payload.site_name = siteName
+  payload.start_urls = runtimeStartUrls
+  payload.allowed_domains = allowedDomains
+  payload.output_root = baseOutputRoot
+
+  const defaultHeaders = asRecord(payload.default_headers) || {}
+  if (!String(defaultHeaders.Referer || '').trim()) {
+    defaultHeaders.Referer = referer
+  }
+  payload.default_headers = defaultHeaders
+
+  const imageHeaders = asRecord(payload.image_headers) || {}
+  if (!String(imageHeaders.Referer || '').trim()) {
+    imageHeaders.Referer = referer
+  }
+  payload.image_headers = imageHeaders
+
+  const defaults = defaultPublicScraperTemplate()
+  const selectors = asRecord(payload.selectors) || {}
+  for (const [key, value] of Object.entries(asRecord(defaults.selectors) || {})) {
+    if (!(key in selectors)) {
+      selectors[key] = value
+    }
+  }
+  payload.selectors = selectors
+
+  const rules = asRecord(payload.rules) || {}
+  for (const [key, value] of Object.entries(asRecord(defaults.rules) || {})) {
+    if (!(key in rules)) {
+      rules[key] = value
+    }
+  }
+  rules.named_images_dir = ''
+  rules.final_output_root = ''
+  rules.record_root = ''
+  rules.default_gender = ''
+  rules.template_source_path = templatePath ? path.resolve(templatePath) : ''
+  payload.rules = rules
+
+  const resolved = resolvePublicTaskOutputRoot(baseOutputRoot, startUrl, payload, {
+    templatePath,
+    fallbackOutputRoot: defaultPublicScraperOutputRoot(startUrl),
+  })
+  payload = resolved.payload
+  payload.output_root = resolved.outputRoot
+
+  const crawl = asRecord(payload.crawl) || {}
+  for (const [key, value] of Object.entries(asRecord(defaults.crawl) || {})) {
+    if (!(key in crawl)) {
+      crawl[key] = value
+    }
+  }
+  payload.crawl = crawl
+
+  const runtimeConfigPath = path.join(String(payload.output_root || resolved.outputRoot), 'state', 'runtime_config.json')
+  await mkdir(path.dirname(runtimeConfigPath), { recursive: true })
+  await writeFile(runtimeConfigPath, JSON.stringify(payload, null, 2), 'utf-8')
+  return { config_path: runtimeConfigPath, runtime_config: payload }
+}
+
+function buildStartedTaskMessage(pid: number, namedDir: string, logPath: string, runtimeRules: JsonRecord): string {
+  const usedTemplatePath = String(runtimeRules.template_source_path || '').trim()
+  const generatedTemplatePath = String(runtimeRules.generated_template_path || '').trim()
+  const imageMode = String(runtimeRules.image_download_mode || 'requests_jsl').trim().toLowerCase()
+  const imageModeText = imageMode === 'browser' ? '浏览器模式(慢稳)' : '请求模式(快)'
+  const resolvedSubdir = String(runtimeRules.resolved_output_subdir || '').trim()
+  const folderMsg = resolvedSubdir ? `\n任务子目录：${resolvedSubdir}\n` : ''
+  let templateMsg = ''
+  if (usedTemplatePath) {
+    templateMsg = `\n模板：\n${usedTemplatePath}`
+  } else if (generatedTemplatePath) {
+    templateMsg = `\n模板（本次生成）：\n${generatedTemplatePath}`
+  }
+  return (
+    '抓取任务已在后台启动。\n' +
+    `任务进程 PID: ${pid}\n\n` +
+    `图片下载方式：${imageModeText}\n\n` +
+    `${folderMsg}` +
+    `最终图片会输出到：\n${namedDir}\n\n` +
+    `运行日志：\n${logPath}${templateMsg}`
+  )
 }
 
 function prepareExistingTaskRuntimeConfig(runtimeConfig: JsonRecord, outputRoot: string, options: StartExistingTaskOptions): JsonRecord {
@@ -567,6 +1571,71 @@ function buildPublicScraperLogBanner(runLabel: string): string {
 function buildExistingTaskStartedMessage(pid: number, outputRoot: string, namedDir: string, logPath: string, skipCrawl: boolean): string {
   const modeHint = skipCrawl ? '（仅重试失败阶段）' : ''
   return `已按已有配置继续抓取任务。\n\n${modeHint}\n任务进程 PID: ${pid}\n\n任务目录：\n${outputRoot}\n\n最终图片目录：\n${namedDir}\n\n运行日志：\n${logPath}`
+}
+
+async function startPreparedTask(
+  root: string,
+  configPath: string,
+  runtimeConfig: JsonRecord,
+  options: StartExistingTaskOptions,
+  extras?: {
+    runLabel?: string
+    messageBuilder?: (entry: RegistryEntry, namedDir: string, logPath: string, rules: JsonRecord) => string
+  },
+): Promise<{ entry: RegistryEntry; message: string }> {
+  const scriptPath = resolveScraperRunnerScript()
+  if (!existsSync(scriptPath)) throw new Error(`未找到抓取脚本: ${scriptPath}`)
+
+  const prepared = jsonClone(runtimeConfig || {})
+  await mkdir(path.dirname(configPath), { recursive: true })
+  await writeFile(configPath, JSON.stringify(prepared, null, 2), 'utf-8')
+
+  const rules = asRecord(prepared.rules) || {}
+  const namedDir = resolveNamedImagesDir(root, rules)
+  const logPath = path.join(root, 'reports', 'gui_public_scraper.log')
+  await mkdir(path.dirname(logPath), { recursive: true })
+  await setPublicScraperManualPauseFlag(root, false)
+  await writeFile(logPath, buildPublicScraperLogBanner(extras?.runLabel || (options.skip_crawl ? 'Retry' : 'Continue')), {
+    encoding: 'utf-8',
+    flag: 'a',
+  })
+
+  const globalLlm = await loadGlobalLlmSettings()
+  const env = applyLlmEnv(process.env, {
+    api_base: rules.llm_api_base || globalLlm.api_base,
+    api_key: rules.llm_api_key || globalLlm.api_key,
+    model: rules.llm_model || globalLlm.model,
+  })
+  const command = buildPublicScraperCommand(resolvePythonExecutable(), scriptPath, configPath, root, options)
+  const logFd = openSync(logPath, 'a')
+  const child = spawn(command[0], command.slice(1), {
+    cwd: path.dirname(scriptPath) || projectRoot,
+    detached: true,
+    windowsHide: true,
+    stdio: ['ignore', logFd, logFd],
+    env,
+  })
+  child.unref()
+
+  const entry: RegistryEntry = {
+    pid: child.pid ?? 0,
+    config_path: configPath,
+    log_path: logPath,
+    named_dir: namedDir,
+    runtime_state: String(options.runtime_state || '继续运行中').trim() || '继续运行中',
+    manual_paused: false,
+    active_template_path: resolveActiveTemplatePath(rules),
+    last_exit_code: null,
+    updated_at_ts: Date.now() / 1000,
+    started_at: Date.now() / 1000,
+  }
+  if (entry.active_template_path) {
+    await setPublicScraperTemplateState(entry.active_template_path, 'pending').catch(() => undefined)
+  }
+  const message =
+    extras?.messageBuilder?.(entry, namedDir, logPath, rules) ||
+    buildExistingTaskStartedMessage(entry.pid, root, namedDir, logPath, Boolean(options.skip_crawl))
+  return { entry, message }
 }
 
 async function readTextTail(filePath: string, maxLines: number): Promise<string> {
@@ -846,13 +1915,25 @@ async function refreshRuntimeRegistry(registry: RegistryPayload): Promise<Regist
       if (backoffState.blocked_until) {
         normalizedEntry.runtime_state = '已暂停(风控等待)'
         normalizedEntry.last_exit_code = 2
+        if (normalizedEntry.active_template_path) {
+          await setPublicScraperTemplateState(normalizedEntry.active_template_path, 'pending').catch(() => undefined)
+        }
       } else if (String(summary.status || '').trim() === '已完成' || normalizedEntry.last_exit_code === 0) {
         normalizedEntry.runtime_state = '已完成'
         normalizedEntry.last_exit_code = 0
+        if (normalizedEntry.active_template_path) {
+          await setPublicScraperTemplateState(normalizedEntry.active_template_path, 'done').catch(() => undefined)
+        }
       } else if (typeof normalizedEntry.last_exit_code === 'number' && normalizedEntry.last_exit_code > 0) {
         normalizedEntry.runtime_state = `异常结束(${normalizedEntry.last_exit_code})`
+        if (normalizedEntry.active_template_path) {
+          await setPublicScraperTemplateState(normalizedEntry.active_template_path, 'pending').catch(() => undefined)
+        }
       } else {
         normalizedEntry.runtime_state = '已停止(待继续)'
+        if (normalizedEntry.active_template_path) {
+          await setPublicScraperTemplateState(normalizedEntry.active_template_path, 'pending').catch(() => undefined)
+        }
       }
     }
     next.tasks[normalizedRoot] = normalizedEntry
@@ -972,52 +2053,16 @@ function retryRequiresCrawlPhase(rows: JsonRecord[]): boolean {
 }
 
 async function startExistingTask(root: string, options: StartExistingTaskOptions): Promise<{ entry: RegistryEntry; message: string }> {
-  const scriptPath = resolveScraperRunnerScript()
-  if (!existsSync(scriptPath)) throw new Error(`未找到抓取脚本: ${scriptPath}`)
   const configPath = path.join(root, 'state', 'runtime_config.json')
   if (!existsSync(configPath)) throw new Error(`未找到运行配置文件: ${configPath}`)
 
   const runtimeConfig = await readJsonFile(configPath)
   const prepared = prepareExistingTaskRuntimeConfig(runtimeConfig, root, options)
-  await writeFile(configPath, JSON.stringify(prepared, null, 2), 'utf-8')
-
-  const rules = asRecord(prepared.rules) || {}
-  const namedDir = resolveNamedImagesDir(root, rules)
-  const logPath = path.join(root, 'reports', 'gui_public_scraper.log')
-  await mkdir(path.dirname(logPath), { recursive: true })
-  await setPublicScraperManualPauseFlag(root, false)
-  await writeFile(logPath, buildPublicScraperLogBanner(options.skip_crawl ? 'Retry' : 'Continue'), { encoding: 'utf-8', flag: 'a' })
-
-  const globalLlm = await loadGlobalLlmSettings()
-  const env = applyLlmEnv(process.env, {
-    api_base: rules.llm_api_base || globalLlm.api_base,
-    api_key: rules.llm_api_key || globalLlm.api_key,
-    model: rules.llm_model || globalLlm.model,
+  return startPreparedTask(root, configPath, prepared, options, {
+    runLabel: options.skip_crawl ? 'Retry' : 'Continue',
+    messageBuilder: (entry, namedDir, logPath) =>
+      buildExistingTaskStartedMessage(entry.pid, root, namedDir, logPath, Boolean(options.skip_crawl)),
   })
-  const command = buildPublicScraperCommand(resolvePythonExecutable(), scriptPath, configPath, root, options)
-  const logFd = openSync(logPath, 'a')
-  const child = spawn(command[0], command.slice(1), {
-    cwd: path.dirname(scriptPath) || projectRoot,
-    detached: true,
-    windowsHide: true,
-    stdio: ['ignore', logFd, logFd],
-    env,
-  })
-  child.unref()
-
-  const entry: RegistryEntry = {
-    pid: child.pid ?? 0,
-    config_path: configPath,
-    log_path: logPath,
-    named_dir: namedDir,
-    runtime_state: String(options.runtime_state || '继续运行中').trim() || '继续运行中',
-    manual_paused: false,
-    active_template_path: resolveActiveTemplatePath(rules),
-    last_exit_code: null,
-    updated_at_ts: Date.now() / 1000,
-    started_at: Date.now() / 1000,
-  }
-  return { entry, message: buildExistingTaskStartedMessage(entry.pid, root, namedDir, logPath, Boolean(options.skip_crawl)) }
 }
 
 async function pauseTask(registry: RegistryPayload, root: string): Promise<string> {
@@ -1072,6 +2117,133 @@ async function rewriteTask(registry: RegistryPayload, root: string): Promise<str
   return result.message || '元数据重写任务已启动'
 }
 
+function resolveWorkspaceBaseRootForTask(baseRoot: string, outputRoot: string): string {
+  const normalizedBase = normalizePublicTaskRoot(baseRoot)
+  const normalizedOutput = normalizePublicTaskRoot(outputRoot)
+  if (!normalizedOutput) {
+    return normalizedBase || path.join(projectRoot, 'data', 'public_archive')
+  }
+  if (normalizedBase && normalizedOutput.toLowerCase().startsWith(`${normalizedBase.toLowerCase()}${path.sep.toLowerCase()}`)) {
+    return normalizedBase
+  }
+  if (normalizedBase && normalizedBase.toLowerCase() === normalizedOutput.toLowerCase()) {
+    return normalizedBase
+  }
+  return path.dirname(normalizedOutput)
+}
+
+export async function readNativeScraperLaunchState(sourceHint = '', templatePath = ''): Promise<JsonRecord> {
+  const globalLlm = await loadGlobalLlmSettings()
+  const initial = buildPublicScraperSetupInitialState(sourceHint, globalLlm)
+  const selectedTemplatePath = normalizeExistingPath(templatePath)
+  const patch = await buildPublicScraperTemplateSelectionState(selectedTemplatePath, globalLlm)
+  const form = {
+    ...initial,
+    ...patch,
+    selected_template_path: selectedTemplatePath,
+    template_hint: String((patch.template_hint ?? initial.template_hint) || ''),
+    template_start_url: String((patch.template_start_url ?? initial.template_start_url) || ''),
+    url_locked: Boolean(patch.url_locked ?? initial.url_locked),
+    disable_template_persistence_controls: Boolean(
+      patch.disable_template_persistence_controls ?? initial.disable_template_persistence_controls,
+    ),
+  }
+  return {
+    ok: true,
+    ...form,
+    templates: await listPublicScraperTemplates(),
+  }
+}
+
+export async function startNativeScraperTask(
+  values: JsonRecord,
+  options?: { baseRoot?: string },
+): Promise<JsonRecord> {
+  const rawValues = jsonClone(values || {})
+  const selectedTemplatePath = normalizeExistingPath(rawValues.selected_template_path || '')
+  const templateStartUrl = String(rawValues.template_start_url || '').trim()
+  const submitPlan = buildPublicScraperSetupSubmitPlan(rawValues, {
+    selectedTemplatePath,
+    templateStartUrl,
+  })
+  if (!submitPlan.ok) {
+    throw new Error(String(submitPlan.message || '抓取启动参数错误'))
+  }
+  const setup = jsonClone(submitPlan.result)
+  const startUrl = String(setup.start_url || '').trim()
+  const configBuilt = await buildPublicScraperRuntimeConfig(
+    startUrl,
+    String(setup.output_root || '').trim(),
+    String(setup.template_path || '').trim(),
+  )
+  let runtimeConfig = jsonClone(configBuilt.runtime_config)
+  const outputRoot = normalizePublicTaskRoot(runtimeConfig.output_root || setup.output_root)
+  if (!outputRoot) {
+    throw new Error('无法解析任务输出目录。')
+  }
+
+  const registry = await refreshRuntimeRegistry(await loadRuntimeRegistry())
+  const existingEntry = registry.tasks[outputRoot] ? normalizeRegistryEntry(registry.tasks[outputRoot]) : null
+  if (existingEntry && entryRunning(existingEntry)) {
+    registry.active_root = outputRoot
+    await saveRuntimeRegistry(registry)
+    const workspaceBaseRoot = resolveWorkspaceBaseRootForTask(options?.baseRoot || '', outputRoot)
+    return {
+      ok: true,
+      message: `该任务已在运行中：\n${outputRoot}`,
+      created_root: outputRoot,
+      config_path: configBuilt.config_path,
+      workspace: await buildScraperWorkspacePayload(workspaceBaseRoot, { selectedRoot: outputRoot }),
+    }
+  }
+
+  const globalLlm = await loadGlobalLlmSettings()
+  const applyPlan = applyPublicScraperSetupToRuntimeConfig(runtimeConfig, setup, globalLlm)
+  runtimeConfig = jsonClone(applyPlan.runtime_config)
+  if (!selectedTemplatePath && Boolean(setup.save_generated_template)) {
+    try {
+      const generatedTemplatePath = await saveGeneratedPublicScraperTemplate(startUrl, runtimeConfig)
+      runtimeConfig = registerGeneratedTemplate(
+        runtimeConfig,
+        generatedTemplatePath,
+        Boolean(setup.cleanup_generated_template),
+      )
+    } catch {
+      // ignore template persistence failures
+    }
+  }
+
+  const configPath = path.join(outputRoot, 'state', 'runtime_config.json')
+  const result = await startPreparedTask(
+    outputRoot,
+    configPath,
+    runtimeConfig,
+    {
+      skip_crawl: false,
+      skip_images: false,
+      skip_metadata: false,
+      runtime_state: '运行中',
+    },
+    {
+      runLabel: 'Run',
+      messageBuilder: (entry, namedDir, logPath, rules) => buildStartedTaskMessage(entry.pid, namedDir, logPath, rules),
+    },
+  )
+
+  registry.tasks[outputRoot] = normalizeRegistryEntry(result.entry)
+  registry.active_root = outputRoot
+  await saveRuntimeRegistry(registry)
+
+  const workspaceBaseRoot = resolveWorkspaceBaseRootForTask(options?.baseRoot || '', outputRoot)
+  return {
+    ok: true,
+    message: result.message,
+    created_root: outputRoot,
+    config_path: configPath,
+    workspace: await buildScraperWorkspacePayload(workspaceBaseRoot, { selectedRoot: outputRoot }),
+  }
+}
+
 export async function readNativeScraperWorkspace(baseRoot: string, options?: { selectedRoot?: string; progressLimit?: number; logLines?: number }): Promise<JsonRecord> {
   return buildScraperWorkspacePayload(baseRoot, options)
 }
@@ -1124,12 +2296,23 @@ export async function executeScraperCli(args: string[]): Promise<JsonRecord> {
   if (command === 'default-root') {
     return getDefaultScraperBaseRoot()
   }
+  if (command === 'launch-state') {
+    const sourceHint = rest.includes('--source-hint') ? rest[rest.indexOf('--source-hint') + 1] || '' : ''
+    const templatePath = rest.includes('--template-path') ? rest[rest.indexOf('--template-path') + 1] || '' : ''
+    return readNativeScraperLaunchState(sourceHint, templatePath)
+  }
   if (command === 'workspace') {
     const baseRoot = rest[rest.indexOf('--base-root') + 1] || ''
     const selectedRoot = rest.includes('--selected-root') ? rest[rest.indexOf('--selected-root') + 1] || '' : ''
     const progressLimit = rest.includes('--progress-limit') ? ensureNumber(rest[rest.indexOf('--progress-limit') + 1], 300) : 300
     const logLines = rest.includes('--log-lines') ? ensureNumber(rest[rest.indexOf('--log-lines') + 1], 80) : 80
     return readNativeScraperWorkspace(baseRoot, { selectedRoot, progressLimit, logLines })
+  }
+  if (command === 'start') {
+    const baseRoot = rest.includes('--base-root') ? rest[rest.indexOf('--base-root') + 1] || '' : ''
+    const valuesFile = rest.includes('--values-file') ? rest[rest.indexOf('--values-file') + 1] || '' : ''
+    const values = valuesFile ? await readOptionsFile(valuesFile) : {}
+    return startNativeScraperTask(values, { baseRoot })
   }
   if (command === 'action') {
     const action = rest[rest.indexOf('--action') + 1] || ''

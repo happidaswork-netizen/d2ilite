@@ -13,7 +13,9 @@ import {
 } from './scripts/nativeMetadataBackend.ts'
 import {
   getDefaultScraperBaseRoot,
+  readNativeScraperLaunchState,
   readNativeScraperWorkspace,
+  startNativeScraperTask,
   runNativeScraperAction,
 } from './scripts/nativeScraperBackend.ts'
 
@@ -116,12 +118,31 @@ function desktopBridgeDevPlugin(): Plugin {
             return
           }
 
+          if (req.method === 'GET' && routePath === '/scraper/launch-state') {
+            const sourceHint = url.searchParams.get('sourceHint') || ''
+            const templatePath = url.searchParams.get('templatePath') || ''
+            jsonResponse(res, 200, await readNativeScraperLaunchState(sourceHint, templatePath))
+            return
+          }
+
           if (req.method === 'GET' && routePath === '/scraper/workspace') {
             const baseRoot = url.searchParams.get('baseRoot') || ''
             const selectedRoot = url.searchParams.get('selectedRoot') || ''
             const progressLimit = Math.max(20, Number(url.searchParams.get('progressLimit') || '300') || 300)
             const logLines = Math.max(20, Number(url.searchParams.get('logLines') || '80') || 80)
             jsonResponse(res, 200, await readNativeScraperWorkspace(baseRoot, { selectedRoot, progressLimit, logLines }))
+            return
+          }
+
+          if (req.method === 'POST' && routePath === '/scraper/start') {
+            const body = (await parseBody(req)) as {
+              values?: unknown
+              baseRoot?: string
+            }
+            const response = await startNativeScraperTask((body?.values as BridgePayload) ?? {}, {
+              baseRoot: String(body?.baseRoot || '').trim(),
+            })
+            jsonResponse(res, 200, response)
             return
           }
 

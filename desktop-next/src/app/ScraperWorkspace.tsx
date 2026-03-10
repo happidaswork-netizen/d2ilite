@@ -1,3 +1,4 @@
+import { ScraperLaunchPane } from '../features/scraper/components/ScraperLaunchPane'
 import { ScraperTaskDetailPane } from '../features/scraper/components/ScraperTaskDetailPane'
 import { ScraperTaskListPane } from '../features/scraper/components/ScraperTaskListPane'
 
@@ -12,7 +13,7 @@ export function ScraperWorkspace() {
         <div className="titleblock">
           <p className="eyebrow">D2I Lite Next</p>
           <h1>公共抓取工作台</h1>
-          <p className="subtitle">新版抓取台已经承接任务目录管理、监控和已有任务控制；新任务启动表单后续再迁。</p>
+          <p className="subtitle">新版抓取台现在承接新任务启动、任务目录管理、监控和已有任务控制。</p>
         </div>
 
         <div className="bridge-strip">
@@ -38,6 +39,16 @@ export function ScraperWorkspace() {
           </div>
         </div>
       </header>
+
+      <ScraperLaunchPane
+        busy={workspace.busy}
+        form={workspace.launchForm}
+        templates={workspace.launchTemplates}
+        onFieldChange={workspace.onLaunchFieldChange}
+        onFillDefaultOutputRoot={() => void workspace.onFillDefaultOutputRoot()}
+        onSelectTemplate={(templatePath) => void workspace.onSelectLaunchTemplate(templatePath)}
+        onStartTask={() => void workspace.onStartTask()}
+      />
 
       <main className="scraper-main">
         <ScraperTaskListPane

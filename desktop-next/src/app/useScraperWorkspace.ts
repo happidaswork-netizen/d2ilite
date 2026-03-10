@@ -1,6 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
-import type { ScraperActionName, ScraperControlOptions, ScraperWorkspaceSnapshot } from '../types'
+import type {
+  ScraperActionName,
+  ScraperControlOptions,
+  ScraperLaunchForm,
+  ScraperLaunchState,
+  ScraperLaunchTemplateOption,
+  ScraperWorkspaceSnapshot,
+} from '../types'
 import { createDesktopBridge } from '../infrastructure/desktopBridge'
 
 const DEFAULT_PROGRESS_LIMIT = 320
@@ -30,6 +37,7 @@ export function useScraperWorkspace() {
   const baseRootRef = useRef('')
   const selectedRootRef = useRef('')
   const controlOptionsRef = useRef<ScraperControlOptions>(DEFAULT_CONTROL_OPTIONS)
+  const launchFormRef = useRef<ScraperLaunchForm | null>(null)
   const defaultsAppliedRef = useRef(false)
 
   const [baseRoot, setBaseRoot] = useState('')
@@ -38,8 +46,11 @@ export function useScraperWorkspace() {
   const [status, setStatus] = useState('就绪')
   const [busy, setBusy] = useState(false)
   const [actionBusy, setActionBusy] = useState(false)
+  const [launchBusy, setLaunchBusy] = useState(false)
   const [bridgeVersion, setBridgeVersion] = useState('未探测')
   const [controlOptions, setControlOptions] = useState<ScraperControlOptions>(DEFAULT_CONTROL_OPTIONS)
+  const [launchForm, setLaunchForm] = useState<ScraperLaunchForm | null>(null)
+  const [launchTemplates, setLaunchTemplates] = useState<ScraperLaunchTemplateOption[]>([])
 
   useEffect(() => {
     baseRootRef.current = baseRoot
@@ -52,6 +63,10 @@ export function useScraperWorkspace() {
   useEffect(() => {
     controlOptionsRef.current = controlOptions
   }, [controlOptions])
+
+  useEffect(() => {
+    launchFormRef.current = launchForm
+  }, [launchForm])
 
   const applySnapshot = useCallback((next: ScraperWorkspaceSnapshot) => {
     setSnapshot(next)
@@ -66,6 +81,31 @@ export function useScraperWorkspace() {
       })
     }
   }, [])
+
+  const applyLaunchState = useCallback((next: ScraperLaunchState) => {
+    const { templates, ...form } = next
+    setLaunchForm(form)
+    setLaunchTemplates(Array.isArray(templates) ? templates : [])
+  }, [])
+
+  const loadLaunchState = useCallback(
+    async (sourceHint?: string, templatePath?: string, silent = false): Promise<void> => {
+      if (!silent) {
+        setLaunchBusy(true)
+      }
+      try {
+        const next = await bridge.readScraperLaunchState(sourceHint || '', templatePath || '')
+        applyLaunchState(next)
+      } catch (error) {
+        setStatus(`启动表单载入失败：${String(error)}`)
+      } finally {
+        if (!silent) {
+          setLaunchBusy(false)
+        }
+      }
+    },
+    [applyLaunchState, bridge],
+  )
 
   const loadWorkspace = useCallback(
     async (options?: LoadOptions): Promise<void> => {
@@ -122,7 +162,10 @@ export function useScraperWorkspace() {
           return
         }
         setBaseRoot(defaultRoot)
-        await loadWorkspace({ baseRoot: defaultRoot, selectedRoot: '' })
+        await Promise.all([
+          loadWorkspace({ baseRoot: defaultRoot, selectedRoot: '' }),
+          loadLaunchState('', '', true),
+        ])
       } catch (error) {
         if (!disposed) {
           setBridgeVersion('不可用')
@@ -135,7 +178,7 @@ export function useScraperWorkspace() {
     return () => {
       disposed = true
     }
-  }, [bridge, loadWorkspace])
+  }, [bridge, loadLaunchState, loadWorkspace])
 
   useEffect(() => {
     if (!baseRoot) {
@@ -156,7 +199,10 @@ export function useScraperWorkspace() {
   }, [baseRoot, loadWorkspace])
 
   const onRefresh = async (): Promise<void> => {
-    await loadWorkspace({ baseRoot, selectedRoot })
+    await Promise.all([
+      loadWorkspace({ baseRoot, selectedRoot }),
+      loadLaunchState(launchFormRef.current?.start_url || '', launchFormRef.current?.selected_template_path || '', true),
+    ])
   }
 
   const onSelectTask = async (root: string): Promise<void> => {
@@ -206,13 +252,67 @@ export function useScraperWorkspace() {
     [applySnapshot, bridge],
   )
 
+  const onLaunchFieldChange = useCallback(
+    <K extends keyof ScraperLaunchForm>(field: K, value: ScraperLaunchForm[K]) => {
+      setLaunchForm((prev) => (prev ? { ...prev, [field]: value } : prev))
+    },
+    [],
+  )
+
+  const onSelectLaunchTemplate = useCallback(
+    async (templatePath: string): Promise<void> => {
+      const sourceHint = launchFormRef.current?.start_url || ''
+      await loadLaunchState(sourceHint, templatePath, false)
+    },
+    [loadLaunchState],
+  )
+
+  const onFillDefaultOutputRoot = useCallback(async (): Promise<void> => {
+    const current = launchFormRef.current
+    if (!current) {
+      return
+    }
+    try {
+      const suggested = await bridge.readScraperLaunchState(current.start_url || '', '')
+      setLaunchTemplates(Array.isArray(suggested.templates) ? suggested.templates : [])
+      setLaunchForm((prev) => (prev ? { ...prev, output_root: suggested.output_root } : prev))
+    } catch (error) {
+      setStatus(`默认输出目录生成失败：${String(error)}`)
+    }
+  }, [bridge])
+
+  const onStartTask = useCallback(async (): Promise<void> => {
+    const current = launchFormRef.current
+    if (!current) {
+      setStatus('启动表单尚未准备完成')
+      return
+    }
+    setLaunchBusy(true)
+    setStatus('正在启动抓取任务...')
+    try {
+      const result = await bridge.startScraperTask(current, {
+        baseRoot: baseRootRef.current,
+      })
+      applySnapshot(result.workspace)
+      setStatus(String(result.message || '抓取任务已启动'))
+      await loadLaunchState(current.start_url || '', current.selected_template_path || '', true)
+    } catch (error) {
+      setStatus(`启动失败：${String(error)}`)
+    } finally {
+      setLaunchBusy(false)
+    }
+  }, [applySnapshot, bridge, loadLaunchState])
+
   return {
     actionBusy,
     baseRoot,
     bridgeVersion,
-    busy: busy || actionBusy,
+    busy: busy || actionBusy || launchBusy,
     controlOptions,
     detail: snapshot?.detail ?? null,
+    launchBusy,
+    launchForm,
+    launchTemplates,
     provider: bridge.provider,
     selectedRoot,
     status,
@@ -224,10 +324,14 @@ export function useScraperWorkspace() {
     setControlDisablePageImages,
     setControlMode,
     onContinueTask: () => onRunAction('continue'),
+    onFillDefaultOutputRoot,
+    onLaunchFieldChange,
     onPauseTask: () => onRunAction('pause'),
     onRefresh,
     onRetryTask: () => onRunAction('retry'),
     onRewriteMetadataTask: () => onRunAction('rewrite'),
+    onSelectLaunchTemplate,
     onSelectTask,
+    onStartTask,
   }
 }

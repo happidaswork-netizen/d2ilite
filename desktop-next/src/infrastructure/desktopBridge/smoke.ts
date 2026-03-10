@@ -98,6 +98,7 @@ export async function runDesktopSmokeRoundtrip(
     const saveOk = String(after.title || '') === nextTitle
     let scraperOk = true
     let scraperControlOk = true
+    let scraperLaunchOk = true
     if (request.scraper_base_root && request.scraper_task_root) {
       const workspace = await bridge.readScraperWorkspace(request.scraper_base_root, {
         selectedRoot: request.scraper_task_root,
@@ -129,6 +130,37 @@ export async function runDesktopSmokeRoundtrip(
       } else {
         scraperControlOk = false
       }
+
+      const launchState = await bridge.readScraperLaunchState('https://example.com/list', '')
+      const launchRoot = `${request.scraper_base_root}\\tauri_launch_task`
+      const started = await bridge.startScraperTask(
+        {
+          ...launchState,
+          start_url: 'https://example.com/list',
+          output_root: launchRoot,
+          interval_min: '1.5',
+          interval_max: '2.5',
+          timeout_seconds: '20',
+          suspect_block_consecutive_failures: '3',
+          image_download_mode: 'browser',
+          auto_fallback_to_browser: false,
+          disable_page_images_during_crawl: false,
+          save_generated_template: false,
+          cleanup_generated_template: false,
+          selected_template_path: '',
+          template_start_url: '',
+        },
+        { baseRoot: request.scraper_base_root },
+      )
+      const launchDetail = started.workspace.detail
+      scraperLaunchOk = Boolean(launchDetail?.session_running) && Number(launchDetail?.pid || 0) > 0
+      if (scraperLaunchOk) {
+        await bridge.runScraperAction('pause', launchRoot, {
+          baseRoot: request.scraper_base_root,
+          control: {},
+        })
+        scraperLaunchOk = await waitForScraperPause(bridge, request.scraper_base_root, launchRoot)
+      }
     }
 
     await reportDesktopSmokeResult({
@@ -140,6 +172,7 @@ export async function runDesktopSmokeRoundtrip(
       preview_ok: previewOk,
       scraper_ok: scraperOk,
       scraper_control_ok: scraperControlOk,
+      scraper_launch_ok: scraperLaunchOk,
       item_path: targetPath,
       filename: getFileName(targetPath),
       title_before: String(before.title || ''),
