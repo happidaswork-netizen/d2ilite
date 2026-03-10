@@ -21,7 +21,7 @@
 15. 交付与切换准备现已完成：统一 release gate、调试构建路径和切换边界都已落盘。
 16. 当前 Python bridge 已收窄为元数据读写职责，目录列表和图片预览已由 Vite / Tauri 原生承接。
 17. 元数据读写运行时已切到专用 `desktop_metadata_backend.py`，`desktop_bridge_cli.py` 退回兼容层。
-18. 新版公共抓取工作台已完成第一轮迁移：任务列表、任务概览、进度表和日志尾部已进入 `desktop-next`。
+18. 新版公共抓取工作台已完成第一轮可用迁移：任务列表、任务概览、进度表、日志尾部和已有任务控制已进入 `desktop-next`。
 
 ## 2. 本轮累计完成内容
 
@@ -108,7 +108,7 @@
    - `desktop_bridge_cli.py`：兼容脚本与旧 smoke 保留
 14. 抓取工作台当前已新增：
    - `desktop_scraper_backend.py`：任务目录与监控 snapshot runtime backend
-   - 新版抓取台：任务列表、任务概览、进度表、日志尾部
+   - 新版抓取台：任务列表、任务概览、进度表、日志尾部、`pause / continue / retry / rewrite`
 
 ## 3. 本次修改文件清单
 
@@ -141,6 +141,7 @@
 4. `services/desktop_scraper_backend_service.py`
 5. `scripts/desktop_scraper_backend.py`
 6. `scripts/desktop_scraper_backend_smoke.py`
+7. `scripts/desktop_scraper_control_smoke.py`
 
 ### 3.4 文档
 
@@ -159,11 +160,12 @@
 Python 侧：
 
 ```powershell
-.\.venv\Scripts\python.exe -m py_compile app.py services\task_service.py services\task_orchestration_service.py services\scraper_monitor_service.py services\public_scraper_config_service.py services\desktop_metadata_backend_service.py services\desktop_scraper_backend_service.py scripts\phase0_contract_smoke.py scripts\desktop_metadata_backend.py scripts\desktop_metadata_backend_smoke.py scripts\desktop_scraper_backend.py scripts\desktop_scraper_backend_smoke.py
+.\.venv\Scripts\python.exe -m py_compile app.py services\task_service.py services\task_orchestration_service.py services\scraper_monitor_service.py services\public_scraper_config_service.py services\desktop_metadata_backend_service.py services\desktop_scraper_backend_service.py scripts\phase0_contract_smoke.py scripts\desktop_metadata_backend.py scripts\desktop_metadata_backend_smoke.py scripts\desktop_scraper_backend.py scripts\desktop_scraper_backend_smoke.py scripts\desktop_scraper_control_smoke.py
 .\.venv\Scripts\python.exe scripts\phase0_contract_smoke.py
 .\.venv\Scripts\python.exe scripts\bridge_cli_smoke.py
 .\.venv\Scripts\python.exe scripts\desktop_metadata_backend_smoke.py
 .\.venv\Scripts\python.exe scripts\desktop_scraper_backend_smoke.py
+.\.venv\Scripts\python.exe scripts\desktop_scraper_control_smoke.py
 ```
 
 预期 / 当前结果：
@@ -173,6 +175,7 @@ Python 侧：
 3. `bridge_cli_smoke.py` 通过
 4. `desktop_metadata_backend_smoke.py` 通过
 5. `desktop_scraper_backend_smoke.py` 通过
+6. `desktop_scraper_control_smoke.py` 通过
 
 前端侧：
 
@@ -254,6 +257,6 @@ npm run dev
 
 ## 8. 下一步接力点
 
-1. 下一步直接在两个方向里二选一：继续迁移抓取任务控制，或继续替换剩余 Python backend。
+1. 下一步直接在两个方向里二选一：继续迁移抓取新任务启动表单 / 复核队列，或继续替换剩余 Python metadata backend。
 2. 不再回头扩写 Tk 侧或继续堆新的临时过渡层。
 3. 正式 installer / 签名发布仍是后续独立收尾项。

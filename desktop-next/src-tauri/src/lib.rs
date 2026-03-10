@@ -218,6 +218,29 @@ fn bridge_read_scraper_workspace(
 }
 
 #[tauri::command]
+fn bridge_run_scraper_action(
+    action: String,
+    output_root: String,
+    base_root: Option<String>,
+    control: Option<Value>,
+) -> Result<Value, String> {
+    let payload_file = write_payload_temp_file(&control.unwrap_or_else(|| serde_json::json!({})))?;
+    let result = run_scraper_backend(&[
+        String::from("action"),
+        String::from("--action"),
+        action,
+        String::from("--output-root"),
+        output_root,
+        String::from("--base-root"),
+        base_root.unwrap_or_default(),
+        String::from("--options-file"),
+        payload_file.to_string_lossy().to_string(),
+    ]);
+    let _ = fs::remove_file(payload_file);
+    result
+}
+
+#[tauri::command]
 fn bridge_save_metadata(path: String, payload: Value) -> Result<Value, String> {
     let payload_file = write_payload_temp_file(&payload)?;
     let result = run_metadata_backend(&[
@@ -240,6 +263,7 @@ pub fn run() {
             bridge_read_metadata,
             bridge_get_default_scraper_base_root,
             bridge_read_scraper_workspace,
+            bridge_run_scraper_action,
             bridge_save_metadata,
         ])
         .setup(|app| {

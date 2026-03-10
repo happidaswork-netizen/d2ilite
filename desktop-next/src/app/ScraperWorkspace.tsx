@@ -12,7 +12,7 @@ export function ScraperWorkspace() {
         <div className="titleblock">
           <p className="eyebrow">D2I Lite Next</p>
           <h1>公共抓取工作台</h1>
-          <p className="subtitle">新版抓取台当前先承接任务目录管理、进度监控、进度表和日志尾部，启动控制后续再迁。</p>
+          <p className="subtitle">新版抓取台已经承接任务目录管理、监控和已有任务控制；新任务启动表单后续再迁。</p>
         </div>
 
         <div className="bridge-strip">
@@ -48,7 +48,18 @@ export function ScraperWorkspace() {
           tasks={workspace.tasks}
           onSelectTask={(root) => void workspace.onSelectTask(root)}
         />
-        <ScraperTaskDetailPane detail={workspace.detail} />
+        <ScraperTaskDetailPane
+          actionBusy={workspace.actionBusy}
+          controlOptions={workspace.controlOptions}
+          detail={workspace.detail}
+          onContinueTask={() => void workspace.onContinueTask()}
+          onPauseTask={() => void workspace.onPauseTask()}
+          onRetryTask={() => void workspace.onRetryTask()}
+          onRewriteMetadataTask={() => void workspace.onRewriteMetadataTask()}
+          onSetAutoFallback={workspace.setControlAutoFallback}
+          onSetDisablePageImages={workspace.setControlDisablePageImages}
+          onSetMode={workspace.setControlMode}
+        />
       </main>
 
       <footer className="statusbar">

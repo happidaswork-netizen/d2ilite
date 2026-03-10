@@ -1,7 +1,16 @@
-import type { ScraperTaskDetail, ScraperProgressRow } from '../../../types'
+import type { ScraperControlOptions, ScraperTaskDetail, ScraperProgressRow } from '../../../types'
 
 type ScraperTaskDetailPaneProps = {
+  actionBusy: boolean
+  controlOptions: ScraperControlOptions
   detail: ScraperTaskDetail | null
+  onPauseTask: () => void
+  onContinueTask: () => void
+  onRetryTask: () => void
+  onRewriteMetadataTask: () => void
+  onSetMode: (mode: string) => void
+  onSetAutoFallback: (value: boolean) => void
+  onSetDisablePageImages: (value: boolean) => void
 }
 
 function renderProgressRows(rows: ScraperProgressRow[]) {
@@ -46,7 +55,18 @@ function renderProgressRows(rows: ScraperProgressRow[]) {
 }
 
 export function ScraperTaskDetailPane(props: ScraperTaskDetailPaneProps) {
-  const { detail } = props
+  const {
+    actionBusy,
+    controlOptions,
+    detail,
+    onContinueTask,
+    onPauseTask,
+    onRetryTask,
+    onRewriteMetadataTask,
+    onSetAutoFallback,
+    onSetDisablePageImages,
+    onSetMode,
+  } = props
 
   return (
     <section className="scraper-pane shell">
@@ -62,6 +82,62 @@ export function ScraperTaskDetailPane(props: ScraperTaskDetailPaneProps) {
         <div className="placeholder">先在左侧选择一个抓取任务，再查看进度表、日志尾部和当前状态。</div>
       ) : (
         <div className="scraper-detail-grid">
+          <div className="scraper-control-card">
+            <div className="scraper-block-head">
+              <div>
+                <p className="scraper-detail-title">任务控制</p>
+                <p className="scraper-detail-copy">当前只迁移已有任务的暂停、继续、失败重试和元数据重写。</p>
+              </div>
+              <div className="scraper-control-chips">
+                <span className="scraper-status-chip scraper-status-live">{detail.runtime_state || detail.status}</span>
+                <span className="scraper-status-chip scraper-status-done">PID {detail.pid || '-'}</span>
+              </div>
+            </div>
+
+            <div className="scraper-control-grid">
+              <label className="input-stack">
+                <span>图片下载模式</span>
+                <select value={controlOptions.mode} onChange={(event) => onSetMode(event.target.value)} disabled={actionBusy}>
+                  <option value="requests_jsl">requests_jsl</option>
+                  <option value="browser">browser</option>
+                </select>
+              </label>
+              <label className="check-card">
+                <input
+                  type="checkbox"
+                  checked={controlOptions.auto_fallback}
+                  onChange={(event) => onSetAutoFallback(event.target.checked)}
+                  disabled={actionBusy}
+                />
+                <span>自动回退到浏览器抓图</span>
+              </label>
+              <label className="check-card">
+                <input
+                  type="checkbox"
+                  checked={controlOptions.disable_page_images}
+                  onChange={(event) => onSetDisablePageImages(event.target.checked)}
+                  disabled={actionBusy}
+                />
+                <span>禁用详情页内嵌图片抓取</span>
+              </label>
+            </div>
+
+            <div className="scraper-action-row">
+              <button onClick={onPauseTask} disabled={actionBusy || !detail.can_pause}>
+                暂停任务
+              </button>
+              <button onClick={onContinueTask} disabled={actionBusy || !detail.can_continue}>
+                继续任务
+              </button>
+              <button onClick={onRetryTask} disabled={actionBusy || !detail.can_retry}>
+                重试失败项
+              </button>
+              <button onClick={onRewriteMetadataTask} disabled={actionBusy || !detail.can_rewrite_metadata}>
+                重写元数据
+              </button>
+            </div>
+          </div>
+
           <div className="scraper-summary-grid">
             <div className="meta-summary-card">
               <span className="meta-summary-label">任务</span>

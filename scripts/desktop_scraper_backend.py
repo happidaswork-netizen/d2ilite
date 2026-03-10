@@ -17,9 +17,11 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from services.desktop_scraper_backend_service import (  # type: ignore
+    build_control_defaults_payload,
     build_default_base_root_payload,
     build_ping_payload,
     build_scraper_workspace_payload,
+    execute_scraper_control_action,
 )
 
 
@@ -40,12 +42,26 @@ def _fail(message: str, *, code: int = 1, detail: str = "") -> int:
     return int(code)
 
 
+def _load_json_file(path_text: str) -> Dict[str, Any]:
+    path = Path(str(path_text or "").strip())
+    if not path.is_file():
+        raise FileNotFoundError(f"payload file not found: {path}")
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError("payload file must be a JSON object")
+    return payload
+
+
 def cmd_ping(_args: argparse.Namespace) -> int:
     return _ok(build_ping_payload())
 
 
 def cmd_default_root(_args: argparse.Namespace) -> int:
     return _ok(build_default_base_root_payload())
+
+
+def cmd_control_defaults(_args: argparse.Namespace) -> int:
+    return _ok(build_control_defaults_payload())
 
 
 def cmd_workspace(args: argparse.Namespace) -> int:
@@ -61,6 +77,25 @@ def cmd_workspace(args: argparse.Namespace) -> int:
     return _ok(payload)
 
 
+def cmd_action(args: argparse.Namespace) -> int:
+    options: Dict[str, Any] = {}
+    if str(args.options_file or "").strip():
+        try:
+            options = _load_json_file(str(args.options_file or "").strip())
+        except Exception as error:
+            return _fail("invalid action options", detail=str(error))
+    try:
+        payload = execute_scraper_control_action(
+            str(args.action_name or "").strip(),
+            output_root=str(args.output_root or "").strip(),
+            base_root=str(args.base_root or "").strip(),
+            options=options,
+        )
+    except Exception as error:
+        return _fail("scraper action failed", detail=str(error))
+    return _ok(payload)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="D2I Lite desktop scraper backend")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -71,12 +106,22 @@ def build_parser() -> argparse.ArgumentParser:
     default_root = sub.add_parser("default-root", help="get default scraper task root")
     default_root.set_defaults(func=cmd_default_root)
 
+    control_defaults = sub.add_parser("control-defaults", help="get default scraper control options")
+    control_defaults.set_defaults(func=cmd_control_defaults)
+
     workspace = sub.add_parser("workspace", help="read scraper workspace snapshot")
     workspace.add_argument("--base-root", default="")
     workspace.add_argument("--selected-root", default="")
     workspace.add_argument("--progress-limit", type=int, default=300)
     workspace.add_argument("--log-lines", type=int, default=80)
     workspace.set_defaults(func=cmd_workspace)
+
+    action = sub.add_parser("action", help="run scraper control action")
+    action.add_argument("--action", dest="action_name", required=True)
+    action.add_argument("--output-root", required=True)
+    action.add_argument("--base-root", default="")
+    action.add_argument("--options-file", default="")
+    action.set_defaults(func=cmd_action)
     return parser
 
 

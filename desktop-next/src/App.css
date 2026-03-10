@@ -573,6 +573,50 @@ button.primary {
   border: 1px solid rgba(17, 35, 50, 0.08);
 }
 
+.scraper-control-card {
+  display: grid;
+  gap: 14px;
+  padding: 16px;
+  border-radius: 16px;
+  background: linear-gradient(135deg, rgba(22, 93, 82, 0.1), rgba(255, 255, 255, 0.86));
+  border: 1px solid rgba(22, 93, 82, 0.16);
+}
+
+.scraper-control-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.scraper-control-chips,
+.scraper-action-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+
+.scraper-action-row button {
+  min-width: 118px;
+}
+
+.check-card {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  min-height: 44px;
+  padding: 0 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(17, 35, 50, 0.08);
+  background: rgba(255, 255, 255, 0.72);
+  font-size: 13px;
+  color: var(--ink);
+}
+
+.check-card input {
+  margin: 0;
+}
+
 .scraper-detail-title {
   margin: 0;
   color: var(--muted);
@@ -1039,7 +1083,8 @@ button.primary {
 
   .scraper-main,
   .scraper-columns,
-  .scraper-summary-grid-wide {
+  .scraper-summary-grid-wide,
+  .scraper-control-grid {
     grid-template-columns: 1fr;
   }
 

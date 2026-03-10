@@ -16,6 +16,10 @@ export interface ScraperTaskSummary {
   review: number
   failures: number
   updated_at: string
+  pid?: number
+  session_running?: boolean
+  manual_paused?: boolean
+  runtime_state?: string
 }
 
 export interface ScraperProgressRow {
@@ -51,6 +55,28 @@ export interface ScraperTaskDetail {
   pending_rows: ScraperProgressRow[]
   done_rows: ScraperProgressRow[]
   log_tail: string
+  pid: number
+  session_running: boolean
+  manual_paused: boolean
+  runtime_state: string
+  can_pause: boolean
+  can_continue: boolean
+  can_retry: boolean
+  can_rewrite_metadata: boolean
+}
+
+export type ScraperActionName = 'pause' | 'continue' | 'retry' | 'rewrite'
+
+export interface ScraperControlOptions {
+  mode: string
+  auto_fallback: boolean
+  disable_page_images: boolean
+}
+
+export interface ScraperActionResult {
+  action: ScraperActionName
+  message: string
+  workspace: ScraperWorkspaceSnapshot
 }
 
 export interface ScraperWorkspaceSnapshot {
@@ -61,6 +87,7 @@ export interface ScraperWorkspaceSnapshot {
   selected_root: string
   selected_task: ScraperTaskSummary | null
   detail: ScraperTaskDetail | null
+  control_defaults: ScraperControlOptions
 }
 
 export interface RoleAliasPayload {
@@ -125,5 +152,13 @@ export interface DesktopBridge {
       logLines?: number
     },
   ): Promise<ScraperWorkspaceSnapshot>
+  runScraperAction(
+    action: ScraperActionName,
+    outputRoot: string,
+    options?: {
+      baseRoot?: string
+      control?: Partial<ScraperControlOptions>
+    },
+  ): Promise<ScraperActionResult>
   getPreviewUrl(path: string): string
 }

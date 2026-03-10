@@ -5,6 +5,9 @@ import type {
   DesktopBridge,
   MetadataItem,
   SavePayload,
+  ScraperActionName,
+  ScraperActionResult,
+  ScraperControlOptions,
   ScraperTaskDetail,
   ScraperTaskSummary,
   ScraperWorkspaceSnapshot,
@@ -24,6 +27,12 @@ export type DesktopSmokeRequest = {
   folder: string
   marker: string
   filename?: string
+}
+
+const MOCK_SCRAPER_CONTROL_DEFAULTS: ScraperControlOptions = {
+  mode: 'requests_jsl',
+  auto_fallback: true,
+  disable_page_images: true,
 }
 
 export function resolveDesktopBridgeProvider(hasTauriInvoke: boolean, isDev: boolean): DesktopBridge['provider'] {
@@ -72,6 +81,8 @@ function buildMockRecord(path: string): MetadataItem {
 }
 
 function buildMockScraperTask(root: string, status: string, updatedAt: string, profiles: number, failures: number): ScraperTaskSummary {
+  const manualPaused = status.includes('暂停')
+  const sessionRunning = !manualPaused && !status.includes('完成')
   return {
     root,
     task: splitFileName(root),
@@ -83,6 +94,10 @@ function buildMockScraperTask(root: string, status: string, updatedAt: string, p
     review: failures > 0 ? 1 : 0,
     failures,
     updated_at: updatedAt,
+    pid: sessionRunning ? 4242 : 0,
+    session_running: sessionRunning,
+    manual_paused: manualPaused,
+    runtime_state: manualPaused ? '已暂停(手动)' : status.includes('完成') ? '已完成' : '运行中',
   }
 }
 
@@ -135,6 +150,14 @@ function buildMockScraperDetail(task: ScraperTaskSummary): ScraperTaskDetail {
     pending_rows: pendingRows,
     done_rows: doneRows,
     log_tail: `[${task.updated_at}] ${task.task}\n已载入示例抓取日志。\n`,
+    pid: task.pid || 0,
+    session_running: Boolean(task.session_running),
+    manual_paused: Boolean(task.manual_paused),
+    runtime_state: String(task.runtime_state || task.status || ''),
+    can_pause: Boolean(task.session_running) && !task.manual_paused,
+    can_continue: Boolean(task.manual_paused) || !task.session_running,
+    can_retry: !task.session_running,
+    can_rewrite_metadata: !task.session_running,
   }
 }
 
@@ -154,6 +177,7 @@ function buildMockScraperWorkspace(baseRoot: string, selectedRoot?: string): Scr
     selected_root: activeRoot,
     selected_task: selectedTask,
     detail: selectedTask ? buildMockScraperDetail(selectedTask) : null,
+    control_defaults: clone(MOCK_SCRAPER_CONTROL_DEFAULTS),
   }
 }
 
@@ -296,6 +320,13 @@ function createMockBridge(): DesktopBridge {
     ): Promise<ScraperWorkspaceSnapshot> {
       return buildMockScraperWorkspace(baseRoot, options?.selectedRoot)
     },
+    async runScraperAction(action: ScraperActionName, outputRoot: string): Promise<ScraperActionResult> {
+      return {
+        action,
+        message: `mock action: ${action}`,
+        workspace: buildMockScraperWorkspace('C:\\mock\\public_archive', outputRoot),
+      }
+    },
     getPreviewUrl(): string {
       return ''
     },
@@ -337,6 +368,21 @@ function createTauriBridge(invokeImpl: TauriInvoke): DesktopBridge {
         selectedRoot: options?.selectedRoot || '',
         progressLimit: options?.progressLimit || 300,
         logLines: options?.logLines || 80,
+      })
+    },
+    async runScraperAction(
+      action: ScraperActionName,
+      outputRoot: string,
+      options?: {
+        baseRoot?: string
+        control?: Partial<ScraperControlOptions>
+      },
+    ): Promise<ScraperActionResult> {
+      return invokeJson<ScraperActionResult>(invokeImpl, 'bridge_run_scraper_action', {
+        action,
+        outputRoot,
+        baseRoot: options?.baseRoot || '',
+        control: options?.control || {},
       })
     },
     getPreviewUrl(path: string): string {
@@ -398,6 +444,27 @@ function createHttpBridge(): DesktopBridge {
         logLines: String(options?.logLines || 80),
       })
       return fetchJson<ScraperWorkspaceSnapshot>(`/api/bridge/scraper/workspace?${params.toString()}`)
+    },
+    async runScraperAction(
+      action: ScraperActionName,
+      outputRoot: string,
+      options?: {
+        baseRoot?: string
+        control?: Partial<ScraperControlOptions>
+      },
+    ): Promise<ScraperActionResult> {
+      return fetchJson<ScraperActionResult>('/api/bridge/scraper/action', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          action,
+          outputRoot,
+          baseRoot: options?.baseRoot || '',
+          control: options?.control || {},
+        }),
+      })
     },
     getPreviewUrl(path: string): string {
       const params = new URLSearchParams({ path: String(path || '') })

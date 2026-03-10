@@ -25,7 +25,7 @@
 18. 已补统一 release gate，并已验证 `tauri:build:debug` 调试构建产物与切换边界。
 19. 当前 Python bridge 已收窄为元数据读写职责，目录列表和图片预览已由 Vite / Tauri 原生承接。
 20. 元数据读写运行时已切到专用 `desktop_metadata_backend.py`，`desktop_bridge_cli.py` 退回兼容层。
-21. 新版公共抓取工作台已起步：`desktop-next` 已能读取任务目录、展示任务列表、进度表和日志尾部。
+21. 新版公共抓取工作台已起步：`desktop-next` 已能读取任务目录、展示任务列表、进度表、日志尾部，并运行已有任务的 `pause / continue / retry / rewrite`。
 
 ## 1. 目标与原则
 
@@ -86,7 +86,7 @@
 2. 前端实现基础布局：顶部动作区、左预览、右元数据面板、底部状态栏。
 3. 打通开发态最小闭环：打开目录 -> 读取元数据 -> 前端展示 -> 保存回图片。
 4. 开发模式通过 Vite 中间件转发 `/api/bridge/*` 到 `scripts/desktop_metadata_backend.py` 与 `scripts/desktop_scraper_backend.py`。
-5. Tauri 壳已具备最小命令桥接：`bridge_ping / bridge_list_images / bridge_read_metadata / bridge_save_metadata / bridge_get_default_scraper_base_root / bridge_read_scraper_workspace`。
+5. Tauri 壳已具备最小命令桥接：`bridge_ping / bridge_list_images / bridge_read_metadata / bridge_save_metadata / bridge_get_default_scraper_base_root / bridge_read_scraper_workspace / bridge_run_scraper_action`。
 
 验收：
 
@@ -129,7 +129,7 @@
 
 目标：把公共抓取监控、失败重试、复核队列搬到新 UI。
 
-状态：已起步（2026-03-10，监控面已迁入 `desktop-next`）
+状态：已起步（2026-03-10，监控面和已有任务控制已迁入 `desktop-next`）
 
 清单：
 
@@ -204,5 +204,5 @@
 ## 7. 下一步（立即执行）
 
 1. 当前图片元数据工作台已经达到可交付、可受控切换状态。
-2. 抓取工作台已完成第一轮只读迁移，下一步决定是否继续迁移 `start / continue / retry / pause` 控制。
+2. 抓取工作台已完成监控面 + 已有任务控制迁移，下一步决定是否继续迁移“新任务启动表单 + 复核队列”。
 3. 正式 installer / 签名发布仍是后续独立工作。

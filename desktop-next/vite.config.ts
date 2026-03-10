@@ -202,6 +202,33 @@ function desktopBridgeDevPlugin(): Plugin {
             return
           }
 
+          if (req.method === 'POST' && routePath === '/scraper/action') {
+            const body = (await parseBody(req)) as {
+              action?: string
+              outputRoot?: string
+              baseRoot?: string
+              control?: unknown
+            }
+            const action = String(body?.action || '').trim()
+            const outputRoot = String(body?.outputRoot || '').trim()
+            const baseRoot = String(body?.baseRoot || '').trim()
+            const response = await withPayloadFile(body?.control ?? {}, (payloadFile) =>
+              runScraperBackend([
+                'action',
+                '--action',
+                action,
+                '--output-root',
+                outputRoot,
+                '--base-root',
+                baseRoot,
+                '--options-file',
+                payloadFile,
+              ]),
+            )
+            jsonResponse(res, 200, response)
+            return
+          }
+
           if (req.method === 'GET' && routePath === '/read') {
             const filePath = url.searchParams.get('path') || ''
             jsonResponse(res, 200, await runMetadataBackend(['read', '--path', filePath]))
