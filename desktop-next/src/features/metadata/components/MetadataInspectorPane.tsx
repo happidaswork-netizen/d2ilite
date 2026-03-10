@@ -7,7 +7,7 @@ import {
   stringifyJson,
   type FormState,
   type MetadataTabKey,
-} from '../model'
+} from '../../../domain/metadata'
 
 type MetadataInspectorPaneProps = {
   activeTabPayload: unknown

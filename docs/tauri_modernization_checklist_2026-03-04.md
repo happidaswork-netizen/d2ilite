@@ -20,6 +20,7 @@
 13. `desktop-next` 已支持单图角色元数据结构化编辑：`d2i_profile.name + role_aliases[]`。
 14. `desktop-next` 已支持目录级角色工作流：原角色名 / 扮演角色名筛选、勾选集维护、批量设置 / 追加 / 替换 / 清空。
 15. 当前已形成 `desktop-next` 重构稳定基线，下一阶段重点转为 `domain / infrastructure` 收敛。
+16. `domain / infrastructure` 第一轮收敛已完成，`DesktopWorkspace` 已压薄为装配层。
 
 ## 1. 目标与原则
 
@@ -197,4 +198,4 @@
 
 1. 先整理并提交当前 `desktop-next + src-tauri + smoke` 成果。
 2. 然后重整 `desktop-next/src/` 结构，把当前单体 `App.tsx` 切成新版长期架构。
-3. 在已完成目录级角色工作流基础上，继续收敛长期 `domain / infrastructure` 边界，并评估目录索引 / 缓存能力。
+3. 在已完成 `domain / infrastructure` 第一轮收敛基础上，继续做目录性能、索引 / 缓存与批量工作流强化。

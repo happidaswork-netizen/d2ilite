@@ -1,4 +1,4 @@
-import type { RoleAliasFormItem } from '../model'
+import type { RoleAliasFormItem } from '../../../domain/metadata'
 
 type RoleMetadataEditorProps = {
   originalRoleName: string

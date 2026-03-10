@@ -8,8 +8,8 @@
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview",
-    "smoke:provider": "node --experimental-strip-types ./scripts/bridgeProviderSmoke.ts",
-    "smoke:roles": "node --experimental-strip-types ./scripts/batchRoleSmoke.ts",
+    "smoke:provider": "node --experimental-strip-types --experimental-specifier-resolution=node ./scripts/bridgeProviderSmoke.ts",
+    "smoke:roles": "node --experimental-strip-types --experimental-specifier-resolution=node ./scripts/batchRoleSmoke.ts",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build"

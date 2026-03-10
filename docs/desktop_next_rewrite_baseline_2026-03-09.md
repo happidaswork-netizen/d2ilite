@@ -5,14 +5,15 @@
 
 ## 1. 基线结论
 
-截至 2026-03-09，`desktop-next` 已形成一个可继续扩展的新版本稳定基线。
+截至 2026-03-10，`desktop-next` 已形成一个可继续扩展的新版本稳定基线。
 
-已经完成的四个大块：
+已经完成的五个大块：
 
 1. 结构重整：`App.tsx -> DesktopWorkspace -> feature panes`
 2. 单图角色元数据结构化编辑
 3. 目录级角色筛选、勾选与批量编辑工作流
 4. 回归矩阵、文档、长期边界整理
+5. `domain / infrastructure` 第一轮收敛
 
 这意味着当前新版已经不是“临时壳”，而是具备明确结构、可回归、可继续扩展的主工程起点。
 
@@ -40,15 +41,24 @@
 当前推荐把现状理解为：
 
 1. `app/`
-   - 页面装配和工作台级状态
+   - 页面装配与工作台级协调 hook
 2. `features/`
    - `preview`
    - `library`
    - `metadata`
    - `batch`
-3. `services/` 与 Python 写入链路
-   - 作为当前字段语义和规则基线
-4. `src-tauri/`
+3. `domain/`
+   - 元数据表单模型
+   - 角色规则
+   - 批量规则
+   - 元数据显示格式化
+4. `infrastructure/`
+   - bridge provider
+   - smoke roundtrip
+   - 目录偏好读写
+5. `services/` 与 Python 写入链路
+   - 仍作为当前字段语义和写入规则基线
+6. `src-tauri/`
    - 作为当前桌面壳和最小命令桥接
 
 当前仍然属于“临时但可用”的边界：
@@ -88,27 +98,26 @@ cd ..
 
 1. 不再回头深挖 Tk 侧小 wrapper。
 2. 不再把 Python bridge 当长期正式接口继续扩写。
-3. 不再把更多临时对接层塞进 `DesktopWorkspace`。
+3. 不再把更多临时对接层塞回 `DesktopWorkspace`。
 
 ## 6. 下一阶段该做的事
 
 下一阶段从这里接：
 
-1. 把 `features/metadata/model.ts` 中的模型、格式化、批量规则继续下沉到 `domain/`
-2. 把 bridge / preview / 本地 I/O 从 `workspace` 与 feature 中抽到 `infrastructure/`
-3. 继续压薄 `DesktopWorkspace`，让它只做装配和跨 feature 协调
-4. 再决定是否开始替换 Python bridge 或引入目录索引 / 缓存层
+1. 进入目录性能与批量工作流强化
+2. 补目录索引 / 缓存与更稳定的批量反馈
+3. 再决定是否开始替换 Python bridge 或引入更高阶工作台能力
 
 ## 7. 当前完成度判断
 
 如果只看新版主工程：
 
 1. 可继续开发的稳定基线：已完成
-2. 长期结构收敛：刚开始
+2. 长期结构第一轮收敛：已完成
 3. 更高阶目录性能与批量能力：未开始
 4. 替换临时 bridge：未开始
 
 更直接的判断：
 
 1. `desktop-next` 的“能用且可继续扩展的基础盘”已经建立
-2. 下一阶段不再是补闭环，而是做长期架构收敛
+2. 下一阶段不再是补结构，而是做性能与工作流强化

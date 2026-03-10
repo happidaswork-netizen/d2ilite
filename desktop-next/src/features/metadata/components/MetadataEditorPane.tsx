@@ -4,7 +4,7 @@ import {
   formatTimestamp,
   type FormState,
   type MetadataTabKey,
-} from '../model'
+} from '../../../domain/metadata'
 import { MetadataInspectorPane } from './MetadataInspectorPane'
 import { RoleMetadataEditor } from './RoleMetadataEditor'
 

@@ -4,7 +4,7 @@ import {
   applyBatchRoleOperation,
   createRoleAliasFormItem,
   type FormState,
-} from '../src/features/metadata/model.ts'
+} from '../src/domain/metadata/index.ts'
 
 function createBaseForm(): FormState {
   return {

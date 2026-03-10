@@ -2,7 +2,7 @@ import type {
   BatchAliasMode,
   BatchOriginalRoleMode,
   BatchRoleScope,
-} from '../../metadata/model'
+} from '../../../domain/metadata'
 
 type BatchRolePanelProps = {
   aliasMode: BatchAliasMode

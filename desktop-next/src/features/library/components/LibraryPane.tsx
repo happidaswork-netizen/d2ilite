@@ -1,4 +1,4 @@
-import type { RoleMetadataSummary } from '../../metadata/model'
+import type { RoleMetadataSummary } from '../../../domain/metadata'
 
 type LibraryPaneProps = {
   aliasRoleFilter: string

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 
-import { resolveDesktopBridgeProvider } from '../src/bridge/desktopBridge.ts'
+import { resolveDesktopBridgeProvider } from '../src/infrastructure/desktopBridge/index.ts'
 
 type SmokeCase = {
   name: string
