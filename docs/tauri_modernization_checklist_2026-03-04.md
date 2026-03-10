@@ -24,6 +24,7 @@
 17. 目录角色摘要索引 / 缓存和批量角色执行反馈已完成第一轮强化。
 18. 已补统一 release gate，并已验证 `tauri:build:debug` 调试构建产物与切换边界。
 19. 当前 Python bridge 已收窄为元数据读写职责，目录列表和图片预览已由 Vite / Tauri 原生承接。
+20. 元数据读写运行时已切到专用 `desktop_metadata_backend.py`，`desktop_bridge_cli.py` 退回兼容层。
 
 ## 1. 目标与原则
 
@@ -200,5 +201,5 @@
 ## 7. 下一步（立即执行）
 
 1. 当前图片元数据工作台已经达到可交付、可受控切换状态。
-2. 下一步再决定是先替换剩余的 Python 元数据读写 bridge，还是先推进更高阶工作台能力。
+2. 下一步再决定是先替换剩余的 Python metadata backend，还是先推进更高阶工作台能力。
 3. 正式 installer / 签名发布仍是后续独立工作。

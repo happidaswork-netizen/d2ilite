@@ -54,7 +54,7 @@ npm install
 npm run dev
 ```
 
-启动后，开发态页面默认通过 Vite dev server 内的 `/api/bridge/*` 中间件调用本地 `scripts/desktop_bridge_cli.py`，不依赖 Tauri runtime。
+启动后，开发态页面默认通过 Vite dev server 内的 `/api/bridge/*` 中间件承接目录列表与图片预览，并调用本地 `scripts/desktop_metadata_backend.py` 完成元数据读写，不依赖 Tauri runtime。
 
 如果要起 Tauri 壳：
 

@@ -11,7 +11,7 @@ type BridgePayload = Record<string, unknown>
 
 const desktopRoot = path.dirname(fileURLToPath(import.meta.url))
 const projectRoot = path.resolve(desktopRoot, '..')
-const bridgeScriptPath = path.join(projectRoot, 'scripts', 'desktop_bridge_cli.py')
+const metadataBackendScriptPath = path.join(projectRoot, 'scripts', 'desktop_metadata_backend.py')
 const tempRoot = path.join(projectRoot, '.tmp', 'desktop-next')
 const frontendStatusPath = path.join(tempRoot, 'frontend-status.json')
 const smokeRequestPath = path.join(tempRoot, 'smoke-request.json')
@@ -103,10 +103,10 @@ async function withPayloadFile(payload: unknown, run: (filePath: string) => Prom
   }
 }
 
-function runBridgeCli(args: string[]): Promise<BridgePayload> {
+function runMetadataBackend(args: string[]): Promise<BridgePayload> {
   return new Promise((resolve, reject) => {
     const pythonExec = resolvePythonExecutable()
-    const child = spawn(pythonExec, [bridgeScriptPath, ...args], {
+    const child = spawn(pythonExec, [metadataBackendScriptPath, ...args], {
       cwd: projectRoot,
       env: {
         ...process.env,
@@ -153,7 +153,7 @@ function desktopBridgeDevPlugin(): Plugin {
           const routePath = url.pathname
 
           if (req.method === 'GET' && routePath === '/ping') {
-            jsonResponse(res, 200, await runBridgeCli(['ping']))
+            jsonResponse(res, 200, await runMetadataBackend(['ping']))
             return
           }
 
@@ -167,7 +167,7 @@ function desktopBridgeDevPlugin(): Plugin {
 
           if (req.method === 'GET' && routePath === '/read') {
             const filePath = url.searchParams.get('path') || ''
-            jsonResponse(res, 200, await runBridgeCli(['read', '--path', filePath]))
+            jsonResponse(res, 200, await runMetadataBackend(['read', '--path', filePath]))
             return
           }
 
@@ -179,7 +179,7 @@ function desktopBridgeDevPlugin(): Plugin {
             const targetPath = String(body?.path || '').trim()
             const payload = body?.payload ?? {}
             const response = await withPayloadFile(payload, (payloadFile) =>
-              runBridgeCli(['save', '--path', targetPath, '--payload-file', payloadFile]),
+              runMetadataBackend(['save', '--path', targetPath, '--payload-file', payloadFile]),
             )
             jsonResponse(res, 200, response)
             return

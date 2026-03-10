@@ -42,6 +42,7 @@
 9. Tauri 壳内 `ping/list/read/save/preview` 已通过端到端 roundtrip
 10. 已补统一 release gate，并已验证 `tauri:build:debug` 调试构建产物
 11. 当前 Python bridge 已收窄为元数据读写职责，目录列表和图片预览不再经它转发
+12. 元数据读写运行时已切到专用 `desktop_metadata_backend.py`，`desktop_bridge_cli.py` 退回兼容层
 
 ## 3. 当前结构边界
 
@@ -83,9 +84,10 @@
 
 ```powershell
 cd d:\soft\gemini-business2api-workspace\d2ilite
-.\.venv\Scripts\python.exe -m py_compile app.py services\metadata_service.py metadata_manager.py metadata_writer.py scripts\desktop_bridge_cli.py scripts\desktop_tauri_startup_smoke.py scripts\desktop_tauri_roundtrip_smoke.py
+.\.venv\Scripts\python.exe -m py_compile app.py services\metadata_service.py services\desktop_metadata_backend_service.py metadata_manager.py metadata_writer.py scripts\desktop_bridge_cli.py scripts\desktop_metadata_backend.py scripts\desktop_metadata_backend_smoke.py scripts\desktop_tauri_startup_smoke.py scripts\desktop_tauri_roundtrip_smoke.py scripts\desktop_vite_bridge_smoke.py
 .\.venv\Scripts\python.exe scripts\phase0_contract_smoke.py
 .\.venv\Scripts\python.exe scripts\bridge_cli_smoke.py
+.\.venv\Scripts\python.exe scripts\desktop_metadata_backend_smoke.py
 cargo check --manifest-path desktop-next/src-tauri/Cargo.toml
 cd desktop-next
 npm run lint
@@ -93,6 +95,7 @@ npm run build
 npm run smoke:provider
 npm run smoke:roles
 cd ..
+.\.venv\Scripts\python.exe scripts\desktop_vite_bridge_smoke.py
 .\.venv\Scripts\python.exe scripts\desktop_tauri_startup_smoke.py
 .\.venv\Scripts\python.exe scripts\desktop_tauri_roundtrip_smoke.py
 ```
@@ -113,7 +116,7 @@ cd ..
 下一阶段从这里接：
 
 1. 在“图片元数据主工作流”范围内，当前已经具备可受控切换条件
-2. Python bridge 的剩余职责已收窄到元数据读写，这也是下一步替换的明确边界
+2. Python metadata backend 的剩余职责已收窄到元数据读写，这也是下一步替换的明确边界
 3. 下一决策点只剩两条：先替换 Python bridge，或先迁移更高阶工作台能力
 4. 正式 installer / 签名发布仍是后续独立工作
 

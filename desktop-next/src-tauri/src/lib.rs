@@ -22,8 +22,8 @@ fn project_root() -> PathBuf {
     desktop.parent().map(Path::to_path_buf).unwrap_or(desktop)
 }
 
-fn bridge_script_path(root: &Path) -> PathBuf {
-    root.join("scripts").join("desktop_bridge_cli.py")
+fn metadata_backend_script_path(root: &Path) -> PathBuf {
+    root.join("scripts").join("desktop_metadata_backend.py")
 }
 
 fn resolve_python_executable(root: &Path) -> PathBuf {
@@ -99,12 +99,12 @@ fn list_images_in_folder(folder: &Path, limit: usize) -> Result<Vec<String>, Str
         .collect())
 }
 
-fn run_bridge_cli(args: &[String]) -> Result<Value, String> {
+fn run_metadata_backend(args: &[String]) -> Result<Value, String> {
     let root = project_root();
-    let script_path = bridge_script_path(&root);
+    let script_path = metadata_backend_script_path(&root);
     if !script_path.exists() {
         return Err(format!(
-            "bridge script not found: {}",
+            "metadata backend script not found: {}",
             script_path.display()
         ));
     }
@@ -157,7 +157,7 @@ fn write_payload_temp_file(payload: &Value) -> Result<PathBuf, String> {
 
 #[tauri::command]
 fn bridge_ping() -> Result<Value, String> {
-    run_bridge_cli(&[String::from("ping")])
+    run_metadata_backend(&[String::from("ping")])
 }
 
 #[tauri::command]
@@ -174,13 +174,13 @@ fn bridge_list_images(folder: String, limit: Option<i64>) -> Result<Value, Strin
 
 #[tauri::command]
 fn bridge_read_metadata(path: String) -> Result<Value, String> {
-    run_bridge_cli(&[String::from("read"), String::from("--path"), path])
+    run_metadata_backend(&[String::from("read"), String::from("--path"), path])
 }
 
 #[tauri::command]
 fn bridge_save_metadata(path: String, payload: Value) -> Result<Value, String> {
     let payload_file = write_payload_temp_file(&payload)?;
-    let result = run_bridge_cli(&[
+    let result = run_metadata_backend(&[
         String::from("save"),
         String::from("--path"),
         path,

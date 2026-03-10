@@ -32,6 +32,10 @@
    - 元数据读取
    - 元数据保存
 
+当前 Python backend 入口：
+
+`d:\soft\gemini-business2api-workspace\d2ilite\scripts\desktop_metadata_backend.py`
+
 ## 2. 交付门槛
 
 每次准备给其他机器或操作者使用前，先执行统一 gate：
@@ -52,9 +56,10 @@ Gate 当前会顺序执行：
 7. `desktop-next npm run smoke:provider`
 8. `desktop-next npm run smoke:roles`
 9. `desktop_vite_bridge_smoke.py`
-10. `desktop_tauri_startup_smoke.py`
-11. `desktop_tauri_roundtrip_smoke.py`
-12. `desktop-next npm run tauri:build:debug`
+10. `desktop_metadata_backend_smoke.py`
+11. `desktop_tauri_startup_smoke.py`
+12. `desktop_tauri_roundtrip_smoke.py`
+13. `desktop-next npm run tauri:build:debug`
 
 通过后会生成报告：
 

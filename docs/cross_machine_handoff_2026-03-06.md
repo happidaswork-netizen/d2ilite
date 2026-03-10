@@ -20,6 +20,7 @@
 14. 目录角色摘要索引 / 缓存与批量执行反馈已完成第一轮强化，下一阶段应直接进入交付与切换准备。
 15. 交付与切换准备现已完成：统一 release gate、调试构建路径和切换边界都已落盘。
 16. 当前 Python bridge 已收窄为元数据读写职责，目录列表和图片预览已由 Vite / Tauri 原生承接。
+17. 元数据读写运行时已切到专用 `desktop_metadata_backend.py`，`desktop_bridge_cli.py` 退回兼容层。
 
 ## 2. 本轮累计完成内容
 
@@ -50,7 +51,9 @@
 
 1. 重写 `desktop-next` 工作台界面，形成“固定操作栏 + 左侧列表/预览 + 右侧元数据编辑”的可用布局。
 2. 新增开发态 bridge provider：`vite-python-cli`。
-3. 在 `vite.config.ts` 中加入 `/api/bridge/*` 中间件，直接转发到 `scripts/desktop_bridge_cli.py`。
+3. 在 `vite.config.ts` 中加入 `/api/bridge/*` 中间件：
+   - `list / preview` 由 Vite 本地承接
+   - `ping / read / save` 调用 `scripts/desktop_metadata_backend.py`
 4. 已支持：
    - `ping`
    - `list`
@@ -99,6 +102,9 @@
 12. bridge 责任边界已收窄：
    - `list` 和 `preview` 不再依赖 Python CLI
    - Python backend 当前主要保留 `read/save`
+13. 运行时入口已更新：
+   - `desktop_metadata_backend.py`：当前 `read/save/ping` runtime backend
+   - `desktop_bridge_cli.py`：兼容脚本与旧 smoke 保留
 
 ## 3. 本次修改文件清单
 

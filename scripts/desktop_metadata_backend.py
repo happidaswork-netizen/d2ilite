@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-"""Desktop bridge CLI for D2I Lite Next (Phase 1)."""
+"""Desktop metadata backend for D2I Lite Next runtime adapters."""
 
 from __future__ import annotations
 
@@ -21,7 +21,6 @@ from services.desktop_metadata_backend_service import (  # type: ignore
     build_read_payload,
     build_save_payload,
 )
-from services.image_service import list_images_in_folder
 
 
 def _json_print(payload: Dict[str, Any]) -> None:
@@ -44,32 +43,19 @@ def _fail(message: str, *, code: int = 1, detail: str = "") -> int:
 def _load_payload(args: argparse.Namespace) -> Dict[str, Any]:
     payload: Dict[str, Any] = {}
     if getattr(args, "payload_file", ""):
-        with open(str(args.payload_file), "r", encoding="utf-8") as f:
-            obj = json.load(f)
-            if isinstance(obj, dict):
-                payload = obj
+        with open(str(args.payload_file), "r", encoding="utf-8") as handle:
+            raw = json.load(handle)
+            if isinstance(raw, dict):
+                payload = raw
     elif getattr(args, "payload_json", ""):
-        obj = json.loads(str(args.payload_json))
-        if isinstance(obj, dict):
-            payload = obj
+        raw = json.loads(str(args.payload_json))
+        if isinstance(raw, dict):
+            payload = raw
     return payload
 
 
 def cmd_ping(_args: argparse.Namespace) -> int:
     return _ok(build_ping_payload())
-
-
-def cmd_list(args: argparse.Namespace) -> int:
-    folder = os.path.abspath(str(args.folder or "").strip())
-    if not folder:
-        return _fail("folder is required", code=2)
-    if not os.path.isdir(folder):
-        return _fail("folder not found", code=2, detail=folder)
-    files = list_images_in_folder(folder)
-    limit = max(0, int(args.limit or 0))
-    if limit > 0:
-        files = files[:limit]
-    return _ok({"folder": folder, "count": len(files), "items": files})
 
 
 def cmd_read(args: argparse.Namespace) -> int:
@@ -80,8 +66,8 @@ def cmd_read(args: argparse.Namespace) -> int:
         return _fail("file not found", code=2, detail=path)
     try:
         return _ok(build_read_payload(path))
-    except Exception as e:
-        return _fail("read failed", detail=str(e))
+    except Exception as error:
+        return _fail("read failed", detail=str(error))
 
 
 def cmd_save(args: argparse.Namespace) -> int:
@@ -92,21 +78,16 @@ def cmd_save(args: argparse.Namespace) -> int:
         return _fail("file not found", code=2, detail=path)
     try:
         return _ok(build_save_payload(path, _load_payload(args)))
-    except Exception as e:
-        return _fail("save failed", detail=str(e))
+    except Exception as error:
+        return _fail("save failed", detail=str(error))
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="D2I Lite desktop bridge CLI")
+    parser = argparse.ArgumentParser(description="D2I Lite desktop metadata backend")
     sub = parser.add_subparsers(dest="command", required=True)
 
     ping = sub.add_parser("ping", help="health check")
     ping.set_defaults(func=cmd_ping)
-
-    list_cmd = sub.add_parser("list", help="list image files in folder")
-    list_cmd.add_argument("--folder", required=True)
-    list_cmd.add_argument("--limit", type=int, default=0)
-    list_cmd.set_defaults(func=cmd_list)
 
     read = sub.add_parser("read", help="read metadata of one image")
     read.add_argument("--path", required=True)
@@ -131,4 +112,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
