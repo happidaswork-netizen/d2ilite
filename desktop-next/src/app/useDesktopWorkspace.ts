@@ -7,11 +7,17 @@ import {
   extractRoleMetadataSummary,
   extractRoleMetadataSummaryFromForm,
   getTabPayload,
+  hasBatchRoleChange,
   parseKeywords,
   sameForm,
+  shouldApplyBatchRoleOperation,
   toForm,
   toPayload,
   type BatchAliasMode,
+  type BatchExecutionFailure,
+  type BatchExecutionProgress,
+  type BatchExecutionReport,
+  type BatchMatchMode,
   type BatchOriginalRoleMode,
   type BatchRoleOperation,
   type BatchRoleScope,
@@ -19,6 +25,7 @@ import {
   type MetadataTabKey,
   type RoleMetadataSummary,
 } from '../domain/metadata'
+import { createMetadataIndexCache } from '../infrastructure/cache/metadataIndexCache'
 import {
   createDesktopBridge,
   reportDesktopFrontendStatus,
@@ -27,8 +34,18 @@ import {
 import { loadPreferredFolder, persistPreferredFolder } from '../infrastructure/runtime/folderPreference'
 import { getFileName } from '../shared/path'
 
+const EMPTY_BATCH_PROGRESS: BatchExecutionProgress = {
+  active: false,
+  total: 0,
+  processed: 0,
+  changed: 0,
+  skipped: 0,
+  failed: 0,
+}
+
 export function useDesktopWorkspace() {
   const bridge = useMemo(() => createDesktopBridge(), [])
+  const metadataIndexCacheRef = useRef(createMetadataIndexCache())
   const startupSmokeRef = useRef<boolean>(false)
   const currentItemRef = useRef<MetadataItem | null>(null)
   const selectedPathRef = useRef<string>('')
@@ -55,6 +72,9 @@ export function useDesktopWorkspace() {
   const [batchOriginalRoleName, setBatchOriginalRoleName] = useState<string>('')
   const [batchAliasMode, setBatchAliasMode] = useState<BatchAliasMode>('ignore')
   const [batchAliasText, setBatchAliasText] = useState<string>('')
+  const [batchMatchMode, setBatchMatchMode] = useState<BatchMatchMode>('all')
+  const [batchProgress, setBatchProgress] = useState<BatchExecutionProgress>(EMPTY_BATCH_PROGRESS)
+  const [lastBatchReport, setLastBatchReport] = useState<BatchExecutionReport | null>(null)
 
   const provider = bridge.provider
   const selectedName = selectedPath ? getFileName(selectedPath) : ''
@@ -169,14 +189,21 @@ export function useDesktopWorkspace() {
 
   useEffect(() => {
     let disposed = false
+    const cache = metadataIndexCacheRef.current
     const currentPath = selectedPathRef.current
-    const seed: Record<string, RoleMetadataSummary> = {}
 
     if (currentPath && currentItemRef.current && items.includes(currentPath)) {
-      seed[currentPath] = extractRoleMetadataSummary(currentItemRef.current)
+      cache.rememberItem(currentItemRef.current)
     }
 
-    setRoleSummaryByPath(seed)
+    const applySnapshot = (): void => {
+      if (disposed) {
+        return
+      }
+      setRoleSummaryByPath(cache.getSummarySnapshot(items))
+    }
+
+    applySnapshot()
 
     if (items.length === 0) {
       setIndexBusy(false)
@@ -186,37 +213,18 @@ export function useDesktopWorkspace() {
     }
 
     const run = async (): Promise<void> => {
-      setIndexBusy(true)
-      const nextSummaryMap = { ...seed }
-      let pendingFlush = 0
-
-      for (const path of items) {
-        if (disposed) {
-          return
-        }
-        if (nextSummaryMap[path]) {
-          continue
-        }
-
-        try {
-          const item =
-            path === selectedPathRef.current && currentItemRef.current
-              ? currentItemRef.current
-              : await bridge.readMetadata(path)
-          nextSummaryMap[path] = extractRoleMetadataSummary(item)
-        } catch {
-          // ignore per-item index failures and continue scanning
-        }
-
-        pendingFlush += 1
-        if (pendingFlush >= 8) {
-          pendingFlush = 0
-          setRoleSummaryByPath({ ...nextSummaryMap })
-        }
-      }
-
+      await cache.hydrateRoleSummaries(items, (path) => bridge.readMetadata(path), {
+        flushEvery: 12,
+        onUpdate: ({ indexedCount, totalCount }) => {
+          if (disposed) {
+            return
+          }
+          applySnapshot()
+          setIndexBusy(indexedCount < totalCount)
+        },
+      })
       if (!disposed) {
-        setRoleSummaryByPath({ ...nextSummaryMap })
+        applySnapshot()
         setIndexBusy(false)
       }
     }
@@ -232,21 +240,33 @@ export function useDesktopWorkspace() {
     }
   }, [bridge, items])
 
-  const updateRoleSummary = (path: string, summary: RoleMetadataSummary): void => {
-    setRoleSummaryByPath((prev) => ({ ...prev, [path]: summary }))
+  const rememberMetadataItem = (item: MetadataItem): void => {
+    const summary = metadataIndexCacheRef.current.rememberItem(item)
+    if (item.filepath) {
+      setRoleSummaryByPath((prev) => ({ ...prev, [item.filepath]: summary }))
+    }
   }
 
-  const loadMetadata = async (path: string, statusText: string): Promise<void> => {
+  const loadMetadata = async (
+    path: string,
+    statusText: string,
+    options?: {
+      forceRefresh?: boolean
+    },
+  ): Promise<void> => {
     setBusy(true)
     setStatus(statusText)
     try {
-      const data = await bridge.readMetadata(path)
+      if (options?.forceRefresh) {
+        metadataIndexCacheRef.current.forgetItem(path)
+      }
+      const data = await metadataIndexCacheRef.current.readMetadata(path, (targetPath) => bridge.readMetadata(targetPath))
       const nextForm = toForm(data)
+      rememberMetadataItem(data)
       setCurrentItem(data)
       setSelectedPath(path)
       setLoadedForm(nextForm)
       setForm(nextForm)
-      updateRoleSummary(path, extractRoleMetadataSummary(data))
       setStatus(`已读取：${getFileName(path)}`)
     } catch (error) {
       setStatus(`读取失败：${String(error)}`)
@@ -289,13 +309,13 @@ export function useDesktopWorkspace() {
       }
 
       const preferred = selectedPath && list.includes(selectedPath) ? selectedPath : list[0]
-      const data = await bridge.readMetadata(preferred)
+      const data = await metadataIndexCacheRef.current.readMetadata(preferred, (path) => bridge.readMetadata(path))
       const nextForm = toForm(data)
+      rememberMetadataItem(data)
       setSelectedPath(preferred)
       setCurrentItem(data)
       setLoadedForm(nextForm)
       setForm(nextForm)
-      updateRoleSummary(preferred, extractRoleMetadataSummary(data))
       setStatus(`已加载 ${list.length} 项`)
     } catch (error) {
       setStatus(`加载失败：${String(error)}`)
@@ -321,7 +341,7 @@ export function useDesktopWorkspace() {
     if (!confirmDiscard()) {
       return
     }
-    await loadMetadata(selectedPath, '正在重新读取元数据...')
+    await loadMetadata(selectedPath, '正在重新读取元数据...', { forceRefresh: true })
   }
 
   const onSave = async (): Promise<void> => {
@@ -332,12 +352,13 @@ export function useDesktopWorkspace() {
     setStatus('正在保存元数据...')
     try {
       await bridge.saveMetadata(selectedPath, toPayload(form, currentItem))
+      metadataIndexCacheRef.current.forgetItem(selectedPath)
       const refreshed = await bridge.readMetadata(selectedPath)
       const nextForm = toForm(refreshed)
+      rememberMetadataItem(refreshed)
       setCurrentItem(refreshed)
       setLoadedForm(nextForm)
       setForm(nextForm)
-      updateRoleSummary(selectedPath, extractRoleMetadataSummary(refreshed))
       setStatus('保存成功')
     } catch (error) {
       setStatus(`保存失败：${String(error)}`)
@@ -372,43 +393,100 @@ export function useDesktopWorkspace() {
       aliasText: batchAliasText,
     }
 
+    const cache = metadataIndexCacheRef.current
+    const failures: BatchExecutionFailure[] = []
+    const summaryUpdates: Record<string, RoleMetadataSummary> = {}
+    let changed = 0
+    let skipped = 0
+    let failed = 0
+    let processed = 0
+    let selectedChanged = false
+
     setBusy(true)
+    setBatchProgress({ active: true, total: targetPaths.length, processed: 0, changed: 0, skipped: 0, failed: 0 })
+
     try {
-      const summaryUpdates: Record<string, RoleMetadataSummary> = {}
+      for (const path of targetPaths) {
+        setStatus(`正在批量应用角色编辑（${processed + 1}/${targetPaths.length}）...`)
+        try {
+          let baseItem: MetadataItem
+          let baseForm: FormState
+          if (path === selectedPath && currentItem && form) {
+            baseItem = currentItem
+            baseForm = form
+          } else {
+            baseItem = await cache.readMetadata(path, (targetPath) => bridge.readMetadata(targetPath))
+            baseForm = toForm(baseItem)
+          }
 
-      for (let index = 0; index < targetPaths.length; index += 1) {
-        const path = targetPaths[index]
-        setStatus(`正在批量应用角色编辑（${index + 1}/${targetPaths.length}）...`)
-
-        let baseItem: MetadataItem
-        let baseForm: FormState
-        if (path === selectedPath && currentItem && form) {
-          baseItem = currentItem
-          baseForm = form
-        } else {
-          baseItem = await bridge.readMetadata(path)
-          baseForm = toForm(baseItem)
+          if (!shouldApplyBatchRoleOperation(baseForm, batchMatchMode)) {
+            skipped += 1
+          } else {
+            const nextForm = applyBatchRoleOperation(baseForm, operation)
+            if (!hasBatchRoleChange(baseForm, nextForm)) {
+              skipped += 1
+            } else {
+              await bridge.saveMetadata(path, toPayload(nextForm, baseItem))
+              cache.forgetItem(path)
+              const summary = extractRoleMetadataSummaryFromForm(nextForm)
+              cache.rememberSummary(path, summary)
+              summaryUpdates[path] = summary
+              changed += 1
+              if (path === selectedPath) {
+                selectedChanged = true
+              }
+            }
+          }
+        } catch (error) {
+          failed += 1
+          failures.push({ path, error: String(error) })
+          cache.forgetItem(path)
+        } finally {
+          processed += 1
+          setBatchProgress({
+            active: true,
+            total: targetPaths.length,
+            processed,
+            changed,
+            skipped,
+            failed,
+          })
         }
-
-        const nextForm = applyBatchRoleOperation(baseForm, operation)
-        await bridge.saveMetadata(path, toPayload(nextForm, baseItem))
-        summaryUpdates[path] = extractRoleMetadataSummaryFromForm(nextForm)
       }
 
-      if (selectedPath && targetPaths.includes(selectedPath)) {
+      if (selectedPath && selectedChanged) {
         const refreshed = await bridge.readMetadata(selectedPath)
         const nextForm = toForm(refreshed)
+        rememberMetadataItem(refreshed)
         setCurrentItem(refreshed)
         setLoadedForm(nextForm)
         setForm(nextForm)
         summaryUpdates[selectedPath] = extractRoleMetadataSummary(refreshed)
       }
 
-      setRoleSummaryByPath((prev) => ({ ...prev, ...summaryUpdates }))
-      setStatus(`批量角色编辑已应用到 ${targetPaths.length} 项`)
-    } catch (error) {
-      setStatus(`批量角色编辑失败：${String(error)}`)
+      setRoleSummaryByPath(cache.getSummarySnapshot(items))
+
+      const report: BatchExecutionReport = {
+        completedAt: new Date().toISOString(),
+        scope: batchScope,
+        matchMode: batchMatchMode,
+        total: targetPaths.length,
+        changed,
+        skipped,
+        failed,
+        failures,
+      }
+      setLastBatchReport(report)
+      setStatus(`批量角色编辑完成：改写 ${changed}，跳过 ${skipped}，失败 ${failed}`)
     } finally {
+      setBatchProgress({
+        active: false,
+        total: targetPaths.length,
+        processed,
+        changed,
+        skipped,
+        failed,
+      })
       setBusy(false)
     }
   }
@@ -457,8 +535,10 @@ export function useDesktopWorkspace() {
     activeTabPayload,
     batchAliasMode,
     batchAliasText,
+    batchMatchMode,
     batchOriginalRoleMode,
     batchOriginalRoleName,
+    batchProgress,
     batchScope,
     bridgeVersion,
     busy,
@@ -473,6 +553,7 @@ export function useDesktopWorkspace() {
     isDirty,
     items,
     keywordCount,
+    lastBatchReport,
     previewFailed,
     previewUrl,
     provider,
@@ -486,6 +567,7 @@ export function useDesktopWorkspace() {
     setActiveMetaTab,
     setBatchAliasMode,
     setBatchAliasText,
+    setBatchMatchMode,
     setBatchOriginalRoleMode,
     setBatchOriginalRoleName,
     setBatchScope,

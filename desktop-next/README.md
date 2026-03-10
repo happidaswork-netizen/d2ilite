@@ -15,6 +15,7 @@
 7. 编辑区已支持 `Profile / TITI / XMP / EXIF / IPTC / Match` 视图切换
 8. 已支持单图“图片原角色名 + 扮演角色名列表”结构化编辑
 9. 已支持目录级“原角色名 / 扮演角色名”筛选、勾选集维护和批量角色编辑
+10. 已补目录角色摘要索引 / 缓存，以及批量执行进度、跳过统计和失败项反馈
 
 ## 运行方式
 
@@ -78,7 +79,7 @@ cd ..
 当前覆盖：
 
 1. provider 选择规则
-2. 批量角色编辑纯逻辑：设置 / 追加 / 替换 / 清空 / 去重
+2. 批量角色编辑纯逻辑：设置 / 追加 / 替换 / 清空 / 去重 / 匹配条件 / 变更判定
 3. `tauri:dev` 启动链路（Vite + cargo run + Tauri 二进制启动）
 4. Tauri 壳内前端已切到 `tauri` provider，并完成启动期 `ping`
 5. Tauri 壳内完整 roundtrip：`ping/list/read/save/preview`
@@ -105,4 +106,5 @@ cd ..
 3. 当前已确认 Tauri 壳内前端会切到 `tauri` provider，并已补完整 `list/read/save/preview` 端到端 smoke
 4. 编辑区已能查看 bridge 返回的 `titi_json / other_xmp / other_exif / other_iptc / matched_row` 原始内容
 5. 角色元数据当前已支持单图结构化编辑，以及目录级筛选、勾选和批量编辑
-6. 生产构建产物虽然已可被 Tauri 消费，但还没进入正式打包和发布阶段
+6. 目录角色摘要索引 / 缓存与批量执行反馈已完成第一轮强化
+7. 生产构建产物虽然已可被 Tauri 消费，但还没进入正式打包和发布阶段

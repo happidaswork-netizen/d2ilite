@@ -3,6 +3,8 @@ import assert from 'node:assert/strict'
 import {
   applyBatchRoleOperation,
   createRoleAliasFormItem,
+  hasBatchRoleChange,
+  shouldApplyBatchRoleOperation,
   type FormState,
 } from '../src/domain/metadata/index.ts'
 
@@ -27,6 +29,21 @@ function createBaseForm(): FormState {
   }
 }
 
+function createNormalizedBaseForm(): FormState {
+  return {
+    ...createBaseForm(),
+    role_aliases: [createRoleAliasFormItem({ name: '旧扮演', note: 'existing' })],
+  }
+}
+
+function createEmptyRoleForm(): FormState {
+  return {
+    ...createBaseForm(),
+    original_role_name: '',
+    role_aliases: [],
+  }
+}
+
 function roleNames(form: FormState): string[] {
   return form.role_aliases.map((entry) => entry.name)
 }
@@ -39,6 +56,7 @@ const appended = applyBatchRoleOperation(createBaseForm(), {
 })
 assert.equal(appended.original_role_name, '新原角色')
 assert.deepEqual(roleNames(appended), ['旧扮演', '新扮演A', '新扮演B'])
+assert.equal(hasBatchRoleChange(createBaseForm(), appended), true)
 
 const replaced = applyBatchRoleOperation(createBaseForm(), {
   originalRoleMode: 'ignore',
@@ -57,5 +75,21 @@ const cleared = applyBatchRoleOperation(createBaseForm(), {
 })
 assert.equal(cleared.original_role_name, '')
 assert.deepEqual(roleNames(cleared), [])
+
+const unchangedBase = createNormalizedBaseForm()
+const unchanged = applyBatchRoleOperation(unchangedBase, {
+  originalRoleMode: 'ignore',
+  originalRoleName: '',
+  aliasMode: 'append',
+  aliasText: '旧扮演',
+})
+assert.equal(hasBatchRoleChange(unchangedBase, unchanged), false)
+
+assert.equal(shouldApplyBatchRoleOperation(createBaseForm(), 'all'), true)
+assert.equal(shouldApplyBatchRoleOperation(createBaseForm(), 'missing_original'), false)
+assert.equal(shouldApplyBatchRoleOperation(createBaseForm(), 'missing_alias'), false)
+assert.equal(shouldApplyBatchRoleOperation(createEmptyRoleForm(), 'missing_original'), true)
+assert.equal(shouldApplyBatchRoleOperation(createEmptyRoleForm(), 'missing_alias'), true)
+assert.equal(shouldApplyBatchRoleOperation(createEmptyRoleForm(), 'missing_any'), true)
 
 console.log('[OK] batch role smoke passed')

@@ -44,10 +44,12 @@
 7. `raw metadata inspector` 已拆到 `features/metadata/components/MetadataInspectorPane.tsx`
 8. 元数据表单、角色规则、批量规则、格式化 helper 已下沉到 `domain/metadata`
 9. bridge provider、smoke roundtrip、目录偏好读写已收进 `infrastructure/`
-10. 目录级角色筛选、勾选和批量编辑仍保留在 feature/workspace 协调层
+10. 目录角色摘要索引 / 缓存已收进 `infrastructure/cache`
+11. 目录级角色筛选、勾选和批量编辑已补匹配条件、进度、跳过 / 失败反馈
+12. 目录级角色工作流仍由 `app/useDesktopWorkspace.ts` 统一协调
 
 ## 下一步拆分顺序
 
-1. 下一步进入目录性能与批量工作流强化
-2. 然后评估目录索引 / 缓存层落点
-3. 最后再决定是否开始替换 Python bridge 或直接推进更高阶工作台能力
+1. 下一步进入交付与切换准备
+2. 固化打包路径、切换边界和回归矩阵
+3. 然后再决定是先替换 Python bridge，还是先推进更高阶工作台能力

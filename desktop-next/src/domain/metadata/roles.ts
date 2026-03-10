@@ -1,6 +1,12 @@
 import type { MetadataItem, RoleAliasPayload } from '../../types.ts'
 
-import type { BatchRoleOperation, FormState, RoleAliasFormItem, RoleMetadataSummary } from './types.ts'
+import type {
+  BatchMatchMode,
+  BatchRoleOperation,
+  FormState,
+  RoleAliasFormItem,
+  RoleMetadataSummary,
+} from './types.ts'
 
 function createRoleAliasId(): string {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
@@ -95,6 +101,31 @@ export function extractRoleMetadataSummaryFromForm(form: FormState | null): Role
     originalRoleName: String(form?.original_role_name || '').trim(),
     roleAliasNames: (form?.role_aliases || []).map((entry) => String(entry.name || '').trim()).filter(Boolean),
   }
+}
+
+export function shouldApplyBatchRoleOperation(form: FormState, matchMode: BatchMatchMode): boolean {
+  const hasOriginalRole = Boolean(String(form.original_role_name || '').trim())
+  const hasRoleAliases = form.role_aliases.some((entry) => String(entry.name || '').trim())
+
+  switch (matchMode) {
+    case 'missing_original':
+      return !hasOriginalRole
+    case 'missing_alias':
+      return !hasRoleAliases
+    case 'missing_any':
+      return !hasOriginalRole || !hasRoleAliases
+    default:
+      return true
+  }
+}
+
+export function hasBatchRoleChange(left: FormState, right: FormState): boolean {
+  if (String(left.original_role_name || '').trim() !== String(right.original_role_name || '').trim()) {
+    return true
+  }
+  const leftAliases = left.role_aliases.map((entry) => `${String(entry.name || '').trim()}|${String(entry.note || '').trim()}|${entry.enabled ? '1' : '0'}`)
+  const rightAliases = right.role_aliases.map((entry) => `${String(entry.name || '').trim()}|${String(entry.note || '').trim()}|${entry.enabled ? '1' : '0'}`)
+  return JSON.stringify(leftAliases) !== JSON.stringify(rightAliases)
 }
 
 export function applyBatchRoleOperation(form: FormState, operation: BatchRoleOperation): FormState {

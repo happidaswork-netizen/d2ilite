@@ -93,14 +93,18 @@ export function DesktopWorkspace() {
             filteredCount={workspace.filteredItems.length}
             indexedCount={workspace.indexedCount}
             indexBusy={workspace.indexBusy}
+            matchMode={workspace.batchMatchMode}
             originalRoleMode={workspace.batchOriginalRoleMode}
             originalRoleName={workspace.batchOriginalRoleName}
+            progress={workspace.batchProgress}
+            report={workspace.lastBatchReport}
             scope={workspace.batchScope}
             selectedCount={workspace.selectedPaths.length}
             totalCount={workspace.items.length}
             onAliasModeChange={workspace.setBatchAliasMode}
             onAliasTextChange={workspace.setBatchAliasText}
             onApply={() => void workspace.onApplyBatchRoleChanges()}
+            onMatchModeChange={workspace.setBatchMatchMode}
             onOriginalRoleModeChange={workspace.setBatchOriginalRoleMode}
             onOriginalRoleNameChange={workspace.setBatchOriginalRoleName}
             onScopeChange={workspace.setBatchScope}
@@ -136,3 +140,4 @@ export function DesktopWorkspace() {
     </div>
   )
 }
+
