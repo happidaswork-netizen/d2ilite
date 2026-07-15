@@ -1,0 +1,4 @@
+interface:
+  display_name: "D2I Lite 模板生成器"
+  short_description: "为公开人物资料站点生成并验证 D2I Lite 抓取模板"
+  default_prompt: "根据公开入口链接生成 D2I Lite 模板，完成结构、模式和准生产三轮验证。"

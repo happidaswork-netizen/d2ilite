@@ -19,6 +19,11 @@ import requests
 from scrapy import Selector
 from scrapy.crawler import CrawlerProcess
 from scrapy.settings import Settings
+from titi_metadata_schema import (
+    compute_titi_content_hash,
+    normalize_archive_gender_bucket,
+    stable_source_ref,
+)
 
 try:
     from PIL import Image  # type: ignore
@@ -36,7 +41,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 try:
-    from metadata_writer import write_xmp_metadata  # type: ignore
+    from metadata_writer import read_xmp_metadata, write_xmp_metadata  # type: ignore
     HAS_METADATA_WRITER = True
     METADATA_WRITER_ERROR = ""
 except Exception as exc:  # pragma: no cover
@@ -930,7 +935,15 @@ def collect_detail_field_labels(config: Dict[str, Any], rules: Dict[str, Any]) -
     return labels
 
 
-def build_metadata_queue_row_from_profile(profile: Dict[str, Any], image_sha: str, local_path: str) -> Dict[str, Any]:
+def build_metadata_queue_row_from_profile(
+    profile: Dict[str, Any],
+    image_sha: str,
+    local_path: str,
+    collection_context: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    context = collection_context if isinstance(collection_context, dict) else {}
+    detail_url = str(profile.get("detail_url", "") or "").strip()
+    source_ref = stable_source_ref(detail_url or profile.get("list_url", ""))
     return {
         "created_at": utc_now_iso(),
         "name": profile.get("name", ""),
@@ -939,10 +952,16 @@ def build_metadata_queue_row_from_profile(profile: Dict[str, Any], image_sha: st
         "full_content": _normalize_multiline_text(profile.get("full_content", "") or profile.get("summary", "")),
         "fields": profile.get("fields", {}),
         "mapped": profile.get("mapped", {}),
-        "detail_url": profile.get("detail_url", ""),
+        "detail_url": detail_url,
         "source_url": profile.get("list_url", ""),
         "image_url": profile.get("image_url", ""),
         "image_sha256": image_sha,
+        "source_file_sha256": image_sha,
+        "research_source_ref": source_ref,
+        "collection_run_id": context.get("collection_run_id", ""),
+        "template_id": context.get("template_id", ""),
+        "template_version": context.get("template_version", 1),
+        "template_sha256": context.get("template_sha256", ""),
         "local_image_path": local_path,
     }
 
@@ -1405,8 +1424,39 @@ def write_metadata_for_queue_row(
         d2i_profile_payload["llm_enriched"] = True
     if summary:
         d2i_profile_payload["summary"] = summary
-    if full_content:
-        d2i_profile_payload["full_content"] = full_content
+    source_ref = str(row.get("research_source_ref", "") or stable_source_ref(detail_url or source_list_url)).strip()
+    if full_content and source_ref:
+        d2i_profile_payload["full_content_ref"] = source_ref
+    d2i_profile_payload["collector_variant"] = "d2ilite"
+    for key in ("collection_run_id", "template_id", "template_version", "template_sha256"):
+        value = row.get(key)
+        if value not in (None, "", [], {}):
+            d2i_profile_payload[key] = value
+    d2i_profile_payload["collected_at"] = str(row.get("created_at") or utc_now_iso())
+
+    titi_content_hash = compute_titi_content_hash(final_path)
+    people_profile_payload: Dict[str, Any] = {
+        "name": person_name or title,
+        "gender": gender,
+        "city": city_value,
+        "unit_name": unit_text,
+        "position": position,
+        "biography": rich_description[:2000] if rich_description else "",
+        "source_url": detail_url or source_list_url,
+    }
+    people_profile_payload = {
+        key: value for key, value in people_profile_payload.items() if value not in (None, "", [], {})
+    }
+    archive_bucket = normalize_archive_gender_bucket("", source_gender=gender)
+    photo_audit_payload: Dict[str, Any] = {
+        "status": "pending",
+        "file_status": "available",
+        "source_page_image_status": "has_photo",
+        "archive_gender_bucket": archive_bucket,
+        "gender_source": "source" if gender in {"男", "女"} else "unresolved",
+        "audit_source": "d2ilite-collector",
+        "audited_at": utc_now_iso(),
+    }
 
     payload = {
         "title": title,
@@ -1422,7 +1472,14 @@ def write_metadata_for_queue_row(
         "police_id": police_id,
         "keywords": keywords,
         "role_aliases": [english_name] if english_name else [],
+        "component": "d2i",
+        "display_description": rich_description[:2000] if rich_description else "",
+        "tags": keywords,
+        "titi_content_hash": titi_content_hash or "",
+        "people_profile": people_profile_payload,
+        "photo_audit": photo_audit_payload,
         "d2i_profile": d2i_profile_payload,
+        "research_source_refs": [source_ref] if source_ref else [],
     }
     audit_snapshot = {
         "name": person_name or title,
@@ -1448,6 +1505,8 @@ def write_metadata_for_queue_row(
         if image_sha and isinstance(sha_runtime_path, dict):
             sha_runtime_path[image_sha] = row["local_image_path"]
 
+        written_meta = read_xmp_metadata(row["local_image_path"])
+        written_titi = written_meta.get("titi_json", {}) if isinstance(written_meta, dict) else {}
         append_jsonl(
             results_path,
             {
@@ -1457,6 +1516,10 @@ def write_metadata_for_queue_row(
                 "output_path": row["local_image_path"],
                 "status": "ok",
                 "name": person_name or title,
+                "titi_asset_id": written_titi.get("titi_asset_id", "") if isinstance(written_titi, dict) else "",
+                "titi_content_hash": titi_content_hash or "",
+                "source_file_sha256": str(row.get("source_file_sha256") or image_sha),
+                "research_source_ref": source_ref,
                 "audit": audit_snapshot,
             },
         )
@@ -4266,7 +4329,7 @@ def download_images(config: Dict[str, Any], output_root: Path) -> Dict[str, Any]
     return report
 
 
-def build_metadata_queue(output_root: Path) -> Dict[str, Any]:
+def build_metadata_queue(output_root: Path, config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     profiles_path = output_root / "raw" / "profiles.jsonl"
     queue_path = output_root / "raw" / "metadata_queue.jsonl"
     url_index_path = output_root / "state" / "image_url_index.json"
@@ -4291,6 +4354,21 @@ def build_metadata_queue(output_root: Path) -> Dict[str, Any]:
                 sha_index[key] = value
 
     manifest_by_detail, manifest_by_image = _load_download_manifest_lookups(downloads_manifest_path)
+
+    config = config if isinstance(config, dict) else {}
+    rules = config.get("rules") if isinstance(config.get("rules"), dict) else {}
+    run_id_path = output_root / "state" / "collection_run_id.txt"
+    run_id_path.parent.mkdir(parents=True, exist_ok=True)
+    collection_run_id = run_id_path.read_text(encoding="utf-8").strip() if run_id_path.exists() else ""
+    if not collection_run_id:
+        collection_run_id = "run_" + datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S") + "_" + uuid.uuid4().hex[:8]
+        run_id_path.write_text(collection_run_id, encoding="utf-8")
+    collection_context = {
+        "collection_run_id": collection_run_id,
+        "template_id": str(config.get("site_name") or "").strip(),
+        "template_version": int(config.get("template_version") or 1),
+        "template_sha256": str(rules.get("template_sha256") or "").strip(),
+    }
 
     profiles: List[Dict[str, Any]] = []
     profiles_by_detail: Dict[str, Dict[str, Any]] = {}
@@ -4408,6 +4486,7 @@ def build_metadata_queue(output_root: Path) -> Dict[str, Any]:
             profile,
             resolved_sha or sha,
             resolved_path or local_path,
+            collection_context=collection_context,
         )
         queue_rows.append(row)
         existing_details.add(detail_url)
@@ -5231,6 +5310,11 @@ def main() -> int:
     if not config_path.is_absolute():
         config_path = (project_root / config_path).resolve()
     config = load_config(config_path)
+    runtime_rules = config.get("rules") if isinstance(config.get("rules"), dict) else {}
+    config["rules"] = runtime_rules
+    runtime_rules.setdefault("template_source_path", str(config_path))
+    runtime_rules["template_sha256"] = "sha256:" + hashlib.sha256(config_path.read_bytes()).hexdigest()
+    config.setdefault("template_version", 1)
 
     output_root = Path(args.output_root).resolve() if args.output_root else resolve_output_root(config, project_root)
     output_root = resolve_output_root_with_unit_subdir(config, output_root)
@@ -5464,7 +5548,7 @@ def main() -> int:
             "metadata pre-retry start (retry failed first)",
             queue=queue_before_retry,
         )
-        build_metadata_queue(output_root)
+        build_metadata_queue(output_root, active_config)
         queue_after_retry_build = count_jsonl(output_root / "raw" / "metadata_queue.jsonl")
         _log(
             "STAT",
@@ -5681,7 +5765,7 @@ def main() -> int:
         counts_before_meta = _counts_snapshot()
         queue_before = count_jsonl(output_root / "raw" / "metadata_queue.jsonl")
         _log("STAGE", "metadata stage start", queue=queue_before, skip_write=args.skip_metadata)
-        build_metadata_queue(output_root)
+        build_metadata_queue(output_root, active_config)
         queue_after_build = count_jsonl(output_root / "raw" / "metadata_queue.jsonl")
         _log("STAT", "metadata queue built", queue=queue_after_build, added=max(0, queue_after_build - queue_before))
         if not args.skip_metadata:

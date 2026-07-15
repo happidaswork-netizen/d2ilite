@@ -34,6 +34,7 @@ except ImportError:
     HAS_PYEXIV2 = False
 
 from text_parser import extract_person_info, extract_name_from_text, build_metadata_from_item
+from titi_metadata_schema import build_titi_meta, compute_titi_content_hash
 
 KEYWORD_MAX_COUNT = 6
 KEYWORD_MAX_LENGTH = 10
@@ -1374,9 +1375,8 @@ def update_metadata_preserve_others(
             xmp_data['Xmp.photoshop.AuthorsPosition'] = position
             xmp_data['Xmp.iptc.CreatorJobTitle'] = position
 
-        # 4. 更新/合并 TITI 自定义元数据（尽量保留未知字段）
+        # 4. 更新/合并 TITI 自定义元数据。显式写回升级为机器 schema 2，未知字段保留。
         import json
-        import uuid
 
         old_titi = {}
         if 'Xmp.titi.meta' in xmp_data:
@@ -1387,81 +1387,30 @@ def update_metadata_preserve_others(
         if not isinstance(old_titi, dict):
             old_titi = {}
 
-        # schema/app/component（仅补缺）
-        if not old_titi.get("schema"):
-            old_titi["schema"] = "titi-meta"
-        if not isinstance(old_titi.get("schema_version"), int):
-            old_titi["schema_version"] = 1
-        if old_titi.get("app") in (None, "", "D2I"):
-            old_titi["app"] = "PWI"
-        if not old_titi.get("component"):
-            old_titi["component"] = "forge"
-
-        # ID / world
-        asset_id = titi_asset_id or old_titi.get("titi_asset_id") or str(uuid.uuid4())
-        old_titi["titi_asset_id"] = asset_id
-        old_titi["titi_world_id"] = titi_world_id or old_titi.get("titi_world_id") or "default"
-
-        # 可选：内容 hash
-        if new_metadata.get("titi_content_hash"):
-            old_titi["titi_content_hash"] = new_metadata["titi_content_hash"]
-
-        if image_url:
-            old_titi["source_image"] = image_url
-
-        # d2i_profile 合并（只更新非空）
-        profile = old_titi.get("d2i_profile")
-        if not isinstance(profile, dict):
-            profile = {}
-        else:
-            profile = dict(profile)
-
-        if isinstance(new_metadata.get("d2i_profile"), dict):
-            for k, v in new_metadata["d2i_profile"].items():
-                if v not in (None, "", [], {}):
-                    profile[k] = v
-
-        if person:
-            profile["name"] = person
-        if desc:
-            profile["description"] = desc
-        if keywords:
-            profile["keywords"] = keywords
-        if source:
-            profile["source"] = source
-        if image_url:
-            profile["image_url"] = image_url
-        if city:
-            profile["city"] = city
-        if gender:
-            profile["gender"] = gender
-        elif "gender" in profile:
-            existing_gender = _normalize_gender_value(profile.get("gender"))
-            if existing_gender:
-                profile["gender"] = existing_gender
-            else:
-                profile.pop("gender", None)
-
-        if (not police_id) and isinstance(new_metadata.get("d2i_profile"), dict):
-            police_id = _extract_police_id_from_profile(new_metadata.get("d2i_profile"))
-        police_id = _normalize_police_id_value(police_id)
-        if police_id:
-            profile["police_id"] = police_id
-        elif "police_id" in profile:
-            existing_police_id = _normalize_police_id_value(profile.get("police_id"))
-            if existing_police_id:
-                profile["police_id"] = existing_police_id
-            else:
-                profile.pop("police_id", None)
-        if profile:
-            profile["extracted_at"] = datetime.utcnow().isoformat() + "Z"
-            old_titi["d2i_profile"] = profile
-
-        # 可选：角色别名
-        if isinstance(new_metadata.get("role_aliases"), list) and new_metadata["role_aliases"]:
-            old_titi["role_aliases"] = new_metadata["role_aliases"]
-
-        titi_json_str = json.dumps(old_titi, ensure_ascii=False)
+        normalized_metadata = dict(new_metadata or {})
+        normalized_metadata.setdefault("titi_content_hash", compute_titi_content_hash(path) or "")
+        normalized_metadata.update({
+            "title": title,
+            "description": desc,
+            "keywords": keywords,
+            "source": source,
+            "image_url": image_url,
+            "city": city,
+            "person": person,
+            "gender": gender,
+            "position": position,
+            "police_id": police_id,
+            "titi_asset_id": titi_asset_id,
+            "titi_world_id": titi_world_id,
+            "component": "d2i",
+        })
+        titi_json = build_titi_meta(
+            normalized_metadata,
+            existing_json=old_titi,
+            existing_asset_id=titi_asset_id or None,
+            default_component="d2i",
+        )
+        titi_json_str = json.dumps(titi_json, ensure_ascii=False, separators=(",", ":"))
         xmp_data['Xmp.titi.meta'] = titi_json_str
 
         # 5. 写入 XMP

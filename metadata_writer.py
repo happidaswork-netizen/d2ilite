@@ -25,6 +25,7 @@ from datetime import datetime, timezone
 from PIL import Image
 import piexif
 from metadata_manager import update_metadata_preserve_others
+from titi_metadata_schema import build_titi_meta
 
 # 尝试导入 pyexiv2
 try:
@@ -183,130 +184,13 @@ def _extract_police_id_from_profile(profile):
 
 
 def build_titi_json(metadata, existing_json=None, existing_asset_id=None):
-    """
-    构建 titi:meta JSON（支持 merge，尽量保留未知字段）
-
-    Args:
-        metadata: Forge(D2I) 侧元数据字典
-        existing_json: 已存在的 titi:meta JSON(dict)，用于合并（可选）
-        existing_asset_id: 兼容旧调用方式的参数（可选）
-
-    Returns:
-        dict: 合并后的 titi:meta JSON
-    """
-    import copy
-
-    now = datetime.now(timezone.utc).isoformat()
-    base = copy.deepcopy(existing_json) if isinstance(existing_json, dict) else {}
-
-    # schema 标识（用于兼容演进）
-    if not base.get("schema"):
-        base["schema"] = "titi-meta"
-    if not isinstance(base.get("schema_version"), int):
-        base["schema_version"] = 1
-
-    # 生态标识
-    if base.get("app") in (None, "", "D2I"):
-        base["app"] = "PWI"
-    if not base.get("component"):
-        base["component"] = "forge"
-
-    # ID 字段
-    asset_id = metadata.get("titi_asset_id") or existing_asset_id or base.get("titi_asset_id") or generate_titi_asset_id()
-    base["titi_asset_id"] = asset_id
-    base["titi_world_id"] = metadata.get("titi_world_id") or base.get("titi_world_id") or "default"
-
-    # 可选：内容 hash
-    if metadata.get("titi_content_hash"):
-        base["titi_content_hash"] = metadata["titi_content_hash"]
-
-    # D2I/Forge 扩展信息（只更新非空字段）
-    profile = base.get("d2i_profile")
-    if not isinstance(profile, dict):
-        profile = {}
-    else:
-        profile = dict(profile)
-
-    # 姓名优先来自 PersonInImage / metadata.person；Title 仅作兜底（兼容旧数据）
-    person_name = metadata.get("person") or metadata.get("name")
-    if not person_name:
-        person_name = metadata.get("title", "")
-        if isinstance(person_name, str) and " - " in person_name:
-            person_name = person_name.split(" - ", 1)[0].strip()
-
-    if isinstance(person_name, str) and person_name.strip():
-        profile["name"] = person_name.strip()
-
-    desc = metadata.get("description")
-    if isinstance(desc, str) and desc.strip():
-        profile["description"] = desc
-
-    keywords = metadata.get("keywords")
-    if isinstance(keywords, list) and keywords:
-        profile["keywords"] = keywords
-
-    source = metadata.get("source")
-    if isinstance(source, str) and source.strip():
-        profile["source"] = source
-
-    image_url = metadata.get("image_url") or metadata.get("url")
-    if isinstance(image_url, str) and image_url.strip():
-        image_url = image_url.strip()
-        profile["image_url"] = image_url
-        base["source_image"] = image_url
-
-    city = metadata.get("city")
-    if isinstance(city, str) and city.strip():
-        profile["city"] = city
-
-    def _normalize_gender(val):
-        if val is None:
-            return None
-        if not isinstance(val, str):
-            val = str(val)
-        s = val.strip().lower()
-        if not s:
-            return None
-        mapping = {
-            "男": "男",
-            "male": "男",
-            "m": "男",
-            "man": "男",
-            "男性": "男",
-            "女": "女",
-            "female": "女",
-            "f": "女",
-            "woman": "女",
-            "女性": "女",
-        }
-        return mapping.get(s) or mapping.get(val.strip())  # 兼容中文大小写/全角等
-
-    gender = metadata.get("gender")
-    if gender is None and isinstance(metadata.get("extracted"), dict):
-        gender = metadata["extracted"].get("gender")
-    if gender is None and isinstance(metadata.get("d2i_profile"), dict):
-        gender = metadata["d2i_profile"].get("gender")
-    gender = _normalize_gender(gender)
-    if gender:
-        profile["gender"] = gender
-
-    police_id = metadata.get("police_id")
-    if police_id is None and isinstance(metadata.get("d2i_profile"), dict):
-        police_id = _extract_police_id_from_profile(metadata.get("d2i_profile"))
-    police_id = _normalize_police_id_value(police_id)
-    if police_id:
-        profile["police_id"] = police_id
-
-    if profile:
-        profile["extracted_at"] = now
-        base["d2i_profile"] = profile
-
-    # 可选：角色别名（如上游传入则写入；否则保留已有）
-    role_aliases = metadata.get("role_aliases")
-    if isinstance(role_aliases, list) and role_aliases:
-        base["role_aliases"] = role_aliases
-
-    return base
+    """Build the portable TITI payload using the shared v2.3 rules."""
+    return build_titi_meta(
+        dict(metadata or {}),
+        existing_json=existing_json,
+        existing_asset_id=existing_asset_id,
+        default_component="d2i",
+    )
 
 
 def write_xmp_metadata(image_path, metadata):
