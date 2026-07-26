@@ -38,6 +38,12 @@ class ControlBody(BaseModel):
     options: Dict[str, Any] = Field(default_factory=dict)
 
 
+class FinalizeBody(BaseModel):
+    dry_run: bool = False
+    limit: int = 0
+    write_people: bool = True
+
+
 class CoverageEnqueueBody(BaseModel):
     action: str
     confirm: bool = False
@@ -184,6 +190,26 @@ def create_app() -> FastAPI:
     @app.post("/api/v1/queues/{queue_id}/cancel", dependencies=[Depends(require_auth)])
     def cancel_queue(queue_id: str) -> Dict[str, Any]:
         return _control(queue_id, "cancel")
+
+    @app.post("/api/v1/queues/{queue_id}/finalize", dependencies=[Depends(require_auth)])
+    def finalize_queue(queue_id: str, body: Optional[FinalizeBody] = None) -> Dict[str, Any]:
+        payload = body or FinalizeBody()
+        try:
+            result = queue_service.finalize_queue(
+                queue_id,
+                dry_run=bool(payload.dry_run),
+                limit=int(payload.limit or 0),
+                write_people=bool(payload.write_people),
+            )
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+        return {"ok": True, "action": "finalize", **result}
 
     @app.get("/api/v1/queues/{queue_id}/logs", dependencies=[Depends(require_auth)])
     def queue_logs(queue_id: str, lines: int = Query(default=80, ge=20, le=2000)) -> Dict[str, Any]:

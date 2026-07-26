@@ -15,6 +15,9 @@ services:
       D2I_CLOUD_DATA_ROOT: /runtime/d2i-cloud-data
       D2I_CLOUD_TASKS_ROOT: /runtime/d2i-cloud-tasks
       D2I_SCRAPER_REGISTRY_PATH: /runtime/d2i-cloud-data/desktop-next/scraper-runtime-registry.json
+      D2I_PORTRAIT_ROOT: /runtime/portrait
+      D2I_PORTRAIT_HOST_ROOT: /vol1/1001/角色肖像
+      D2I_PEOPLE_DB: /runtime/people/people.sqlite
       TMPDIR: /runtime/d2i-cloud-data/tmp
       D2I_WEB_TOKEN: ${D2I_WEB_TOKEN:-}
       HTTP_PROXY: ${D2I_HTTP_PROXY:-}
@@ -27,6 +30,8 @@ services:
       - ${D2I_CLOUD_DATA_HOST:-/vol4/1001/hermes-runtime/d2i-cloud-data}:/runtime/d2i-cloud-data
       - ${D2I_CLOUD_TASKS_HOST:-/vol4/1001/hermes-runtime/d2i-cloud-tasks}:/runtime/d2i-cloud-tasks
       - ${D2I_CLOUD_VENV_HOST:-/vol4/1001/hermes-runtime/d2i-cloud-venv}:/opt/cloud-venv
+      - ${D2I_PORTRAIT_HOST:-/vol1/1001/角色肖像}:/runtime/portrait
+      - ${D2I_PEOPLE_DB_HOST:-/vol4/1001/hermes-runtime/db}:/runtime/people
     command:
       - /bin/bash
       - -lc

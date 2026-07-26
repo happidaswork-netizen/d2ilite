@@ -594,14 +594,57 @@ def start_queue(queue_id: str) -> Dict[str, Any]:
     return get_enriched_queue(queue_id) or {}
 
 
+def finalize_queue(
+    queue_id: str,
+    *,
+    dry_run: bool = False,
+    limit: int = 0,
+    write_people: bool = True,
+) -> Dict[str, Any]:
+    """Promote task images into 角色肖像 and write back people.sqlite."""
+    record = jobs_db.get_queue(queue_id)
+    if not record:
+        raise KeyError(f"queue not found: {queue_id}")
+    from cloud import promote_service
+
+    report = promote_service.promote_queue_record(
+        record,
+        dry_run=bool(dry_run),
+        limit=int(limit or 0),
+        write_people=bool(write_people),
+    )
+    meta_patch = {
+        "last_promote": {
+            "at": report.get("promoted_at"),
+            "dry_run": bool(dry_run),
+            "counts": report.get("counts") or {},
+            "final_base": report.get("final_base") or "",
+            "ok": bool(report.get("ok")),
+        }
+    }
+    if not dry_run:
+        jobs_db.update_queue(queue_id, last_error="", meta=meta_patch)
+    enriched = get_enriched_queue(queue_id) or {}
+    return {"queue": enriched, "promote": report}
+
+
 def control_queue(queue_id: str, action: str, *, options: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     record = jobs_db.get_queue(queue_id)
     if not record:
         raise KeyError(f"queue not found: {queue_id}")
     root = normalize_public_task_root(record.get("output_root"))
     action_text = str(action or "").strip().lower()
+    opts = options if isinstance(options, dict) else {}
     if action_text == "start":
         return start_queue(queue_id)
+    if action_text in {"finalize", "promote"}:
+        result = finalize_queue(
+            queue_id,
+            dry_run=bool(opts.get("dry_run")),
+            limit=int(opts.get("limit") or 0),
+            write_people=False if opts.get("write_people") in {False, "false", "0", 0} else True,
+        )
+        return result.get("queue") or get_enriched_queue(queue_id) or {}
     if action_text == "cancel":
         # best-effort: pause flag + mark cancelled (hard kill deferred)
         try:
@@ -624,7 +667,7 @@ def control_queue(queue_id: str, action: str, *, options: Optional[Dict[str, Any
             mapped,
             output_root=root,
             base_root=default_tasks_base_root(),
-            options=options if isinstance(options, dict) else None,
+            options=opts or None,
         )
         desired = {
             "pause": "paused",

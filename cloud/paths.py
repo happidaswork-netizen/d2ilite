@@ -48,6 +48,7 @@ def people_db_path() -> Path:
     candidates = [
         Path("/vol4/1001/hermes-runtime/db/people.sqlite"),
         Path("/runtime/people/people.sqlite"),
+        Path("/runtime/db/people.sqlite"),
         cloud_data_root() / "people.sqlite",
         PROJECT_ROOT / "data" / "people.sqlite",
     ]
@@ -57,7 +58,31 @@ def people_db_path() -> Path:
                 return nas.resolve()
         except OSError:
             continue
-    return candidates[-1]
+    return candidates[0]
+
+
+def portrait_root() -> Path:
+    """Final landing root for durable portraits (角色肖像)."""
+    override = str(os.environ.get("D2I_PORTRAIT_ROOT", "") or "").strip()
+    if override:
+        path = Path(override).expanduser()
+        try:
+            return path.resolve()
+        except OSError:
+            return path
+    candidates = [
+        Path("/vol1/1001/角色肖像"),
+        Path("/runtime/portrait"),
+        Path("/vol3/1001/生成图片/角色肖像"),
+        cloud_data_root() / "portrait",
+    ]
+    for path in candidates:
+        try:
+            if path.is_dir():
+                return path.resolve()
+        except OSError:
+            continue
+    return candidates[0]
 
 
 def coverage_snapshot_path() -> Path:

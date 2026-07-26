@@ -148,6 +148,16 @@ def cmd_queues_items(args: argparse.Namespace) -> int:
     )
 
 
+def cmd_queues_finalize(args: argparse.Namespace) -> int:
+    qid = urllib.parse.quote(str(args.queue_id), safe="")
+    body = {
+        "dry_run": bool(args.dry_run),
+        "limit": int(args.limit or 0),
+        "write_people": not bool(args.skip_people),
+    }
+    return _print(_request("POST", f"/api/v1/queues/{qid}/finalize", body=body, timeout=120.0))
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="d2i", description="D2I Cloud HTTP CLI")
     sub = parser.add_subparsers(dest="group", required=True)
@@ -199,6 +209,13 @@ def build_parser() -> argparse.ArgumentParser:
     q_items.add_argument("--limit", type=int, default=100)
     q_items.add_argument("--status", default="")
     q_items.set_defaults(func=cmd_queues_items)
+
+    q_fin = q_sub.add_parser("finalize", help="promote queue images to 角色肖像 + people writeback")
+    q_fin.add_argument("queue_id")
+    q_fin.add_argument("--dry-run", action="store_true")
+    q_fin.add_argument("--limit", type=int, default=0)
+    q_fin.add_argument("--skip-people", action="store_true")
+    q_fin.set_defaults(func=cmd_queues_finalize)
 
     return parser
 
