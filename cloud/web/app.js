@@ -251,7 +251,7 @@ function loadPreviewInto(imgEl, previewUrl, fallbackEl, stillValid) {
   }
 
   function flagText(ok, label) {
-    return `${label}${ok ? "√" : "·"}`;
+    return `${label}${ok ? "+" : "-"}`;
   }
 
   function renderItemSide(item) {

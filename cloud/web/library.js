@@ -50,7 +50,7 @@
   }
 
   function flagText(ok, label) {
-    return `${label}${ok ? "√" : "·"}`;
+    return `${label}${ok ? "+" : "-"}`;
   }
 
   function selectedItem() {

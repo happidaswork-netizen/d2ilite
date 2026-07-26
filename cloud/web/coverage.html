@@ -3,6 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="color-scheme" content="dark" />
   <title>D2I Cloud · 覆盖图谱</title>
 <link rel="stylesheet" href="/static/styles.css" />
 </head>
@@ -19,27 +20,27 @@
 
       <nav class="side-nav">
         <a class="nav-item" href="/">
-          <span class="nav-ico">▣</span>
+          <span class="nav-ico"></span>
           队列运行中心
         </a>
         <a class="nav-item" href="/vision">
-          <span class="nav-ico">◉</span>
+          <span class="nav-ico"></span>
           视觉任务
         </a>
         <a class="nav-item active" href="/coverage">
-          <span class="nav-ico">◈</span>
+          <span class="nav-ico"></span>
           覆盖图谱
         </a>
         <a class="nav-item" href="/library">
-          <span class="nav-ico">▦</span>
+          <span class="nav-ico"></span>
           结果库
         </a>
         <a class="nav-item disabled" title="后续版本">
-          <span class="nav-ico">◎</span>
+          <span class="nav-ico"></span>
           模板经验
         </a>
         <a class="nav-item disabled" title="后续版本">
-          <span class="nav-ico">⚙</span>
+          <span class="nav-ico"></span>
           设置与连接
         </a>
       </nav>
@@ -101,7 +102,7 @@
 
         <div class="detail-column">
           <div id="detailEmpty" class="detail-empty">
-            <div class="empty-illustration">◈</div>
+            <div class="empty-illustration"></div>
             <h3>选择节点</h3>
             <p>查看完成度、建议 next_action；AI 侦察仅提案，确认后才入队（默认不自动 start）。</p>
           </div>
@@ -217,7 +218,10 @@
       });
     })();
   </script>
+    <script src="https://unpkg.com/lucide@0.469.0/dist/umd/lucide.min.js"></script>
   <script src="/static/common.js"></script>
+  <script src="/static/shell.js"></script>
+
   <script src="/static/coverage.js" onerror="(function(){var l=document.getElementById('connText');var d=document.getElementById('connDot');if(d)d.className='dot bad';if(l)l.textContent='脚本加载失败（域名门禁或网络）；可改用内网 http://192.168.5.36:8787/';})()"></script>
 
 </body>

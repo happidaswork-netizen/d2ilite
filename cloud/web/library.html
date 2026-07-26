@@ -3,6 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="color-scheme" content="dark" />
   <title>D2I Cloud · 结果库</title>
 <link rel="stylesheet" href="/static/styles.css" />
 </head>
@@ -19,27 +20,27 @@
 
       <nav class="side-nav">
         <a class="nav-item" href="/">
-          <span class="nav-ico">▣</span>
+          <span class="nav-ico"></span>
           队列运行中心
         </a>
         <a class="nav-item" href="/vision">
-          <span class="nav-ico">◉</span>
+          <span class="nav-ico"></span>
           视觉任务
         </a>
         <a class="nav-item" href="/coverage">
-          <span class="nav-ico">◈</span>
+          <span class="nav-ico"></span>
           覆盖图谱
         </a>
         <a class="nav-item active" href="/library">
-          <span class="nav-ico">▦</span>
+          <span class="nav-ico"></span>
           结果库
         </a>
         <a class="nav-item disabled" title="后续版本">
-          <span class="nav-ico">◎</span>
+          <span class="nav-ico"></span>
           模板经验
         </a>
         <a class="nav-item disabled" title="后续版本">
-          <span class="nav-ico">⚙</span>
+          <span class="nav-ico"></span>
           设置与连接
         </a>
       </nav>
@@ -135,7 +136,7 @@
               </div>
               <aside class="item-side" id="itemSide">
                 <div class="item-side-empty" id="itemSideEmpty">
-                  <div class="empty-illustration sm">▦</div>
+                  <div class="empty-illustration sm"></div>
                   <h4>选择一张结果</h4>
                   <p>查看所属队列、落盘路径、状态与来源页。</p>
                 </div>
@@ -170,7 +171,7 @@
         <div class="lightbox-actions">
           <button type="button" class="btn ghost sm" id="btnLightboxPrev">上一张</button>
           <button type="button" class="btn ghost sm" id="btnLightboxNext">下一张</button>
-          <button type="button" class="icon-btn" id="btnLightboxClose" aria-label="关闭">×</button>
+          <button type="button" class="icon-btn" id="btnLightboxClose" aria-label="关闭"><i data-lucide="x"></i></button>
         </div>
       </div>
       <div class="lightbox-stage">
@@ -237,7 +238,10 @@
       });
     })();
   </script>
+    <script src="https://unpkg.com/lucide@0.469.0/dist/umd/lucide.min.js"></script>
   <script src="/static/common.js"></script>
+  <script src="/static/shell.js"></script>
+
   <script src="/static/library.js" onerror="(function(){var l=document.getElementById('connText');var d=document.getElementById('connDot');if(d)d.className='dot bad';if(l)l.textContent='脚本加载失败（域名门禁或网络）；可改用内网 http://192.168.5.36:8787/';})()"></script>
 
 </body>
