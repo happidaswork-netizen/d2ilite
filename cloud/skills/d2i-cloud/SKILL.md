@@ -25,20 +25,20 @@ Canonical field contract: `docs/d2i_cloud_template_extract_contract.md`
 ## Auth and base URL
 
 - Default API: `http://127.0.0.1:8787` (Hermes host network) or `http://192.168.5.36:8787` (LAN).
-- Public: `https://d2i.517411.xyz/` (Cloudflare Access first, then app Bearer).
-- Header: `Authorization: Bearer <D2I_WEB_TOKEN>`
-- Token sources: env `D2I_WEB_TOKEN`, file `/runtime/d2i-cloud-data/web_token.txt`, or CLI `d2i` auto-read.
-- Prefer HTTP CLI when available: `d2i status|templates list|queues …`
+- **No app-layer Bearer token** (`auth_enabled=false`). LAN/API are open on the host.
+- Public: `https://d2i.517411.xyz/` still sits behind **Cloudflare Access / Zero Trust** (team login). Unauthenticated browser hits get Access HTML (HTTP 200), not API JSON — finish Access sign-in once per browser, or use LAN.
+- Prefer HTTP CLI on LAN/host: `d2i status|templates list|queues …`
 
 ## Read-first workflow
 
 1. `GET /api/v1/status` — `running`, `completed`, `promoted`, `desired_running` (stale desired should stay ~0).
 2. `GET /api/v1/templates` — pick `id` / `path` (e.g. `河北省沧州市人民政府_市政府领导`).
-3. `GET /api/v1/queues?limit=50` — live runtime + `runtime.promoted` / `can_finalize`.
+3. `GET /api/v1/queues?limit=50` — **download/scrape** queues only (`q_*`); live runtime + `runtime.promoted` / `can_finalize`.
 4. `GET /api/v1/queues/{id}` — detail; opening a completed queue may **auto-finalize once**.
 5. `GET /api/v1/queues/{id}/items?limit=100` — check names, preview flags, garbage rows.
 6. `GET /api/v1/library?limit=60` — cross-queue browse.
 7. Coverage: `GET /api/v1/coverage/tree` then node detail / enqueue only with a known good template.
+8. Vision jobs UI: open `/vision` (not scrape queue list). Page supports inventory → plan → enqueue + pump. API: `GET /api/v1/ai/vision/jobs` (`vj_*`).
 
 ## Write / control
 
@@ -47,9 +47,36 @@ Canonical field contract: `docs/d2i_cloud_template_extract_contract.md`
 | Create queue | `POST /api/v1/queues` | body: `template_id` or `template_path`, optional `start_url`, `speed_tier` (`safe` default), `start` |
 | Start / pause / resume / retry / cancel | `POST /api/v1/queues/{id}/{action}` | |
 | Finalize | `POST /api/v1/queues/{id}/finalize` | `{ "dry_run": false, "write_people": true }` → 角色肖像 + people.sqlite |
-| CLI | `d2i queues finalize <id> [--dry-run] [--skip-people]` | |
+| Vision status | `GET /api/v1/ai/vision/status` | Grok runtime + `jobs` counts (queued/running/…) |
+| Vision inventory | `GET /api/v1/ai/vision/inventory` | people with photo but empty `visual_gender`; path resolve |
+| Vision plan | `GET /api/v1/ai/vision/plan` | split unvisioned into multi batches by 省/市 |
+| Vision enqueue | `POST /api/v1/ai/vision/enqueue` | create many **vision_jobs** (not scrape queues); optional `start` |
+| Vision jobs | `GET /api/v1/ai/vision/jobs` · `.../jobs/{id}` | list/show; detail items include per-person `visual_*` / status (from job snapshot + people DB) |
+| Vision pump | `POST /api/v1/ai/vision/pump` | drain queued vision jobs; `max_running=1` serial 排队; `background=true` for full backfill |
+| Vision one/batch paths | `POST /api/v1/ai/vision` | `{ "path"|"paths", "names", "person_ids", "write_people", "force" }` |
+| Vision scrape-queue stage 2 | `POST /api/v1/queues/{id}/ai/run` | `{ "steps": ["vision"] }` → classify + `vision_report.json` |
+| Vision report | `GET /api/v1/queues/{id}/ai/vision/report` | 漏图/错图/冲突 buckets + counts |
+| Recrawl plan | `GET /api/v1/queues/{id}/ai/vision/recrawl-plan` | problem names only; `?include_review=true` optional |
+| Recrawl draft | `POST /api/v1/queues/{id}/ai/vision/recrawl` | plan only by default; `create_draft` needs `confirm=true`; **never starts** |
+| CLI | `d2i vision status\|inventory\|plan\|enqueue\|jobs\|pump\|run\|report\|recrawl-plan\|recrawl` | |
 
 Auto-finalize: list may promote **at most one** eligible completed queue per call; single-queue GET promotes when completed and no successful `meta.last_promote`. Opt out with queue meta `auto_finalize: false` / `skip_auto_finalize`.
+
+### Two-stage pipeline
+
+1. **Download / finalize** — scrape → promote to `角色肖像` + people source facts (`gender` from page).
+2. **Vision** — Grok on durable portraits → stage report (`must_recrawl` / `review` / `ok`).
+3. **Selective re-crawl** — report drives AI/Hermes to re-queue **problem names only**. Default: report first for confirm; never full-site auto re-scrape.
+
+### Vision rules (Grok 4.5)
+
+- Model via `D2I_VISION_MODEL=grok-4.5`, base `D2I_VISION_API_BASE`, key file `D2I_VISION_API_KEY_FILE` (NAS: `d2i-grok.env` + `d2i_vision_api_key`). Independent D2I secret — do not mount full Hermes profile.
+- Writes only `visual_*` / `person_count` (+ optional vision meta cols). **Never** overwrite source `gender`.
+- Fail-open: API/model errors leave portraits and promote results intact.
+- Default skip rows that already have a non-empty `visual_gender` unless `force=true`.
+- Prefer **post-promote** on durable `角色肖像` paths, not download-time sync vision.
+- Severity: `must_recrawl` = missing image / no person / multi person / classify fail; `review` = gender conflict / uncertain; `ok` = pass or already classified.
+- Artifacts: `{output_root}/reports/vision_report.json`, `vision_recrawl_candidates.json`, queue `meta.last_vision`.
 
 ## Quality gate (before trusting promote)
 
@@ -92,14 +119,28 @@ If quality is bad:
 ## Minimal curl examples
 
 ```bash
-curl -sS -H "Authorization: Bearer $D2I_WEB_TOKEN" http://127.0.0.1:8787/api/v1/status
-curl -sS -H "Authorization: Bearer $D2I_WEB_TOKEN" http://127.0.0.1:8787/api/v1/templates
-curl -sS -H "Authorization: Bearer $D2I_WEB_TOKEN" \
+curl -sS http://127.0.0.1:8787/api/v1/status
+curl -sS http://127.0.0.1:8787/api/v1/templates
+curl -sS \
   -H 'Content-Type: application/json' \
   -d '{"template_id":"河北省沧州市人民政府_市政府领导","speed_tier":"safe","start":false}' \
   http://127.0.0.1:8787/api/v1/queues
-curl -sS -H "Authorization: Bearer $D2I_WEB_TOKEN" \
+curl -sS \
   -H 'Content-Type: application/json' \
   -d '{"dry_run":true,"write_people":true}' \
   http://127.0.0.1:8787/api/v1/queues/q_xxx/finalize
+curl -sS http://127.0.0.1:8787/api/v1/ai/vision/status
+curl -sS \
+  -H 'Content-Type: application/json' \
+  -d '{"steps":["vision"],"force":true,"write_people":true}' \
+  http://127.0.0.1:8787/api/v1/queues/q_xxx/ai/run
+curl -sS \
+  http://127.0.0.1:8787/api/v1/queues/q_xxx/ai/vision/report
+curl -sS \
+  http://127.0.0.1:8787/api/v1/queues/q_xxx/ai/vision/recrawl-plan
+# draft only after human/Hermes confirm — never auto-start
+curl -sS \
+  -H 'Content-Type: application/json' \
+  -d '{"create_draft":true,"confirm":true,"include_review":false}' \
+  http://127.0.0.1:8787/api/v1/queues/q_xxx/ai/vision/recrawl
 ```

@@ -34,6 +34,55 @@ from services.task_service import (
 
 _AUTO_FINALIZE_LOCK = threading.Lock()
 _AUTO_FINALIZING: set[str] = set()
+_RECONCILE_LOCK = threading.Lock()
+_RECONCILE_STATE: Dict[str, Any] = {
+    "running": False,
+    "interval_seconds": 30.0,
+    "last_at": "",
+    "last_error": "",
+    "cycles": 0,
+    "thread_name": "",
+}
+
+
+def start_background_reconciler(*, interval_seconds: float = 30.0) -> Dict[str, Any]:
+    """Daemon loop: keep desired_state honest and drain one auto-finalize per cycle."""
+    interval = max(5.0, float(interval_seconds or 30.0))
+    with _RECONCILE_LOCK:
+        if _RECONCILE_STATE.get("running"):
+            _RECONCILE_STATE["interval_seconds"] = interval
+            return dict(_RECONCILE_STATE)
+
+        def _loop() -> None:
+            with _RECONCILE_LOCK:
+                _RECONCILE_STATE["running"] = True
+                _RECONCILE_STATE["thread_name"] = threading.current_thread().name
+                _RECONCILE_STATE["interval_seconds"] = interval
+            while True:
+                try:
+                    # Reconcile all; promote at most one completed queue per tick.
+                    list_enriched_queues(limit=500, auto_finalize=True)
+                    with _RECONCILE_LOCK:
+                        _RECONCILE_STATE["last_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+                        _RECONCILE_STATE["last_error"] = ""
+                        _RECONCILE_STATE["cycles"] = int(_RECONCILE_STATE.get("cycles") or 0) + 1
+                except Exception as exc:  # noqa: BLE001
+                    with _RECONCILE_LOCK:
+                        _RECONCILE_STATE["last_error"] = f"{type(exc).__name__}:{exc}"
+                        _RECONCILE_STATE["last_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+                time.sleep(max(5.0, float(_RECONCILE_STATE.get("interval_seconds") or interval)))
+
+        t = threading.Thread(target=_loop, name="d2i-queue-reconciler", daemon=True)
+        t.start()
+        _RECONCILE_STATE["running"] = True
+        _RECONCILE_STATE["interval_seconds"] = interval
+        _RECONCILE_STATE["thread_name"] = t.name
+        return dict(_RECONCILE_STATE)
+
+
+def reconciler_state() -> Dict[str, Any]:
+    with _RECONCILE_LOCK:
+        return dict(_RECONCILE_STATE)
 
 
 def _templates_search_roots() -> List[Path]:

@@ -22,7 +22,6 @@ Open:
 
 Optional:
 
-- `D2I_WEB_TOKEN` — if set, require `Authorization: Bearer <token>` (Web 右上角 Token 按钮可存 localStorage)
 - `D2I_CLOUD_DATA_ROOT` — jobs sqlite + cloud data (default `data/cloud`)
 - `D2I_CLOUD_TASKS_ROOT` — public archive task roots (default `data/public_archive`)
 - `D2I_PEOPLE_DB` — people.sqlite path (default NAS `/vol4/1001/hermes-runtime/db/people.sqlite` if present, else `data/people.sqlite`)
@@ -57,5 +56,13 @@ python scripts/cloud_api_smoke.py
 - Reuses desktop scraper control + `run_public_scraper.py`
 - **模版抽取合同：** [`docs/d2i_cloud_template_extract_contract.md`](../docs/d2i_cloud_template_extract_contract.md)（Cloud finalize 前必须满足的 name/url/unit 形状）
 - Hermes 操作 skill：`cloud/skills/d2i-cloud/SKILL.md`
+- **AI 视觉（Grok 4.5）两阶段：** 下载/finalize → 视觉报告 → 问题名单再抓（默认不自动开跑）
+  - `GET /api/v1/ai/vision/status`
+  - `POST /api/v1/ai/vision` · `POST /api/v1/queues/{id}/ai/run`（steps=`vision`）→ 写 `reports/vision_report.json` + `meta.last_vision`
+  - `GET /api/v1/queues/{id}/ai/vision/report` · `GET .../recrawl-plan` · `POST .../recrawl`（`create_draft` 需 `confirm=true`，**永不 auto-start**）
+  - 严重度：`must_recrawl`（漏图/无人/多人/分类失败）· `review`（性别冲突/不确定）· `ok`
+  - 模型/密钥：`D2I_VISION_*` + NAS `d2i-grok.env` / `d2i_vision_api_key`（独立 secret）
+  - 只写 `visual_*` / `person_count`，**不覆盖**来源 `gender`；fail-open；并发默认 3
+  - CLI：`vision status|run|report|recrawl-plan|recrawl`
 
-Not yet: Hermes 真侦察（C3）、vision/AI routes、flock worker service。
+Not yet: Hermes 真侦察（C3）、extract/normalize AI routes、flock worker service。

@@ -48,6 +48,36 @@ def init_db(db_path: Optional[Path] = None) -> None:
                 );
                 CREATE INDEX IF NOT EXISTS idx_queues_updated ON queues(updated_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_queues_output ON queues(output_root);
+
+                CREATE TABLE IF NOT EXISTS vision_jobs (
+                  id TEXT PRIMARY KEY,
+                  name TEXT NOT NULL DEFAULT '',
+                  status TEXT NOT NULL DEFAULT 'queued',
+                  priority INTEGER NOT NULL DEFAULT 100,
+                  batch_key TEXT NOT NULL DEFAULT '',
+                  province TEXT NOT NULL DEFAULT '',
+                  city TEXT NOT NULL DEFAULT '',
+                  total INTEGER NOT NULL DEFAULT 0,
+                  done_count INTEGER NOT NULL DEFAULT 0,
+                  ok_count INTEGER NOT NULL DEFAULT 0,
+                  failed_count INTEGER NOT NULL DEFAULT 0,
+                  skipped_count INTEGER NOT NULL DEFAULT 0,
+                  missing_count INTEGER NOT NULL DEFAULT 0,
+                  force INTEGER NOT NULL DEFAULT 0,
+                  write_people INTEGER NOT NULL DEFAULT 1,
+                  dry_run INTEGER NOT NULL DEFAULT 0,
+                  items_json TEXT NOT NULL DEFAULT '[]',
+                  result_json TEXT NOT NULL DEFAULT '{}',
+                  error TEXT NOT NULL DEFAULT '',
+                  created_at REAL NOT NULL,
+                  updated_at REAL NOT NULL,
+                  started_at REAL,
+                  finished_at REAL
+                );
+                CREATE INDEX IF NOT EXISTS idx_vision_jobs_status
+                  ON vision_jobs(status, priority ASC, created_at ASC);
+                CREATE INDEX IF NOT EXISTS idx_vision_jobs_updated
+                  ON vision_jobs(updated_at DESC);
                 """
             )
             conn.commit()
@@ -210,3 +240,297 @@ def update_queue(
         finally:
             conn.close()
     return get_queue(queue_id, db_path=db_path)
+
+
+def _vision_row(row: sqlite3.Row) -> Dict[str, Any]:
+    data = dict(row)
+    for key, default in (("items_json", "[]"), ("result_json", "{}")):
+        raw = data.pop(key, default)
+        try:
+            parsed = json.loads(raw) if raw else ([] if key == "items_json" else {})
+        except Exception:
+            parsed = [] if key == "items_json" else {}
+        data[key.replace("_json", "")] = parsed
+    data["force"] = bool(int(data.get("force") or 0))
+    data["write_people"] = bool(int(data.get("write_people") if data.get("write_people") is not None else 1))
+    data["dry_run"] = bool(int(data.get("dry_run") or 0))
+    return data
+
+
+def create_vision_job(
+    *,
+    name: str = "",
+    batch_key: str = "",
+    province: str = "",
+    city: str = "",
+    items: Optional[List[Dict[str, Any]]] = None,
+    priority: int = 100,
+    force: bool = False,
+    write_people: bool = True,
+    dry_run: bool = False,
+    job_id: str = "",
+    db_path: Optional[Path] = None,
+) -> Dict[str, Any]:
+    now = time.time()
+    jid = str(job_id or "").strip() or f"vj_{uuid.uuid4().hex[:12]}"
+    payload_items = list(items or [])
+    row = {
+        "id": jid,
+        "name": str(name or "").strip() or jid,
+        "status": "queued",
+        "priority": int(priority if priority is not None else 100),
+        "batch_key": str(batch_key or "").strip(),
+        "province": str(province or "").strip(),
+        "city": str(city or "").strip(),
+        "total": len(payload_items),
+        "done_count": 0,
+        "ok_count": 0,
+        "failed_count": 0,
+        "skipped_count": 0,
+        "missing_count": 0,
+        "force": 1 if force else 0,
+        "write_people": 1 if write_people else 0,
+        "dry_run": 1 if dry_run else 0,
+        "items_json": json.dumps(payload_items, ensure_ascii=False),
+        "result_json": "{}",
+        "error": "",
+        "created_at": now,
+        "updated_at": now,
+        "started_at": None,
+        "finished_at": None,
+    }
+    with _LOCK:
+        conn = _connect(db_path)
+        try:
+            conn.execute(
+                """
+                INSERT INTO vision_jobs (
+                  id, name, status, priority, batch_key, province, city, total,
+                  done_count, ok_count, failed_count, skipped_count, missing_count,
+                  force, write_people, dry_run, items_json, result_json, error,
+                  created_at, updated_at, started_at, finished_at
+                ) VALUES (
+                  :id, :name, :status, :priority, :batch_key, :province, :city, :total,
+                  :done_count, :ok_count, :failed_count, :skipped_count, :missing_count,
+                  :force, :write_people, :dry_run, :items_json, :result_json, :error,
+                  :created_at, :updated_at, :started_at, :finished_at
+                )
+                """,
+                row,
+            )
+            conn.commit()
+        finally:
+            conn.close()
+    return get_vision_job(jid, db_path=db_path) or _vision_row_from_insert(row)
+
+
+def _vision_row_from_insert(row: Dict[str, Any]) -> Dict[str, Any]:
+    data = dict(row)
+    try:
+        data["items"] = json.loads(data.pop("items_json", "[]") or "[]")
+    except Exception:
+        data["items"] = []
+        data.pop("items_json", None)
+    try:
+        data["result"] = json.loads(data.pop("result_json", "{}") or "{}")
+    except Exception:
+        data["result"] = {}
+        data.pop("result_json", None)
+    data["force"] = bool(int(data.get("force") or 0))
+    data["write_people"] = bool(int(data.get("write_people") if data.get("write_people") is not None else 1))
+    data["dry_run"] = bool(int(data.get("dry_run") or 0))
+    return data
+
+
+def list_vision_jobs(
+    db_path: Optional[Path] = None,
+    *,
+    limit: int = 100,
+    status: str = "",
+) -> List[Dict[str, Any]]:
+    st = str(status or "").strip().lower()
+    with _LOCK:
+        conn = _connect(db_path)
+        try:
+            if st:
+                rows = conn.execute(
+                    "SELECT * FROM vision_jobs WHERE status=? ORDER BY priority ASC, created_at ASC LIMIT ?",
+                    (st, max(1, min(int(limit or 100), 500))),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM vision_jobs ORDER BY updated_at DESC LIMIT ?",
+                    (max(1, min(int(limit or 100), 500)),),
+                ).fetchall()
+            return [_vision_row(r) for r in rows]
+        finally:
+            conn.close()
+
+
+def get_vision_job(job_id: str, db_path: Optional[Path] = None) -> Optional[Dict[str, Any]]:
+    jid = str(job_id or "").strip()
+    if not jid:
+        return None
+    with _LOCK:
+        conn = _connect(db_path)
+        try:
+            row = conn.execute("SELECT * FROM vision_jobs WHERE id=?", (jid,)).fetchone()
+            return _vision_row(row) if row else None
+        finally:
+            conn.close()
+
+
+def claim_next_vision_job(db_path: Optional[Path] = None) -> Optional[Dict[str, Any]]:
+    """Atomically move the highest-priority queued job to running."""
+    now = time.time()
+    with _LOCK:
+        conn = _connect(db_path)
+        try:
+            row = conn.execute(
+                """
+                SELECT * FROM vision_jobs
+                WHERE status='queued'
+                ORDER BY priority ASC, created_at ASC
+                LIMIT 1
+                """
+            ).fetchone()
+            if not row:
+                return None
+            jid = str(row["id"])
+            conn.execute(
+                """
+                UPDATE vision_jobs
+                SET status='running', started_at=?, updated_at=?, error=''
+                WHERE id=? AND status='queued'
+                """,
+                (now, now, jid),
+            )
+            conn.commit()
+            claimed = conn.execute("SELECT * FROM vision_jobs WHERE id=?", (jid,)).fetchone()
+            if claimed and str(claimed["status"]) == "running":
+                return _vision_row(claimed)
+            return None
+        finally:
+            conn.close()
+
+
+def update_vision_job(
+    job_id: str,
+    *,
+    status: Optional[str] = None,
+    done_count: Optional[int] = None,
+    ok_count: Optional[int] = None,
+    failed_count: Optional[int] = None,
+    skipped_count: Optional[int] = None,
+    missing_count: Optional[int] = None,
+    result: Optional[Dict[str, Any]] = None,
+    items: Optional[List[Dict[str, Any]]] = None,
+    error: Optional[str] = None,
+    finished: bool = False,
+    mark_started: bool = False,
+    db_path: Optional[Path] = None,
+) -> Optional[Dict[str, Any]]:
+    current = get_vision_job(job_id, db_path=db_path)
+    if not current:
+        return None
+    fields: Dict[str, Any] = {"id": job_id, "updated_at": time.time()}
+    sets = ["updated_at = :updated_at"]
+    if status is not None:
+        fields["status"] = str(status)
+        sets.append("status = :status")
+        if str(status) == "running" or mark_started:
+            if not current.get("started_at"):
+                fields["started_at"] = time.time()
+                sets.append("started_at = :started_at")
+    elif mark_started and not current.get("started_at"):
+        fields["started_at"] = time.time()
+        sets.append("started_at = :started_at")
+    for key, val in (
+        ("done_count", done_count),
+        ("ok_count", ok_count),
+        ("failed_count", failed_count),
+        ("skipped_count", skipped_count),
+        ("missing_count", missing_count),
+    ):
+        if val is not None:
+            fields[key] = int(val)
+            sets.append(f"{key} = :{key}")
+    if result is not None:
+        fields["result_json"] = json.dumps(result if isinstance(result, dict) else {}, ensure_ascii=False)
+        sets.append("result_json = :result_json")
+    if items is not None:
+        payload_items = list(items or [])
+        fields["items_json"] = json.dumps(payload_items, ensure_ascii=False)
+        fields["total"] = len(payload_items)
+        sets.append("items_json = :items_json")
+        sets.append("total = :total")
+    if error is not None:
+        fields["error"] = str(error)
+        sets.append("error = :error")
+    if finished:
+        fields["finished_at"] = time.time()
+        sets.append("finished_at = :finished_at")
+    with _LOCK:
+        conn = _connect(db_path)
+        try:
+            conn.execute(f"UPDATE vision_jobs SET {', '.join(sets)} WHERE id = :id", fields)
+            conn.commit()
+        finally:
+            conn.close()
+    return get_vision_job(job_id, db_path=db_path)
+
+
+def vision_job_counts(db_path: Optional[Path] = None) -> Dict[str, int]:
+    with _LOCK:
+        conn = _connect(db_path)
+        try:
+            rows = conn.execute(
+                "SELECT status, COUNT(*) AS n FROM vision_jobs GROUP BY status"
+            ).fetchall()
+            out = {str(r["status"]): int(r["n"]) for r in rows}
+            out["total"] = sum(out.values())
+            return out
+        finally:
+            conn.close()
+
+
+def cancel_vision_job(job_id: str, db_path: Optional[Path] = None) -> Optional[Dict[str, Any]]:
+    current = get_vision_job(job_id, db_path=db_path)
+    if not current:
+        return None
+    if str(current.get("status") or "") not in {"queued", "running"}:
+        return current
+    return update_vision_job(
+        job_id,
+        status="cancelled",
+        error="cancelled by operator",
+        finished=True,
+        db_path=db_path,
+    )
+
+
+def requeue_stale_running_vision_jobs(
+    db_path: Optional[Path] = None,
+    *,
+    reason: str = "reset stale running after restart",
+) -> int:
+    """Move orphaned running vision jobs back to queued (e.g. after container restart)."""
+    now = time.time()
+    with _LOCK:
+        conn = _connect(db_path)
+        try:
+            cur = conn.execute(
+                """
+                UPDATE vision_jobs
+                SET status='queued',
+                    started_at=NULL,
+                    error=?,
+                    updated_at=?
+                WHERE status='running'
+                """,
+                (str(reason or "reset stale running"), now),
+            )
+            conn.commit()
+            return int(cur.rowcount or 0)
+        finally:
+            conn.close()

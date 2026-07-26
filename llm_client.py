@@ -144,7 +144,7 @@ class OpenAICompatibleClient:
         self,
         *,
         model: str,
-        messages: List[Dict[str, str]],
+        messages: List[Dict[str, Any]],
         temperature: float = 0.1,
         stream: bool = False,
     ) -> Dict[str, Any]:
