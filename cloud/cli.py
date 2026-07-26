@@ -18,6 +18,30 @@ def _api_base() -> str:
     return str(os.environ.get("D2I_CLOUD_API", "http://127.0.0.1:8787") or "").rstrip("/")
 
 
+def _auth_token() -> str:
+    """Bearer token for auth_enabled deployments: env first, then well-known token files."""
+    token = str(os.environ.get("D2I_WEB_TOKEN", "") or "").strip()
+    if token:
+        return token
+    candidates = [os.environ.get("D2I_WEB_TOKEN_FILE", "")]
+    candidates += [
+        "/runtime/d2i-cloud-data/web_token.txt",
+        "/vol4/1001/hermes-runtime/d2i-cloud-data/web_token.txt",
+    ]
+    for raw in candidates:
+        if not raw:
+            continue
+        try:
+            path = Path(raw)
+            if path.is_file():
+                value = path.read_text(encoding="utf-8").strip().splitlines()
+                if value and value[0].strip():
+                    return value[0].strip()
+        except OSError:
+            continue
+    return ""
+
+
 def _print(payload: Any) -> int:
     print(json.dumps(payload, ensure_ascii=False, indent=2))
     return 0
@@ -46,6 +70,9 @@ def _request(
             url = f"{url}?{urllib.parse.urlencode(q)}"
     data = None
     headers = {"Accept": "application/json"}
+    token = _auth_token()
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
     if body is not None:
         data = json.dumps(body, ensure_ascii=False).encode("utf-8")
         headers["Content-Type"] = "application/json"

@@ -19,6 +19,14 @@ CLI_SH = f"""#!/usr/bin/env bash
 set -euo pipefail
 export D2I_CLOUD_API="${{D2I_CLOUD_API:-{API}}}"
 export D2I_CLOUD_CODE="${{D2I_CLOUD_CODE:-{CODE}}}"
+# App-layer Bearer: auto-read token when not provided (auth_enabled deployments)
+if [[ -z "${{D2I_WEB_TOKEN:-}}" ]]; then
+  for tf in "${{D2I_WEB_TOKEN_FILE:-}}" /runtime/d2i-cloud-data/web_token.txt /vol4/1001/hermes-runtime/d2i-cloud-data/web_token.txt; do
+    if [[ -n "$tf" && -f "$tf" ]]; then
+      export D2I_WEB_TOKEN="$(head -n1 "$tf" | tr -d '[:space:]')"
+      break
+    fi
+  done
 fi
 if command -v python3 >/dev/null 2>&1; then
   PY=python3
@@ -73,12 +81,29 @@ d2i queues logs <queue_id>
 2. Do not mount Hermes secrets into D2I.
 3. Do not write final image library on `/vol3`; Cloud tasks stay under `/runtime/d2i-cloud-tasks`.
 4. Web is the primary console; Telegram/Hermes is assistant only.
-5. API is open on LAN/host network (no app token).
+5. App-layer Bearer is conditional: when `D2I_WEB_TOKEN` is set on the deployment (NAS production per contract), every `/api/v1` call needs `Authorization: Bearer`; the `d2i` wrapper auto-reads `web_token.txt`. Verify live via `d2i status` → `auth_enabled`.
 6. Do not dual-start the same job on legacy `d2i-lite-worker` and D2I Cloud.
 """
 
 
 def main() -> None:
+    # Guard against shipping a syntactically broken wrapper (bash -n self-check).
+    import subprocess
+    import tempfile
+
+    with tempfile.NamedTemporaryFile("w", suffix=".sh", delete=False, encoding="utf-8") as fh:
+        fh.write(CLI_SH)
+        tmp_path = fh.name
+    try:
+        check = subprocess.run(["bash", "-n", tmp_path], capture_output=True, text=True)
+        if check.returncode != 0:
+            raise SystemExit(f"CLI_SH failed bash -n: {check.stderr.strip()}")
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+
     BACKUPS.mkdir(parents=True, exist_ok=True)
     BIN.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
