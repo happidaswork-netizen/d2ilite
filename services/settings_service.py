@@ -28,7 +28,44 @@ def default_app_settings() -> Dict[str, Any]:
             "max_retries": 2,
             "temperature": 0.1,
         },
+        "image_actions": {
+            "name_bar": {
+                "output_format": "original",
+                "jpg_quality": 100,
+                "output_name_mode": "suffix",
+                "output_dir": "",
+                "suffix": "_named",
+                "bar_height_mode": "auto",
+                "bar_height_ratio": 0.14,
+                "min_bar_height": 48,
+                "align": "center",
+                "bar_color": "white",
+                "text_color": "black",
+                "webp_lossless": True,
+            },
+            "model_gateway": {
+                "provider": "openai-compatible",
+                "base_url": "",
+                "api_key_env": "D2I_MODEL_API_KEY",
+                "image_model": "",
+                "vision_model": "",
+            },
+        },
     }
+
+
+def _merge_dict_section(base: Dict[str, Any], payload: Dict[str, Any], key: str) -> Dict[str, Any]:
+    merged_section = dict(base.get(key, {}) if isinstance(base.get(key), dict) else {})
+    payload_section = payload.get(key, {})
+    if isinstance(payload_section, dict):
+        for section_key, section_value in payload_section.items():
+            if isinstance(section_value, dict) and isinstance(merged_section.get(section_key), dict):
+                nested = dict(merged_section.get(section_key, {}))
+                nested.update(section_value)
+                merged_section[section_key] = nested
+            else:
+                merged_section[section_key] = section_value
+    return merged_section
 
 
 def load_app_settings(path: str = "") -> Dict[str, Any]:
@@ -46,11 +83,8 @@ def load_app_settings(path: str = "") -> Dict[str, Any]:
 
     merged = dict(base)
     merged.update(payload)
-    llm_default = dict(base.get("llm", {}) if isinstance(base.get("llm"), dict) else {})
-    llm_payload = payload.get("llm", {})
-    if isinstance(llm_payload, dict):
-        llm_default.update(llm_payload)
-    merged["llm"] = llm_default
+    merged["llm"] = _merge_dict_section(base, payload, "llm")
+    merged["image_actions"] = _merge_dict_section(base, payload, "image_actions")
     return merged
 
 
@@ -59,11 +93,8 @@ def save_app_settings(payload: Dict[str, Any], path: str = "") -> bool:
     try:
         base = default_app_settings()
         data = dict(payload or {})
-        llm_default = dict(base.get("llm", {}))
-        llm_payload = data.get("llm", {})
-        if isinstance(llm_payload, dict):
-            llm_default.update(llm_payload)
-        data["llm"] = llm_default
+        data["llm"] = _merge_dict_section(base, data, "llm")
+        data["image_actions"] = _merge_dict_section(base, data, "image_actions")
         data["version"] = int(data.get("version") or 1)
         data["updated_at"] = datetime.now().isoformat(timespec="seconds")
 
@@ -73,4 +104,3 @@ def save_app_settings(payload: Dict[str, Any], path: str = "") -> bool:
         return True
     except Exception:
         return False
-

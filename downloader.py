@@ -76,7 +76,7 @@ def _looks_like_image_payload(content_type, payload):
 class ImageDownloader:
     """图片下载器 - 支持普通模式和浏览器模式，模拟自然浏览行为"""
     
-    def __init__(self, save_dir, interval_min=20, interval_max=45, timeout=30, max_retries=3, use_browser=False, downloaded_urls=None, turbo_mode=False, browser_engine="auto", disable_page_images=False):
+    def __init__(self, save_dir, interval_min=20, interval_max=45, timeout=30, max_retries=3, use_browser=False, downloaded_urls=None, turbo_mode=False, browser_engine="auto", disable_page_images=False, browser_image_settle_seconds=4):
         """
         初始化下载器
         
@@ -91,6 +91,7 @@ class ImageDownloader:
             turbo_mode: 极速模式（无间隔快速下载，适合小批量）
             browser_engine: 浏览器引擎，支持 auto/edge/chrome（默认 auto，优先 edge）
             disable_page_images: 是否禁止页面图片自动加载（用于抓取列表/详情时降低重复流量）
+            browser_image_settle_seconds: 浏览器访问图片 URL 后等待页面稳定的秒数
         """
         self.save_dir = save_dir
         self.interval_min = interval_min
@@ -101,6 +102,7 @@ class ImageDownloader:
         self.turbo_mode = turbo_mode
         self.browser_engine = str(browser_engine or "auto").strip().lower()
         self.disable_page_images = bool(disable_page_images)
+        self.browser_image_settle_seconds = max(0.0, float(browser_image_settle_seconds))
         
         # 使用传入的已下载集合，如果没有则创建空集合
         self.downloaded = downloaded_urls if downloaded_urls is not None else set()
@@ -364,7 +366,8 @@ class ImageDownloader:
             
             # 访问图片URL
             self.driver.get(url)
-            time.sleep(4)  # 等待页面加载
+            if self.browser_image_settle_seconds > 0:
+                time.sleep(self.browser_image_settle_seconds)  # 等待页面加载
             
             # 获取浏览器的cookies
             cookies = {cookie['name']: cookie['value'] for cookie in self.driver.get_cookies()}

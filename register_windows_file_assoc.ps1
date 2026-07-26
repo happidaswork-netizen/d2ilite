@@ -1,23 +1,41 @@
 param(
     [string]$PythonExe = "pythonw.exe",
     [string]$AppPath = "",
+    [string]$ExePath = "",
     [switch]$TrySetDefault
 )
 
 $ErrorActionPreference = "Stop"
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-if ([string]::IsNullOrWhiteSpace($AppPath)) {
-    $AppPath = Join-Path $scriptDir "app.py"
+
+if ([string]::IsNullOrWhiteSpace($ExePath)) {
+    $candidateExe = Join-Path $scriptDir "dist\D2ILite\D2ILite.exe"
+    if (Test-Path $candidateExe) {
+        $ExePath = $candidateExe
+    }
 }
 
-if (-not (Test-Path $AppPath)) {
-    throw "app.py 不存在: $AppPath"
-}
-
-$pythonPath = (Get-Command $PythonExe -ErrorAction Stop).Source
 $progId = "D2ILite.Image"
-$command = "`"$pythonPath`" `"$AppPath`" `"%1`""
+if (-not [string]::IsNullOrWhiteSpace($ExePath)) {
+    if (-not (Test-Path $ExePath)) {
+        throw "EXE not found: $ExePath"
+    }
+    $appCommandPath = (Resolve-Path $ExePath).Path
+    $command = "`"$appCommandPath`" `"%1`""
+    $icon = "$appCommandPath,0"
+} else {
+    if ([string]::IsNullOrWhiteSpace($AppPath)) {
+        $AppPath = Join-Path $scriptDir "app.py"
+    }
+    if (-not (Test-Path $AppPath)) {
+        throw "app.py not found: $AppPath"
+    }
+    $pythonPath = (Get-Command $PythonExe -ErrorAction Stop).Source
+    $appCommandPath = (Resolve-Path $AppPath).Path
+    $command = "`"$pythonPath`" `"$appCommandPath`" `"%1`""
+    $icon = "$pythonPath,0"
+}
 
 function Ensure-Key {
     param([string]$Path)
@@ -36,7 +54,7 @@ $base = "HKCU:\Software\Classes"
 
 # ProgID 注册
 Set-DefaultValue -Path (Join-Path $base $progId) -Value "D2I Lite Image"
-Set-DefaultValue -Path (Join-Path $base "$progId\DefaultIcon") -Value "$pythonPath,0"
+Set-DefaultValue -Path (Join-Path $base "$progId\DefaultIcon") -Value $icon
 Set-DefaultValue -Path (Join-Path $base "$progId\shell\open\command") -Value $command
 
 # 关联常见图片扩展名
@@ -55,8 +73,8 @@ foreach ($ext in $exts) {
     }
 }
 
-Write-Host "已注册 D2I Lite 到 Open With 列表。" -ForegroundColor Green
-Write-Host "命令: $command"
+Write-Host "D2I Lite has been registered in the Windows Open With list." -ForegroundColor Green
+Write-Host "Command: $command"
 Write-Host ""
-Write-Host "如果系统仍未变成默认查看器，请在 Windows 设置中手动选择:" -ForegroundColor Yellow
-Write-Host "设置 -> 应用 -> 默认应用 -> 按文件类型选择默认应用。"
+Write-Host "If it is not selected as the default viewer, choose it manually in Windows Settings:" -ForegroundColor Yellow
+Write-Host "Settings -> Apps -> Default apps -> Choose defaults by file type."

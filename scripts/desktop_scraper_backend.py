@@ -21,6 +21,7 @@ from services.desktop_scraper_backend_service import (  # type: ignore
     build_default_base_root_payload,
     build_ping_payload,
     build_scraper_workspace_payload,
+    clear_scraper_review_item,
     execute_scraper_control_action,
 )
 
@@ -96,6 +97,18 @@ def cmd_action(args: argparse.Namespace) -> int:
     return _ok(payload)
 
 
+def cmd_review_clear(args: argparse.Namespace) -> int:
+    try:
+        payload = clear_scraper_review_item(
+            str(args.output_root or "").strip(),
+            str(args.detail_url or "").strip(),
+            base_root=str(args.base_root or "").strip(),
+        )
+    except Exception as error:
+        return _fail("review clear failed", detail=str(error))
+    return _ok(payload)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="D2I Lite desktop scraper backend")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -122,6 +135,12 @@ def build_parser() -> argparse.ArgumentParser:
     action.add_argument("--base-root", default="")
     action.add_argument("--options-file", default="")
     action.set_defaults(func=cmd_action)
+
+    review_clear = sub.add_parser("review-clear", help="remove one item from review queue")
+    review_clear.add_argument("--output-root", required=True)
+    review_clear.add_argument("--detail-url", required=True)
+    review_clear.add_argument("--base-root", default="")
+    review_clear.set_defaults(func=cmd_review_clear)
     return parser
 
 

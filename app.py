@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import argparse
 import random
 import re
 import shutil
@@ -26,6 +27,9 @@ from tkinter import filedialog, messagebox
 
 import ttkbootstrap as ttk
 from PIL import Image, ImageTk
+
+from actions.base import ImageActionContext, get_image_action
+from actions.name_bar import NAME_BAR_ACTION_ID, derive_name_bar_label
 
 try:
     import requests  # type: ignore
@@ -530,6 +534,12 @@ class D2ILiteApp(BaseWindow):
         ttk.Button(action_row, text="上一张", command=self._goto_prev).pack(side=tk.LEFT)
         ttk.Button(action_row, text="下一张", command=self._goto_next).pack(side=tk.LEFT, padx=6)
         ttk.Button(action_row, text="刷新", command=self._refresh_current).pack(side=tk.LEFT, padx=6)
+        current_action_btn = ttk.Menubutton(action_row, text="当前图片工具")
+        current_action_menu = tk.Menu(current_action_btn, tearoff=False)
+        current_action_menu.add_command(label="加名字", command=self._open_name_bar_dialog)
+        current_action_menu.add_command(label="AI 补全元数据", command=self._ai_autofill_current_metadata)
+        current_action_btn["menu"] = current_action_menu
+        current_action_btn.pack(side=tk.LEFT, padx=6)
         ttk.Button(action_row, text="全局设置", command=self._open_global_settings_dialog).pack(side=tk.LEFT, padx=6)
         ttk.Button(action_row, text="批量下载器(旧版)", command=self._open_batch_downloader).pack(side=tk.LEFT, padx=(6, 0))
         ttk.Button(
@@ -2730,6 +2740,177 @@ class D2ILiteApp(BaseWindow):
         if self.current_path and os.path.isfile(self.current_path):
             os.startfile(os.path.dirname(self.current_path))
 
+    def _reveal_output_path(self, path: str):
+        target = os.path.abspath(str(path or "").strip())
+        if not target:
+            return
+        try:
+            if os.name == "nt" and os.path.exists(target):
+                subprocess.Popen(["explorer", f"/select,{os.path.normpath(target)}"])
+                return
+            folder = os.path.dirname(target) if os.path.isfile(target) else target
+            if folder and os.path.isdir(folder):
+                os.startfile(folder)
+        except Exception:
+            try:
+                folder = os.path.dirname(target)
+                if folder and os.path.isdir(folder):
+                    webbrowser.open(folder)
+            except Exception:
+                pass
+
+    def _metadata_for_current_action(self) -> Optional[ImageMetadataInfo]:
+        curr = os.path.abspath(str(self.current_path or "").strip())
+        if not curr:
+            return None
+        info = self._last_info
+        try:
+            if info is not None and os.path.abspath(str(getattr(info, "filepath", "") or "")) == curr:
+                return info
+        except Exception:
+            pass
+        try:
+            return read_image_metadata(curr)
+        except Exception:
+            return info
+
+    def _open_name_bar_dialog(self):
+        if not self.current_path:
+            messagebox.showinfo("提示", "请先打开一张图片", parent=self)
+            return
+        if not os.path.isfile(self.current_path):
+            messagebox.showerror("错误", f"当前文件不存在:\n{self.current_path}", parent=self)
+            return
+
+        info = self._metadata_for_current_action()
+        initial_name = derive_name_bar_label(self.current_path, info)
+        name_bar_config = self._get_name_bar_settings()
+
+        dialog = tk.Toplevel(self)
+        dialog.title("加名字")
+        dialog.transient(self)
+        dialog.resizable(False, False)
+
+        frame = ttk.Frame(dialog, padding=14)
+        frame.pack(fill=tk.BOTH, expand=True)
+        frame.columnconfigure(1, weight=1)
+
+        name_var = tk.StringVar(value=initial_name)
+        format_var = tk.StringVar(value=str(name_bar_config.get("output_format") or "original").lower())
+        output_name_var = tk.StringVar(value=str(name_bar_config.get("output_name_mode") or "suffix").lower())
+        output_dir_var = tk.StringVar(value=str(name_bar_config.get("output_dir") or "").strip())
+        reveal_var = tk.BooleanVar(value=True)
+        save_default_var = tk.BooleanVar(value=False)
+
+        ttk.Label(frame, text="角色名").grid(row=0, column=0, sticky=tk.W, padx=(0, 8), pady=(0, 8))
+        name_entry = ttk.Entry(frame, textvariable=name_var, width=34)
+        name_entry.grid(row=0, column=1, sticky="ew", pady=(0, 8))
+
+        ttk.Label(frame, text="输出格式").grid(row=1, column=0, sticky=tk.W, padx=(0, 8), pady=(0, 8))
+        format_box = ttk.Combobox(frame, textvariable=format_var, values=("original", "png", "jpg", "webp"), width=12, state="readonly")
+        format_box.grid(row=1, column=1, sticky=tk.W, pady=(0, 8))
+
+        ttk.Label(frame, text="命名方式").grid(row=2, column=0, sticky=tk.W, padx=(0, 8), pady=(0, 8))
+        modes = ttk.Frame(frame)
+        modes.grid(row=2, column=1, sticky=tk.W, pady=(0, 8))
+        ttk.Radiobutton(modes, text="原图名 + _named", variable=output_name_var, value="suffix").pack(side=tk.LEFT)
+        ttk.Radiobutton(modes, text="直接用角色名", variable=output_name_var, value="label").pack(side=tk.LEFT, padx=(12, 0))
+
+        ttk.Label(frame, text="输出目录").grid(row=3, column=0, sticky=tk.W, padx=(0, 8), pady=(0, 8))
+        output_dir_row = ttk.Frame(frame)
+        output_dir_row.grid(row=3, column=1, sticky="ew", pady=(0, 8))
+        output_dir_row.columnconfigure(0, weight=1)
+        ttk.Entry(output_dir_row, textvariable=output_dir_var, width=34).grid(row=0, column=0, sticky="ew")
+
+        def _choose_output_dir() -> None:
+            initial_dir = str(output_dir_var.get() or "").strip()
+            if not initial_dir or not os.path.isdir(initial_dir):
+                initial_dir = os.path.dirname(str(self.current_path or "")) or os.getcwd()
+            selected = filedialog.askdirectory(parent=dialog, title="选择输出目录", initialdir=initial_dir)
+            if selected:
+                output_dir_var.set(selected)
+
+        ttk.Button(output_dir_row, text="选择", command=_choose_output_dir).grid(row=0, column=1, padx=(6, 0))
+        ttk.Label(frame, text="留空则输出到原图所在文件夹", foreground="#666666").grid(
+            row=4, column=1, sticky=tk.W, pady=(0, 8)
+        )
+
+        options_row = ttk.Frame(frame)
+        options_row.grid(row=5, column=1, sticky=tk.W, pady=(0, 12))
+        ttk.Checkbutton(options_row, text="生成后定位文件", variable=reveal_var).pack(side=tk.LEFT)
+        ttk.Checkbutton(options_row, text="保存为默认设置", variable=save_default_var).pack(side=tk.LEFT, padx=(12, 0))
+
+        buttons = ttk.Frame(frame)
+        buttons.grid(row=6, column=0, columnspan=2, sticky=tk.E)
+
+        def _run() -> None:
+            name = str(name_var.get() or "").strip()
+            if not name:
+                messagebox.showerror("加名字", "角色名不能为空", parent=dialog)
+                name_entry.focus_set()
+                return
+            action = get_image_action(NAME_BAR_ACTION_ID)
+            if action is None:
+                messagebox.showerror("加名字", "动作未注册", parent=dialog)
+                return
+            context = ImageActionContext(
+                image_path=str(self.current_path or ""),
+                metadata=info,
+                app_config=self._app_settings,
+                ui_parent=self,
+            )
+            try:
+                output_dir = str(output_dir_var.get() or "").strip()
+                if output_dir and not os.path.isdir(output_dir):
+                    os.makedirs(output_dir, exist_ok=True)
+                result = action.run(
+                    context,
+                    name=name,
+                    format=format_var.get(),
+                    output_name=output_name_var.get(),
+                    output_dir=output_dir,
+                )
+            except Exception as e:
+                self._set_status("加名字失败")
+                messagebox.showerror("加名字", str(e), parent=dialog)
+                return
+            if not result.ok:
+                self._set_status("加名字失败")
+                messagebox.showerror("加名字", result.message, parent=dialog)
+                return
+            if save_default_var.get():
+                payload = dict(self._app_settings or {})
+                payload.setdefault("version", 1)
+                image_actions = dict(payload.get("image_actions") or {})
+                name_bar = dict(image_actions.get("name_bar") or {})
+                name_bar.update(
+                    {
+                        "output_format": str(format_var.get() or "png").lower(),
+                        "output_name_mode": str(output_name_var.get() or "suffix").lower(),
+                        "output_dir": str(output_dir_var.get() or "").strip(),
+                    }
+                )
+                image_actions["name_bar"] = name_bar
+                payload["image_actions"] = image_actions
+                if self._save_app_settings(payload):
+                    self._app_settings = payload
+            self._set_status("加名字完成")
+            output_path = result.output_path or ""
+            dialog.destroy()
+            if reveal_var.get() and output_path:
+                self._reveal_output_path(output_path)
+            messagebox.showinfo("加名字", result.message, parent=self)
+
+        ttk.Button(buttons, text="取消", command=dialog.destroy).pack(side=tk.RIGHT)
+        ttk.Button(buttons, text="生成", command=_run, bootstyle="primary").pack(side=tk.RIGHT, padx=(0, 8))
+
+        name_entry.focus_set()
+        try:
+            dialog.grab_set()
+        except Exception:
+            pass
+        self.wait_window(dialog)
+
     def _open_batch_downloader(self):
         script_path = os.path.join(os.path.dirname(__file__), "legacy_downloader_gui.py")
         if not os.path.exists(script_path):
@@ -2770,6 +2951,17 @@ class D2ILiteApp(BaseWindow):
     def _get_global_llm_settings(self) -> Dict[str, Any]:
         llm = self._app_settings.get("llm") if isinstance(self._app_settings, dict) else {}
         return dict(llm) if isinstance(llm, dict) else {}
+
+    def _get_name_bar_settings(self) -> Dict[str, Any]:
+        settings = self._app_settings if isinstance(self._app_settings, dict) else {}
+        image_actions = settings.get("image_actions") if isinstance(settings, dict) else {}
+        if isinstance(image_actions, dict) and isinstance(image_actions.get("name_bar"), dict):
+            return dict(image_actions.get("name_bar") or {})
+        defaults = self._default_app_settings()
+        default_actions = defaults.get("image_actions") if isinstance(defaults, dict) else {}
+        if isinstance(default_actions, dict) and isinstance(default_actions.get("name_bar"), dict):
+            return dict(default_actions.get("name_bar") or {})
+        return {}
 
     @staticmethod
     def _apply_llm_env(
@@ -2821,6 +3013,16 @@ class D2ILiteApp(BaseWindow):
         timeout_var = tk.StringVar(value=str(llm_cfg.get("timeout_seconds", 45)))
         retries_var = tk.StringVar(value=str(llm_cfg.get("max_retries", 2)))
         temp_var = tk.StringVar(value=str(llm_cfg.get("temperature", 0.1)))
+        name_bar_cfg = self._get_name_bar_settings()
+        nb_format_var = tk.StringVar(value=str(name_bar_cfg.get("output_format") or "original").lower())
+        nb_output_name_var = tk.StringVar(value=str(name_bar_cfg.get("output_name_mode") or "suffix").lower())
+        nb_output_dir_var = tk.StringVar(value=str(name_bar_cfg.get("output_dir") or "").strip())
+        nb_suffix_var = tk.StringVar(value=str(name_bar_cfg.get("suffix") or "_named"))
+        nb_bar_height_mode_var = tk.StringVar(value=str(name_bar_cfg.get("bar_height_mode") or "auto"))
+        nb_bar_height_ratio_var = tk.StringVar(value=str(name_bar_cfg.get("bar_height_ratio") or 0.14))
+        nb_min_bar_height_var = tk.StringVar(value=str(name_bar_cfg.get("min_bar_height") or 48))
+        nb_align_var = tk.StringVar(value=str(name_bar_cfg.get("align") or "center").lower())
+        nb_jpg_quality_var = tk.StringVar(value=str(name_bar_cfg.get("jpg_quality") or 100))
         status_var = tk.StringVar(value=f"配置文件：{self._app_settings_path()}")
 
         box = ttk.Labelframe(container, text="在线大模型（OpenAI 兼容接口）", padding=10)
@@ -2985,6 +3187,86 @@ class D2ILiteApp(BaseWindow):
         tip = ttk.Label(box, textvariable=status_var, foreground="#666666")
         tip.grid(row=5, column=0, columnspan=4, sticky="w", pady=(10, 0))
 
+        name_bar_box = ttk.Labelframe(container, text="加名字", padding=10)
+        name_bar_box.pack(fill=tk.BOTH, expand=True, pady=(10, 0))
+        name_bar_box.columnconfigure(1, weight=1)
+        name_bar_box.columnconfigure(3, weight=1)
+
+        ttk.Label(name_bar_box, text="输出格式:").grid(row=0, column=0, sticky="e")
+        ttk.Combobox(
+            name_bar_box,
+            textvariable=nb_format_var,
+            values=("original", "png", "jpg", "webp"),
+            width=10,
+            state="readonly",
+        ).grid(row=0, column=1, sticky="w", padx=(6, 18))
+
+        ttk.Label(name_bar_box, text="命名方式:").grid(row=0, column=2, sticky="e")
+        ttk.Combobox(
+            name_bar_box,
+            textvariable=nb_output_name_var,
+            values=("suffix", "label"),
+            width=12,
+            state="readonly",
+        ).grid(row=0, column=3, sticky="w", padx=(6, 0))
+
+        ttk.Label(name_bar_box, text="输出目录:").grid(row=1, column=0, sticky="e", pady=(8, 0))
+        ttk.Entry(name_bar_box, textvariable=nb_output_dir_var, width=48).grid(
+            row=1, column=1, columnspan=2, sticky="we", pady=(8, 0), padx=(6, 6)
+        )
+
+        def _choose_default_name_bar_dir():
+            initial_dir = str(nb_output_dir_var.get() or "").strip()
+            if not initial_dir or not os.path.isdir(initial_dir):
+                initial_dir = os.getcwd()
+            selected = filedialog.askdirectory(parent=dialog, title="选择白条默认输出目录", initialdir=initial_dir)
+            if selected:
+                nb_output_dir_var.set(selected)
+
+        ttk.Button(name_bar_box, text="选择", command=_choose_default_name_bar_dir).grid(
+            row=1, column=3, sticky="w", pady=(8, 0)
+        )
+        ttk.Label(name_bar_box, text="留空则输出到原图所在文件夹", foreground="#666666").grid(
+            row=2, column=1, columnspan=3, sticky="w", pady=(4, 0)
+        )
+
+        ttk.Label(name_bar_box, text="后缀:").grid(row=3, column=0, sticky="e", pady=(8, 0))
+        ttk.Entry(name_bar_box, textvariable=nb_suffix_var, width=14).grid(
+            row=3, column=1, sticky="w", pady=(8, 0), padx=(6, 18)
+        )
+
+        ttk.Label(name_bar_box, text="对齐:").grid(row=3, column=2, sticky="e", pady=(8, 0))
+        ttk.Combobox(
+            name_bar_box,
+            textvariable=nb_align_var,
+            values=("center", "left", "right"),
+            width=12,
+            state="readonly",
+        ).grid(row=3, column=3, sticky="w", pady=(8, 0), padx=(6, 0))
+
+        ttk.Label(name_bar_box, text="高度模式:").grid(row=4, column=0, sticky="e", pady=(8, 0))
+        ttk.Entry(name_bar_box, textvariable=nb_bar_height_mode_var, width=14).grid(
+            row=4, column=1, sticky="w", pady=(8, 0), padx=(6, 18)
+        )
+        ttk.Label(name_bar_box, text="auto 或像素值，例如 80", foreground="#666666").grid(
+            row=4, column=2, columnspan=2, sticky="w", pady=(8, 0)
+        )
+
+        ttk.Label(name_bar_box, text="自动高度比例:").grid(row=5, column=0, sticky="e", pady=(8, 0))
+        ttk.Entry(name_bar_box, textvariable=nb_bar_height_ratio_var, width=14).grid(
+            row=5, column=1, sticky="w", pady=(8, 0), padx=(6, 18)
+        )
+
+        ttk.Label(name_bar_box, text="最小高度:").grid(row=5, column=2, sticky="e", pady=(8, 0))
+        ttk.Entry(name_bar_box, textvariable=nb_min_bar_height_var, width=12).grid(
+            row=5, column=3, sticky="w", pady=(8, 0), padx=(6, 0)
+        )
+
+        ttk.Label(name_bar_box, text="JPG质量:").grid(row=6, column=0, sticky="e", pady=(8, 0))
+        ttk.Entry(name_bar_box, textvariable=nb_jpg_quality_var, width=14).grid(
+            row=6, column=1, sticky="w", pady=(8, 0), padx=(6, 18)
+        )
+
         actions = ttk.Frame(container)
         actions.pack(fill=tk.X, pady=(10, 0))
 
@@ -2997,10 +3279,42 @@ class D2ILiteApp(BaseWindow):
             except Exception:
                 messagebox.showerror("参数错误", "Timeout / Retries / Temp 必须是合法数字。", parent=dialog)
                 return
+            try:
+                nb_ratio = float(str(nb_bar_height_ratio_var.get() or "0.14"))
+                nb_min_height = max(24, int(str(nb_min_bar_height_var.get() or "48")))
+                nb_jpg_quality = min(100, max(1, int(str(nb_jpg_quality_var.get() or "100"))))
+            except Exception:
+                messagebox.showerror("参数错误", "白条高度比例 / 最小高度 / JPG质量 必须是合法数字。", parent=dialog)
+                return
+
+            nb_output_dir = str(nb_output_dir_var.get() or "").strip()
+            if nb_output_dir and not os.path.isdir(nb_output_dir):
+                try:
+                    os.makedirs(nb_output_dir, exist_ok=True)
+                except Exception as exc:
+                    messagebox.showerror("参数错误", f"无法创建白条输出目录：\n{exc}", parent=dialog)
+                    return
+
+            name_bar_payload = {
+                "output_format": str(nb_format_var.get() or "png").lower(),
+                "jpg_quality": nb_jpg_quality,
+                "output_name_mode": str(nb_output_name_var.get() or "suffix").lower(),
+                "output_dir": nb_output_dir,
+                "suffix": str(nb_suffix_var.get() or "_named"),
+                "bar_height_mode": str(nb_bar_height_mode_var.get() or "auto").strip() or "auto",
+                "bar_height_ratio": nb_ratio,
+                "min_bar_height": nb_min_height,
+                "align": str(nb_align_var.get() or "center").lower(),
+            }
 
             payload = dict(self._app_settings or {})
             payload.setdefault("version", 1)
             payload["llm"] = cfg
+            image_actions = dict(payload.get("image_actions") or {})
+            existing_name_bar = dict(image_actions.get("name_bar") or {})
+            existing_name_bar.update(name_bar_payload)
+            image_actions["name_bar"] = existing_name_bar
+            payload["image_actions"] = image_actions
             if not self._save_app_settings(payload):
                 messagebox.showerror("保存失败", "无法写入全局设置文件。", parent=dialog)
                 return
@@ -6259,12 +6573,87 @@ class D2ILiteApp(BaseWindow):
         self._refresh_current()
 
 
+def _parse_cli_args(argv: List[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="D2I Lite")
+    parser.add_argument("--action", default="", help="当前图片动作 ID，例如 name-bar")
+    parser.add_argument("--name", default="", help="动作使用的人物名/角色名")
+    parser.add_argument("--format", dest="output_format", default=None, help="输出格式：png/jpg/webp")
+    parser.add_argument("--output-name", default=None, choices=("suffix", "label"), help="输出命名方式")
+    parser.add_argument("--output-dir", default=None, help="派生图输出目录；不传则使用界面默认设置")
+    parser.add_argument("--reveal", action="store_true", help="完成后在文件管理器中定位输出文件")
+    parser.add_argument("target", nargs="*", help="图片路径")
+    args = parser.parse_args(argv)
+    args.target = " ".join(args.target).strip()
+    return args
+
+
+def _run_cli_action(args: argparse.Namespace) -> int:
+    action_id = str(getattr(args, "action", "") or "").strip()
+    image_path = os.path.abspath(str(getattr(args, "target", "") or "").strip().strip('"'))
+    if not image_path:
+        print("错误：缺少图片路径", file=sys.stderr)
+        return 2
+    if not os.path.isfile(image_path):
+        print(f"错误：图片不存在: {image_path}", file=sys.stderr)
+        return 2
+
+    action = get_image_action(action_id)
+    if action is None:
+        print(f"错误：未知动作: {action_id}", file=sys.stderr)
+        return 2
+
+    metadata: Optional[ImageMetadataInfo] = None
+    try:
+        metadata = read_image_metadata(image_path)
+    except Exception:
+        metadata = None
+
+    context = ImageActionContext(
+        image_path=image_path,
+        metadata=metadata,
+        app_config=_svc_load_app_settings(),
+        ui_parent=None,
+    )
+    try:
+        action_options: Dict[str, Any] = {
+            "name": str(getattr(args, "name", "") or ""),
+        }
+        if getattr(args, "output_format", None) is not None:
+            action_options["format"] = str(getattr(args, "output_format") or "")
+        if getattr(args, "output_name", None) is not None:
+            action_options["output_name"] = str(getattr(args, "output_name") or "")
+        if getattr(args, "output_dir", None) is not None:
+            action_options["output_dir"] = str(getattr(args, "output_dir") or "")
+        result = action.run(
+            context,
+            **action_options,
+        )
+    except Exception as e:
+        print(f"错误：{e}", file=sys.stderr)
+        return 1
+    if not result.ok:
+        print(f"错误：{result.message}", file=sys.stderr)
+        return 1
+    print(result.message)
+    if getattr(args, "reveal", False) and result.output_path:
+        try:
+            if os.name == "nt":
+                subprocess.Popen(["explorer", f"/select,{os.path.normpath(result.output_path)}"])
+            else:
+                webbrowser.open(os.path.dirname(result.output_path))
+        except Exception:
+            pass
+    return 0
+
+
 def main():
+    args = _parse_cli_args(sys.argv[1:])
+    if str(getattr(args, "action", "") or "").strip():
+        raise SystemExit(_run_cli_action(args))
+
     start_target: Optional[str] = None
-    if len(sys.argv) > 1:
-        candidate = " ".join(sys.argv[1:]).strip()
-        if candidate:
-            start_target = candidate
+    if getattr(args, "target", ""):
+        start_target = str(args.target or "").strip()
 
     app = D2ILiteApp(start_target=start_target)
     app.mainloop()

@@ -5,9 +5,11 @@
 
 import os
 import re
+import base64
 import hashlib
 import shutil
 import tempfile
+import zlib
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 from dataclasses import dataclass, field
@@ -51,6 +53,13 @@ KEYWORD_UNKNOWN_TOKENS = {
     "待补充",
     "-",
 }
+
+D2I_JPEG_FULL_CONTENT_PREFIX = "D2I-FULL-CONTENT-V1"
+D2I_JPEG_FULL_CONTENT_STORAGE = "jpeg-com:d2i-full-content-v1"
+D2I_JPEG_FULL_CONTENT_CHUNK_CHARS = 58000
+D2I_LONG_TEXT_DIRECT_UTF8_LIMIT = 6000
+D2I_XMP_SAFE_UTF8_LIMIT = 24000
+D2I_LONG_TEXT_PREVIEW_CHARS = 3500
 
 
 class MetadataStatus(Enum):
@@ -526,6 +535,353 @@ def _safe_replace_with_pixel_guard(
                 pass
 
 
+def _strip_jpeg_xmp_segments_in_place(path: str) -> bool:
+    """
+    Remove JPEG APP1 XMP segments without re-encoding pixels.
+
+    Some public-site JPEGs contain malformed XMP that prevents exiv2 from opening
+    the file at all. EXIF removal alone does not touch those APP1 XMP segments.
+    """
+    fp = str(path or "").strip()
+    if not fp or not os.path.isfile(fp):
+        return False
+    try:
+        data = open(fp, "rb").read()
+    except Exception:
+        return False
+    if len(data) < 4 or data[:2] != b"\xff\xd8":
+        return False
+
+    out = bytearray(data[:2])
+    i = 2
+    changed = False
+    standalone = {0x01, 0xD8, 0xD9} | set(range(0xD0, 0xD8))
+    xmp_headers = (
+        b"http://ns.adobe.com/xap/1.0/\x00",
+        b"http://ns.adobe.com/xmp/extension/\x00",
+    )
+
+    while i < len(data):
+        if data[i] != 0xFF:
+            out.extend(data[i:])
+            break
+
+        marker_start = i
+        while i < len(data) and data[i] == 0xFF:
+            i += 1
+        if i >= len(data):
+            out.extend(data[marker_start:])
+            break
+
+        marker = data[i]
+        i += 1
+
+        if marker in standalone:
+            out.extend(data[marker_start:i])
+            if marker == 0xD9:
+                out.extend(data[i:])
+                break
+            continue
+
+        if i + 2 > len(data):
+            out.extend(data[marker_start:])
+            break
+
+        seg_len = int.from_bytes(data[i:i + 2], "big")
+        if seg_len < 2 or i + seg_len > len(data):
+            out.extend(data[marker_start:])
+            break
+
+        seg_payload = data[i + 2:i + seg_len]
+        is_xmp = marker == 0xE1 and any(seg_payload.startswith(header) for header in xmp_headers)
+        if is_xmp:
+            changed = True
+        else:
+            out.extend(data[marker_start:i + seg_len])
+
+        if marker == 0xDA:
+            out.extend(data[i + seg_len:])
+            break
+        i += seg_len
+
+    if not changed:
+        return False
+    try:
+        with open(fp, "wb") as f:
+            f.write(out)
+        return True
+    except Exception as e:
+        print(f"[警告] 剥离损坏XMP失败 ({fp}): {e}")
+        return False
+
+
+def _sha256_text(text: str) -> str:
+    return hashlib.sha256(str(text or "").encode("utf-8")).hexdigest()
+
+
+def _is_d2i_full_content_preview(text: Any) -> bool:
+    s = str(text or "").strip()
+    return s.startswith("完整原文过长，已内嵌在图片 JPEG COM 分块中。")
+
+
+def _should_store_full_content_as_jpeg_chunks(text: str) -> bool:
+    s = str(text or "").strip()
+    if not s:
+        return False
+    if len(s.encode("utf-8", errors="ignore")) > D2I_XMP_SAFE_UTF8_LIMIT:
+        return True
+    return len(s) > D2I_LONG_TEXT_DIRECT_UTF8_LIMIT
+
+
+def _build_d2i_full_content_preview(text: str) -> str:
+    s = clean_text(str(text or ""))
+    digest = _sha256_text(s)
+    length = len(s)
+    preview = s[:D2I_LONG_TEXT_PREVIEW_CHARS].strip()
+    return (
+        "完整原文过长，已内嵌在图片 JPEG COM 分块中。"
+        f"\nD2I full_content_storage={D2I_JPEG_FULL_CONTENT_STORAGE}"
+        f"\nsha256={digest}"
+        f"\nchars={length}"
+        "\n\n原文预览：\n"
+        f"{preview}"
+    ).strip()
+
+
+def _encode_d2i_full_content_chunks(text: str) -> List[bytes]:
+    s = str(text or "")
+    if not s:
+        return []
+    raw = s.encode("utf-8")
+    compressed = zlib.compress(raw, level=9)
+    b64 = base64.b64encode(compressed).decode("ascii")
+    chunks = [
+        b64[i:i + D2I_JPEG_FULL_CONTENT_CHUNK_CHARS]
+        for i in range(0, len(b64), D2I_JPEG_FULL_CONTENT_CHUNK_CHARS)
+    ]
+    total = len(chunks)
+    digest = hashlib.sha256(raw).hexdigest()
+    out: List[bytes] = []
+    for idx, chunk in enumerate(chunks, start=1):
+        header = (
+            f"{D2I_JPEG_FULL_CONTENT_PREFIX};"
+            f"part={idx};total={total};"
+            f"sha256={digest};encoding=zlib+base64;utf8_bytes={len(raw)}\n"
+        )
+        payload = (header + chunk).encode("ascii")
+        if len(payload) > 65533:
+            raise ValueError("D2I JPEG full_content chunk is too large")
+        out.append(payload)
+    return out
+
+
+def _decode_d2i_full_content_payloads(payloads: List[bytes]) -> str:
+    if not payloads:
+        return ""
+    parts: Dict[int, str] = {}
+    expected_total: Optional[int] = None
+    expected_sha = ""
+    for payload in payloads:
+        try:
+            text = payload.decode("ascii", errors="strict")
+        except Exception:
+            continue
+        if not text.startswith(D2I_JPEG_FULL_CONTENT_PREFIX):
+            continue
+        header, sep, body = text.partition("\n")
+        if not sep:
+            continue
+        meta: Dict[str, str] = {}
+        for token in header.split(";")[1:]:
+            key, has_value, value = token.partition("=")
+            if has_value:
+                meta[key.strip()] = value.strip()
+        try:
+            part = int(meta.get("part", "0"))
+            total = int(meta.get("total", "0"))
+        except Exception:
+            continue
+        if part <= 0 or total <= 0:
+            continue
+        if expected_total is None:
+            expected_total = total
+        if total != expected_total:
+            continue
+        if not expected_sha:
+            expected_sha = meta.get("sha256", "")
+        parts[part] = body.strip()
+
+    if not expected_total or len(parts) != expected_total:
+        return ""
+    try:
+        b64 = "".join(parts[i] for i in range(1, expected_total + 1))
+        compressed = base64.b64decode(b64.encode("ascii"), validate=True)
+        raw = zlib.decompress(compressed)
+    except Exception:
+        return ""
+    if expected_sha and hashlib.sha256(raw).hexdigest() != expected_sha:
+        return ""
+    try:
+        return raw.decode("utf-8", errors="strict")
+    except Exception:
+        return raw.decode("utf-8", errors="ignore")
+
+
+def _read_jpeg_d2i_full_content(path: str) -> str:
+    fp = str(path or "").strip()
+    if not fp or not os.path.isfile(fp):
+        return ""
+    try:
+        data = open(fp, "rb").read()
+    except Exception:
+        return ""
+    if len(data) < 4 or data[:2] != b"\xff\xd8":
+        return ""
+    payloads: List[bytes] = []
+    i = 2
+    standalone = {0x01, 0xD8, 0xD9} | set(range(0xD0, 0xD8))
+    while i < len(data):
+        if data[i] != 0xFF:
+            break
+        while i < len(data) and data[i] == 0xFF:
+            i += 1
+        if i >= len(data):
+            break
+        marker = data[i]
+        i += 1
+        if marker in standalone:
+            if marker == 0xD9:
+                break
+            continue
+        if i + 2 > len(data):
+            break
+        seg_len = int.from_bytes(data[i:i + 2], "big")
+        if seg_len < 2 or i + seg_len > len(data):
+            break
+        payload = data[i + 2:i + seg_len]
+        if marker == 0xFE and payload.startswith(D2I_JPEG_FULL_CONTENT_PREFIX.encode("ascii")):
+            payloads.append(payload)
+        if marker == 0xDA:
+            break
+        i += seg_len
+    return _decode_d2i_full_content_payloads(payloads)
+
+
+def _replace_jpeg_d2i_full_content_comments_in_place(path: str, text: str) -> bool:
+    """
+    Replace D2I long-text JPEG COM segments without re-encoding pixels.
+
+    Returns True when the file is unchanged or successfully updated.
+    """
+    fp = str(path or "").strip()
+    if not fp or not os.path.isfile(fp):
+        return False
+    try:
+        data = open(fp, "rb").read()
+    except Exception:
+        return False
+    if len(data) < 4 or data[:2] != b"\xff\xd8":
+        return True
+
+    try:
+        comment_payloads = _encode_d2i_full_content_chunks(text) if str(text or "").strip() else []
+    except Exception as e:
+        print(f"[错误] 构建 JPEG 全文分块失败 ({fp}): {e}")
+        return False
+
+    comment_segments = [
+        b"\xff\xfe" + (len(payload) + 2).to_bytes(2, "big") + payload
+        for payload in comment_payloads
+    ]
+    prefix = D2I_JPEG_FULL_CONTENT_PREFIX.encode("ascii")
+    out = bytearray(data[:2])
+    i = 2
+    inserted = False
+    changed = False
+    standalone = {0x01, 0xD8, 0xD9} | set(range(0xD0, 0xD8))
+
+    while i < len(data):
+        if data[i] != 0xFF:
+            if (not inserted) and comment_segments:
+                out.extend(b"".join(comment_segments))
+                inserted = True
+                changed = True
+            out.extend(data[i:])
+            break
+
+        marker_start = i
+        while i < len(data) and data[i] == 0xFF:
+            i += 1
+        if i >= len(data):
+            out.extend(data[marker_start:])
+            break
+
+        marker = data[i]
+        i += 1
+
+        if marker in standalone:
+            if (not inserted) and marker in {0xDA, 0xD9} and comment_segments:
+                out.extend(b"".join(comment_segments))
+                inserted = True
+                changed = True
+            out.extend(data[marker_start:i])
+            if marker == 0xD9:
+                out.extend(data[i:])
+                break
+            continue
+
+        if i + 2 > len(data):
+            if (not inserted) and comment_segments:
+                out.extend(b"".join(comment_segments))
+                inserted = True
+                changed = True
+            out.extend(data[marker_start:])
+            break
+
+        seg_len = int.from_bytes(data[i:i + 2], "big")
+        if seg_len < 2 or i + seg_len > len(data):
+            if (not inserted) and comment_segments:
+                out.extend(b"".join(comment_segments))
+                inserted = True
+                changed = True
+            out.extend(data[marker_start:])
+            break
+
+        payload = data[i + 2:i + seg_len]
+        is_d2i_full_content = marker == 0xFE and payload.startswith(prefix)
+        if is_d2i_full_content:
+            changed = True
+        else:
+            if (not inserted) and marker == 0xDA and comment_segments:
+                out.extend(b"".join(comment_segments))
+                inserted = True
+                changed = True
+            out.extend(data[marker_start:i + seg_len])
+
+        if marker == 0xDA:
+            if is_d2i_full_content:
+                out.extend(data[i + seg_len:])
+            else:
+                out.extend(data[i + seg_len:])
+            break
+        i += seg_len
+
+    if (not inserted) and comment_segments:
+        out.extend(b"".join(comment_segments))
+        inserted = True
+        changed = True
+
+    if not changed:
+        return True
+    try:
+        with open(fp, "wb") as f:
+            f.write(out)
+        return True
+    except Exception as e:
+        print(f"[错误] 写入 JPEG 全文分块失败 ({fp}): {e}")
+        return False
+
+
 def clear_exif_image_description(filepath: str) -> bool:
     """
     清空 EXIF ImageDescription(0x010E)。
@@ -690,6 +1046,27 @@ def read_image_metadata(filepath: str) -> ImageMetadataInfo:
                 _read_with_piexif(filepath, info)
     else:
         _read_with_piexif(filepath, info)
+
+    # D2I 长文兜底：当公开档案原文超过 JPEG/XMP 单段容量时，完整原文会写入
+    # JPEG COM 分块。读取时透明拼回，避免 GUI/下游只拿到预览文本。
+    full_content_from_jpeg = ""
+    try:
+        full_content_from_jpeg = _read_jpeg_d2i_full_content(filepath)
+    except Exception:
+        full_content_from_jpeg = ""
+    if full_content_from_jpeg:
+        if (not info.description) or _is_d2i_full_content_preview(info.description):
+            info.description = full_content_from_jpeg
+        if isinstance(info.titi_json, dict):
+            profile = info.titi_json.get("d2i_profile")
+            if not isinstance(profile, dict):
+                profile = {}
+            else:
+                profile = dict(profile)
+            profile["full_content"] = full_content_from_jpeg
+            if (not str(profile.get("description", "")).strip()) or _is_d2i_full_content_preview(profile.get("description")):
+                profile["description"] = full_content_from_jpeg
+            info.titi_json["d2i_profile"] = profile
 
     # B 层回退：PNG text（key=titi）
     if not info.titi_json and filepath.lower().endswith('.png'):
@@ -1306,6 +1683,34 @@ def update_metadata_preserve_others(
     if not path or (not os.path.isfile(path)):
         print(f"[错误] 文件不存在，无法写入元数据: {filepath}")
         return False
+
+    metadata_payload = dict(new_metadata or {})
+    long_full_content = ""
+    is_jpeg_file = os.path.splitext(path)[1].lower() in {".jpg", ".jpeg", ".jpe", ".jfif"}
+    if is_jpeg_file:
+        incoming_profile = metadata_payload.get("d2i_profile")
+        profile_payload = dict(incoming_profile) if isinstance(incoming_profile, dict) else {}
+        candidate_full_content = (
+            profile_payload.get("full_content")
+            or profile_payload.get("description")
+            or metadata_payload.get("description")
+            or ""
+        )
+        candidate_full_content = clean_text(str(candidate_full_content or "")) if clean_format else str(candidate_full_content or "").strip()
+        if _should_store_full_content_as_jpeg_chunks(candidate_full_content):
+            long_full_content = candidate_full_content
+            preview = _build_d2i_full_content_preview(long_full_content)
+            current_desc = clean_text(str(metadata_payload.get("description", "") or "")) if clean_format else str(metadata_payload.get("description", "") or "").strip()
+            if (not current_desc) or current_desc == long_full_content or _should_store_full_content_as_jpeg_chunks(current_desc):
+                metadata_payload["description"] = preview
+            profile_payload["full_content"] = preview
+            if (not str(profile_payload.get("description", "") or "").strip()) or profile_payload.get("description") == long_full_content:
+                profile_payload["description"] = preview
+            profile_payload["full_content_storage"] = D2I_JPEG_FULL_CONTENT_STORAGE
+            profile_payload["full_content_sha256"] = _sha256_text(long_full_content)
+            profile_payload["full_content_chars"] = len(long_full_content)
+            profile_payload["full_content_preview"] = long_full_content[:D2I_LONG_TEXT_PREVIEW_CHARS].strip()
+            metadata_payload["d2i_profile"] = profile_payload
         
     def _apply_update(img):
         # 1. 读取现有 XMP
@@ -1318,20 +1723,20 @@ def update_metadata_preserve_others(
             xmp_data = {}
         
         # 2. 清洗新数据
-        title = new_metadata.get('title', '')
-        desc = new_metadata.get('description', '')
-        keywords = new_metadata.get('keywords', [])
-        source = new_metadata.get('source', '')
-        image_url = new_metadata.get('image_url', '') or new_metadata.get('url', '')
-        city = new_metadata.get('city', '')
-        person = new_metadata.get('person', '')
-        gender = new_metadata.get('gender', '')
-        position = new_metadata.get('position', '') # 新增：职务
-        police_id = new_metadata.get('police_id', '')  # 新增：警号
+        title = metadata_payload.get('title', '')
+        desc = metadata_payload.get('description', '')
+        keywords = metadata_payload.get('keywords', [])
+        source = metadata_payload.get('source', '')
+        image_url = metadata_payload.get('image_url', '') or metadata_payload.get('url', '')
+        city = metadata_payload.get('city', '')
+        person = metadata_payload.get('person', '')
+        gender = metadata_payload.get('gender', '')
+        position = metadata_payload.get('position', '') # 新增：职务
+        police_id = metadata_payload.get('police_id', '')  # 新增：警号
         
         # 额外字段
-        titi_asset_id = new_metadata.get('titi_asset_id', '')
-        titi_world_id = new_metadata.get('titi_world_id', '')
+        titi_asset_id = metadata_payload.get('titi_asset_id', '')
+        titi_world_id = metadata_payload.get('titi_world_id', '')
         
         if clean_format:
             title = clean_text(title)
@@ -1403,8 +1808,8 @@ def update_metadata_preserve_others(
         old_titi["titi_world_id"] = titi_world_id or old_titi.get("titi_world_id") or "default"
 
         # 可选：内容 hash
-        if new_metadata.get("titi_content_hash"):
-            old_titi["titi_content_hash"] = new_metadata["titi_content_hash"]
+        if metadata_payload.get("titi_content_hash"):
+            old_titi["titi_content_hash"] = metadata_payload["titi_content_hash"]
 
         if image_url:
             old_titi["source_image"] = image_url
@@ -1416,14 +1821,14 @@ def update_metadata_preserve_others(
         else:
             profile = dict(profile)
 
-        if isinstance(new_metadata.get("d2i_profile"), dict):
-            for k, v in new_metadata["d2i_profile"].items():
+        if isinstance(metadata_payload.get("d2i_profile"), dict):
+            for k, v in metadata_payload["d2i_profile"].items():
                 if v not in (None, "", [], {}):
                     profile[k] = v
                 else:
                     profile.pop(k, None)
 
-        profile_payload_provided = isinstance(new_metadata.get("d2i_profile"), dict)
+        profile_payload_provided = isinstance(metadata_payload.get("d2i_profile"), dict)
         if (not profile_payload_provided) and person:
             profile["name"] = person
         if desc:
@@ -1445,8 +1850,8 @@ def update_metadata_preserve_others(
             else:
                 profile.pop("gender", None)
 
-        if (not police_id) and isinstance(new_metadata.get("d2i_profile"), dict):
-            police_id = _extract_police_id_from_profile(new_metadata.get("d2i_profile"))
+        if (not police_id) and isinstance(metadata_payload.get("d2i_profile"), dict):
+            police_id = _extract_police_id_from_profile(metadata_payload.get("d2i_profile"))
         police_id = _normalize_police_id_value(police_id)
         if police_id:
             profile["police_id"] = police_id
@@ -1461,9 +1866,9 @@ def update_metadata_preserve_others(
             old_titi["d2i_profile"] = profile
 
         # 可选：角色别名
-        if "role_aliases" in new_metadata and isinstance(new_metadata.get("role_aliases"), list):
-            if new_metadata["role_aliases"]:
-                old_titi["role_aliases"] = new_metadata["role_aliases"]
+        if "role_aliases" in metadata_payload and isinstance(metadata_payload.get("role_aliases"), list):
+            if metadata_payload["role_aliases"]:
+                old_titi["role_aliases"] = metadata_payload["role_aliases"]
             else:
                 old_titi.pop("role_aliases", None)
 
@@ -1552,7 +1957,10 @@ def update_metadata_preserve_others(
             # 在临时副本上剥离 EXIF 后再重试写入（不重编码，不改像素）。
             if _looks_like_jpeg(tmp_path):
                 try:
-                    print(f"[警告] 检测到损坏/不兼容EXIF，尝试剥离EXIF后重试 ({path}): {e}")
+                    err_text = str(e)
+                    print(f"[警告] 检测到损坏/不兼容EXIF/XMP，尝试剥离后重试 ({path}): {e}")
+                    if "xmp" in err_text.lower() or "xmlvalidator" in err_text.lower():
+                        _strip_jpeg_xmp_segments_in_place(tmp_path)
                     piexif.remove(tmp_path)  # in-place
                     with pyexiv2.Image(tmp_path) as img:
                         _apply_update(img)
@@ -1560,6 +1968,9 @@ def update_metadata_preserve_others(
                     raise
             else:
                 raise
+        if _looks_like_jpeg(tmp_path):
+            if not _replace_jpeg_d2i_full_content_comments_in_place(tmp_path, long_full_content):
+                return False
         return _safe_replace_with_pixel_guard(
             path,
             tmp_path,

@@ -68,6 +68,12 @@ powershell -ExecutionPolicy Bypass -File .\register_windows_file_assoc.ps1
 
 脚本会把 D2I Lite 注册到 Open With 列表。
 
+如果已经打包出 EXE，可直接注册 EXE：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\register_windows_file_assoc.ps1 -ExePath ".\dist\D2ILite\D2ILite.exe"
+```
+
 如果要尝试写默认值（Win10/11 不一定生效）：
 
 ```powershell

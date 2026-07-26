@@ -19,7 +19,6 @@ def main() -> int:
     tmp = Path(tempfile.mkdtemp(prefix="d2i-cloud-smoke-"))
     os.environ["D2I_CLOUD_DATA_ROOT"] = str(tmp / "cloud")
     os.environ["D2I_CLOUD_TASKS_ROOT"] = str(tmp / "tasks")
-    os.environ.pop("D2I_WEB_TOKEN", None)
 
     from fastapi.testclient import TestClient
 
