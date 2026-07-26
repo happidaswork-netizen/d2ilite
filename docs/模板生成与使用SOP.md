@@ -1,5 +1,7 @@
 # D2I Lite 模板生成与使用 SOP
 
+> **Cloud 合同优先**:模板若进入 D2I Cloud 队列 → finalize → `角色肖像` / people 回写链路,字段与路径要求以 [`d2i_cloud_template_extract_contract.md`](d2i_cloud_template_extract_contract.md) 为准(必填仅 `name + detail_url`;**无图人物必须保留档案 no_photo,不得因无图丢人**,`image_url` 是否必填按站点逐个确认)。本文其余通用流程不变,冲突处以合同为准。
+
 本文档是“可执行版”操作手册，目标是让模板生成、交付、使用、验收都有统一动作，避免因模板差异导致抓取失败、漏抓、错图或任务卡死。
 
 适用范围：
@@ -89,7 +91,17 @@
 
 映射统一在 `rules.field_map` 完成。
 
-### 2.5 图片与命名（卡死问题关键）
+### 2.5 全文元数据与多图文章
+
+公开档案/新闻稿/英烈墙类模板必须遵守 D2I/TITI 元数据规范：
+- 开启或默认使用 `metadata_embed_full_content=true`。
+- `selectors.detail_full_text` 必须尽量命中详情正文完整文本。
+- 每张最终图片都要内嵌完整原文，写入 `Xmp.dc.description`、`EXIF XPComment` 和 `Xmp.titi.meta > d2i_profile.full_content`。
+- 同一详情页多图时，首图命名为姓名，后续命名为 `姓名-资料图-N`；每张图都保留同一篇原文，并写入 `image_role/image_index/image_total`。
+- 超长原文超过 JPEG XMP/EXIF 容量时，必须仍保留在图片内部：写入 JPEG COM `D2I-FULL-CONTENT-V1` 分块，并在 `d2i_profile.full_content_storage/full_content_sha256/full_content_chars/full_content_preview` 记录承载位置、校验和预览。
+- `crawl_record.json` 等 sidecar 只做备份，不作为唯一原文载体。
+
+### 2.6 图片与命名（卡死问题关键）
 
 强制规则：
 - 最终图片按“姓名”命名

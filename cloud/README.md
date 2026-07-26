@@ -22,6 +22,7 @@ Open:
 
 Optional:
 
+- `D2I_WEB_TOKEN` — if set, all `/api/v1` routes require `Authorization: Bearer <token>`（Web 可用 `?token=` 引导写入 localStorage `d2i_cloud_token`，401 时自动弹 Token 框）。本地开发可不设；NAS/公网暴露按产品契约必须设置。
 - `D2I_CLOUD_DATA_ROOT` — jobs sqlite + cloud data (default `data/cloud`)
 - `D2I_CLOUD_TASKS_ROOT` — public archive task roots (default `data/public_archive`)
 - `D2I_PEOPLE_DB` — people.sqlite path (default NAS `/vol4/1001/hermes-runtime/db/people.sqlite` if present, else `data/people.sqlite`)

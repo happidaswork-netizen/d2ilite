@@ -20,3 +20,5 @@ deploy/nas/dist/
 **/.nas_bootstrap_url
 **/.proxy_pid
 cloud/web/**/*.png
+data/browser_profiles/
+data/coverage/*.png

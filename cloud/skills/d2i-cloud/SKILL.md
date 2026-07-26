@@ -25,8 +25,9 @@ Canonical field contract: `docs/d2i_cloud_template_extract_contract.md`
 ## Auth and base URL
 
 - Default API: `http://127.0.0.1:8787` (Hermes host network) or `http://192.168.5.36:8787` (LAN).
-- **No app-layer Bearer token** (`auth_enabled=false`). LAN/API are open on the host.
-- Public: `https://d2i.517411.xyz/` still sits behind **Cloudflare Access / Zero Trust** (team login). Unauthenticated browser hits get Access HTML (HTTP 200), not API JSON — finish Access sign-in once per browser, or use LAN.
+- **App-layer Bearer is conditional, not absent**: `cloud/api.py` requires `Authorization: Bearer <D2I_WEB_TOKEN>` on all `/api/v1` routes **whenever env `D2I_WEB_TOKEN` is set**; only an unset token (local dev) opens the API. Check live state via `GET /api/v1/status` → `auth_enabled`. Product contract (`docs/D2I_Cloud产品契约_2026-07-25.md` §鉴权) requires the token to be **on** for any NAS/public exposure.
+- Token sources when enabled: env `D2I_WEB_TOKEN`, file `/runtime/d2i-cloud-data/web_token.txt`, Web `?token=` bootstrap (stored in localStorage `d2i_cloud_token`).
+- Public: `https://d2i.517411.xyz/` still sits behind **Cloudflare Access / Zero Trust** (team login). Unauthenticated browser hits get Access HTML (HTTP 200), not API JSON — finish Access sign-in once per browser, or use LAN. Passing Access does **not** waive the app-layer Bearer when `auth_enabled=true`.
 - Prefer HTTP CLI on LAN/host: `d2i status|templates list|queues …`
 
 ## Read-first workflow
@@ -120,8 +121,10 @@ If quality is bad:
 
 ## Minimal curl examples
 
+> 以下示例假设本地开发未设 `D2I_WEB_TOKEN`。在 NAS / 任何 `auth_enabled=true` 环境,每条 curl 都必须加 `-H "Authorization: Bearer $D2I_WEB_TOKEN"`,否则一律 401。
+
 ```bash
-curl -sS http://127.0.0.1:8787/api/v1/status
+curl -sS -H "Authorization: Bearer $D2I_WEB_TOKEN" http://127.0.0.1:8787/api/v1/status
 curl -sS http://127.0.0.1:8787/api/v1/templates
 curl -sS \
   -H 'Content-Type: application/json' \
