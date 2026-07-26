@@ -1,4 +1,6 @@
-import type { MetadataItem } from '../../../types'
+import { useState } from 'react'
+
+import type { MetadataAutofillInputMode, MetadataItem } from '../../../types'
 import {
   formatFileSize,
   formatTimestamp,
@@ -14,9 +16,12 @@ type MetadataEditorPaneProps = {
   currentItem: MetadataItem | null
   form: FormState | null
   keywordCount: number
+  metadataAiBusy: boolean
   selectedName: string
   selectedPath: string
+  onAiAutofillCurrentMetadata: (inputMode: MetadataAutofillInputMode) => void
   onFieldChange: (key: keyof FormState, value: string) => void
+  onGenerateBiography: () => void
   onRoleAliasAdd: () => void
   onRoleAliasRemove: (id: string) => void
   onRoleAliasChange: (id: string, key: 'name' | 'note' | 'enabled', value: string | boolean) => void
@@ -29,14 +34,19 @@ export function MetadataEditorPane({
   currentItem,
   form,
   keywordCount,
+  metadataAiBusy,
   selectedName,
   selectedPath,
+  onAiAutofillCurrentMetadata,
   onFieldChange,
+  onGenerateBiography,
   onRoleAliasAdd,
   onRoleAliasRemove,
   onRoleAliasChange,
   onTabChange,
 }: MetadataEditorPaneProps) {
+  const [aiInputMode, setAiInputMode] = useState<MetadataAutofillInputMode>('filename_metadata')
+
   return (
     <>
       <div className="section-head">
@@ -45,6 +55,32 @@ export function MetadataEditorPane({
           <h2>结构化编辑</h2>
         </div>
         <span className="section-meta">{selectedPath ? '已绑定当前图片' : '等待选择条目'}</span>
+      </div>
+
+      <div className="metadata-actions">
+        <label className="input-stack">
+          <span>AI 补全输入</span>
+          <select
+            value={aiInputMode}
+            onChange={(event) => setAiInputMode(event.target.value as MetadataAutofillInputMode)}
+            disabled={metadataAiBusy || !selectedPath}
+          >
+            <option value="filename_metadata">文件名 + 元数据</option>
+            <option value="filename">只读文件名</option>
+            <option value="metadata">只读当前元数据</option>
+          </select>
+        </label>
+        <button
+          type="button"
+          className="primary"
+          onClick={() => onAiAutofillCurrentMetadata(aiInputMode)}
+          disabled={metadataAiBusy || !selectedPath || !form}
+        >
+          {metadataAiBusy ? 'AI 补全中' : 'AI 自动补全'}
+        </button>
+        <button type="button" onClick={onGenerateBiography} disabled={metadataAiBusy || !selectedPath || !form}>
+          AI 自动小传
+        </button>
       </div>
 
       <div className="meta-summary-grid">

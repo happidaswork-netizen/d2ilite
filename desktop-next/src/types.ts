@@ -33,6 +33,19 @@ export interface ScraperProgressRow {
   image_path: string
 }
 
+export interface ScraperReviewRow {
+  idx: string
+  detail_url: string
+  name: string
+  reason: string
+  missing_fields: string[]
+  scraped_at: string
+  image_path: string
+  detail: string
+  image: string
+  meta: string
+}
+
 export interface ScraperTaskDetail {
   root: string
   task: string
@@ -52,6 +65,7 @@ export interface ScraperTaskDetail {
   metadata_rows: number
   review_rows: number
   failure_rows: number
+  review_queue: ScraperReviewRow[]
   pending_rows: ScraperProgressRow[]
   done_rows: ScraperProgressRow[]
   log_tail: string
@@ -116,6 +130,12 @@ export interface ScraperActionResult {
   workspace: ScraperWorkspaceSnapshot
 }
 
+export interface ScraperReviewClearResult {
+  message: string
+  removed: number
+  workspace: ScraperWorkspaceSnapshot
+}
+
 export interface ScraperStartResult {
   message: string
   created_root: string
@@ -161,6 +181,7 @@ export interface MetadataItem {
   other_xmp?: Record<string, unknown>
   other_exif?: Record<string, unknown>
   other_iptc?: Record<string, unknown>
+  metadata_read_error?: string
   status?: string
   matched_row?: Record<string, unknown> | null
 }
@@ -181,12 +202,112 @@ export interface SavePayload {
   role_aliases?: RoleAliasPayload[]
 }
 
+export interface NameBarOptions {
+  name: string
+  output_dir?: string
+  output_format?: string
+  output_name?: 'suffix' | 'label'
+  open_after_generate?: boolean
+  reveal_after_generate?: boolean
+}
+
+export interface LlmSettings {
+  enabled_default: boolean
+  api_base: string
+  api_key: string
+  model: string
+  timeout_seconds: number
+  max_retries: number
+  temperature: number
+}
+
+export interface NameBarSettings {
+  output_format: string
+  jpg_quality: number
+  output_name_mode: 'suffix' | 'label'
+  output_dir: string
+  suffix: string
+  bar_height_mode: string
+  bar_height_ratio: number
+  min_bar_height: number
+  align: string
+  bar_color: string
+  text_color: string
+  webp_lossless: boolean
+}
+
+export interface AppSettings {
+  version: number
+  updated_at: string
+  llm: LlmSettings
+  image_actions: {
+    name_bar: NameBarSettings
+    [key: string]: unknown
+  }
+  [key: string]: unknown
+}
+
+export interface AppSettingsResult {
+  settings: AppSettings
+  path: string
+}
+
+export interface NameBarResult {
+  message: string
+  output_path: string
+  reveal_path?: string
+}
+
+export interface RenameImageResult {
+  old_path: string
+  new_path: string
+  filename: string
+}
+
+export type MetadataAutofillInputMode = 'filename' | 'metadata' | 'filename_metadata'
+
+export interface MetadataAutofillOptions {
+  input_mode: MetadataAutofillInputMode
+  form?: Record<string, unknown>
+}
+
+export interface MetadataAutofillResult {
+  result: Record<string, unknown>
+  input_mode: MetadataAutofillInputMode
+}
+
+export interface BiographyResult {
+  result: {
+    biography_short?: string
+    description?: string
+  }
+}
+
+export interface PathInfo {
+  path: string
+  exists: boolean
+  is_file: boolean
+  is_dir: boolean
+}
+
 export interface DesktopBridge {
   provider: BridgeProvider
   ping(): Promise<BridgeHealth>
+  pickImage(initialFolder?: string): Promise<string>
+  pickFolder(initialFolder?: string): Promise<string>
+  getLaunchPath(): Promise<PathInfo>
+  getPathInfo(path: string): Promise<PathInfo>
   listImages(folder: string, limit?: number): Promise<string[]>
   readMetadata(path: string): Promise<MetadataItem>
   saveMetadata(path: string, payload: SavePayload): Promise<void>
+  addNameBar(path: string, options: NameBarOptions): Promise<NameBarResult>
+  renameImage(path: string, newName: string): Promise<RenameImageResult>
+  autofillMetadata(path: string, options: MetadataAutofillOptions): Promise<MetadataAutofillResult>
+  generateBiography(path: string, options: { form?: Record<string, unknown> }): Promise<BiographyResult>
+  readAppSettings(): Promise<AppSettingsResult>
+  saveAppSettings(settings: AppSettings): Promise<AppSettingsResult>
+  openPath(path: string): Promise<void>
+  revealPath(path: string): Promise<void>
   getDefaultScraperBaseRoot(): Promise<string>
   readScraperWorkspace(
     baseRoot: string,
@@ -206,5 +327,6 @@ export interface DesktopBridge {
       control?: Partial<ScraperControlOptions>
     },
   ): Promise<ScraperActionResult>
+  clearScraperReviewItem(outputRoot: string, detailUrl: string, options?: { baseRoot?: string }): Promise<ScraperReviewClearResult>
   getPreviewUrl(path: string): string
 }

@@ -1,15 +1,25 @@
 import { convertFileSrc, invoke, isTauri } from '@tauri-apps/api/core'
 
 import type {
+  AppSettings,
+  AppSettingsResult,
+  BiographyResult,
   BridgeHealth,
   DesktopBridge,
+  MetadataAutofillOptions,
+  MetadataAutofillResult,
   MetadataItem,
+  NameBarOptions,
+  NameBarResult,
+  PathInfo,
+  RenameImageResult,
   SavePayload,
   ScraperActionName,
   ScraperActionResult,
   ScraperControlOptions,
   ScraperLaunchForm,
   ScraperLaunchState,
+  ScraperReviewClearResult,
   ScraperStartResult,
   ScraperTaskDetail,
   ScraperTaskSummary,
@@ -58,6 +68,80 @@ function splitFileName(path: string): string {
   const normalized = String(path || '').replace(/\//g, '\\')
   const idx = normalized.lastIndexOf('\\')
   return idx >= 0 ? normalized.slice(idx + 1) : normalized
+}
+
+function normalizeWindowsPathText(value: string): string {
+  let text = String(value || '').trim().replace(/^"+|"+$/g, '')
+  if (!text) {
+    return ''
+  }
+  text = text.replace(/\//g, '\\')
+  while (text.startsWith('\\\\\\') && !text.startsWith('\\\\?\\')) {
+    text = text.replace(/^\\\\\\/, '\\\\')
+  }
+  const lower = text.toLowerCase()
+  if (lower.startsWith('\\\\?\\unc\\')) {
+    return `\\\\${text.slice(8)}`
+  }
+  if (lower.startsWith('\\?\\unc\\')) {
+    return `\\\\${text.slice(7)}`
+  }
+  if (lower.startsWith('?\\unc\\')) {
+    return `\\\\${text.slice(6)}`
+  }
+  if (lower.startsWith('\\\\?\\')) {
+    return text.slice(4)
+  }
+  if (lower.startsWith('\\?\\')) {
+    return text.slice(3)
+  }
+  if (lower.startsWith('?\\')) {
+    return text.slice(2)
+  }
+  return text
+}
+
+const MOCK_APP_SETTINGS: AppSettings = {
+  version: 1,
+  updated_at: '',
+  llm: {
+    enabled_default: false,
+    api_base: '',
+    api_key: '',
+    model: '',
+    timeout_seconds: 45,
+    max_retries: 2,
+    temperature: 0.1,
+  },
+  image_actions: {
+    name_bar: {
+      output_format: 'original',
+      jpg_quality: 100,
+      output_name_mode: 'suffix',
+      output_dir: '',
+      suffix: '_named',
+      bar_height_mode: 'auto',
+      bar_height_ratio: 0.14,
+      min_bar_height: 48,
+      align: 'center',
+      bar_color: 'white',
+      text_color: 'black',
+      webp_lossless: true,
+    },
+  },
+}
+
+function joinSiblingPath(sourcePath: string, nextFileName: string): string {
+  const normalized = String(sourcePath || '').replace(/\//g, '\\')
+  const idx = normalized.lastIndexOf('\\')
+  if (idx < 0) return nextFileName
+  return `${normalized.slice(0, idx + 1)}${nextFileName}`
+}
+
+function extensionOf(path: string): string {
+  const name = splitFileName(path)
+  const idx = name.lastIndexOf('.')
+  return idx >= 0 ? name.slice(idx) : ''
 }
 
 function nowId(): string {
@@ -152,6 +236,22 @@ function buildMockScraperDetail(task: ScraperTaskSummary): ScraperTaskDetail {
     metadata_rows: task.metadata_ok,
     review_rows: task.review,
     failure_rows: task.failures,
+    review_queue: task.review
+      ? [
+          {
+            idx: '1',
+            detail_url: 'https://example.com/detail/review',
+            name: '待复核人物',
+            reason: 'audit_missing_metadata_fields:gender,birth_date',
+            missing_fields: ['gender', 'birth_date'],
+            scraped_at: task.updated_at,
+            image_path: `${task.root}\\named_images\\review.jpg`,
+            detail: '√',
+            image: '√',
+            meta: '×',
+          },
+        ]
+      : [],
     pending_rows: pendingRows,
     done_rows: doneRows,
     log_tail: `[${task.updated_at}] ${task.task}\n已载入示例抓取日志。\n`,
@@ -304,6 +404,30 @@ function createMockBridge(): DesktopBridge {
     async ping(): Promise<BridgeHealth> {
       return { provider: 'mock', version: 'ui-phase1' }
     },
+    async pickImage(initialFolder?: string): Promise<string> {
+      const root = String(initialFolder || '').trim() || 'C:\\mock\\public_archive'
+      return `${root}\\样例人物.jpg`
+    },
+    async pickFolder(initialFolder?: string): Promise<string> {
+      return String(initialFolder || '').trim() || 'C:\\mock\\public_archive'
+    },
+    async getLaunchPath(): Promise<PathInfo> {
+      return {
+        path: '',
+        exists: false,
+        is_file: false,
+        is_dir: false,
+      }
+    },
+    async getPathInfo(path: string): Promise<PathInfo> {
+      const text = normalizeWindowsPathText(path)
+      return {
+        path: text,
+        exists: Boolean(text),
+        is_file: /\.[a-z0-9]+$/i.test(text),
+        is_dir: Boolean(text) && !/\.[a-z0-9]+$/i.test(text),
+      }
+    },
     async listImages(folder: string, limit = 0): Promise<string[]> {
       const root = String(folder || '').trim()
       if (!root) return []
@@ -343,6 +467,64 @@ function createMockBridge(): DesktopBridge {
       }
       store.set(key, next)
     },
+    async addNameBar(path: string, options: NameBarOptions): Promise<NameBarResult> {
+      const name = String(options?.name || '').trim()
+      if (!path) throw new Error('path is required')
+      if (!name) throw new Error('name is required')
+      return {
+        message: `mock name bar: ${name}`,
+        output_path: joinSiblingPath(path, `${name}.png`),
+      }
+    },
+    async renameImage(path: string, newName: string): Promise<RenameImageResult> {
+      const name = String(newName || '').trim()
+      if (!path) throw new Error('path is required')
+      if (!name) throw new Error('new name is required')
+      const oldRecord = store.get(path) || buildMockRecord(path)
+      const newPath = joinSiblingPath(path, `${name}${extensionOf(path)}`)
+      store.delete(path)
+      store.set(newPath, {
+        ...oldRecord,
+        filepath: newPath,
+        filename: splitFileName(newPath),
+      })
+      return { old_path: path, new_path: newPath, filename: splitFileName(newPath) }
+    },
+    async autofillMetadata(path: string, options: MetadataAutofillOptions): Promise<MetadataAutofillResult> {
+      if (!path) throw new Error('path is required')
+      const inputMode = options?.input_mode || 'filename_metadata'
+      return {
+        input_mode: inputMode,
+        result: {
+          title: inputMode === 'filename' ? splitFileName(path).replace(/\.[^.]+$/, '') : '',
+          keywords: ['样例'],
+          extra_fields: {
+            ai_mock: true,
+          },
+        },
+      }
+    },
+    async generateBiography(path: string): Promise<BiographyResult> {
+      if (!path) throw new Error('path is required')
+      return {
+        result: {
+          biography_short: '样例小传',
+          description: '样例小传',
+        },
+      }
+    },
+    async readAppSettings(): Promise<AppSettingsResult> {
+      return { settings: clone(MOCK_APP_SETTINGS), path: 'mock-settings.json' }
+    },
+    async saveAppSettings(settings: AppSettings): Promise<AppSettingsResult> {
+      return { settings: clone(settings), path: 'mock-settings.json' }
+    },
+    async openPath(path: string): Promise<void> {
+      if (!path) throw new Error('path is required')
+    },
+    async revealPath(path: string): Promise<void> {
+      if (!path) throw new Error('path is required')
+    },
     async getDefaultScraperBaseRoot(): Promise<string> {
       return 'C:\\mock\\public_archive'
     },
@@ -373,6 +555,13 @@ function createMockBridge(): DesktopBridge {
         workspace: buildMockScraperWorkspace('C:\\mock\\public_archive', outputRoot),
       }
     },
+    async clearScraperReviewItem(outputRoot: string): Promise<ScraperReviewClearResult> {
+      return {
+        message: 'mock review cleared',
+        removed: 1,
+        workspace: buildMockScraperWorkspace('C:\\mock\\public_archive', outputRoot),
+      }
+    },
     getPreviewUrl(): string {
       return ''
     },
@@ -386,6 +575,24 @@ function createTauriBridge(invokeImpl: TauriInvoke): DesktopBridge {
     async ping(): Promise<BridgeHealth> {
       return invokeJson<BridgeHealth>(invokeImpl, 'bridge_ping')
     },
+    async pickImage(initialFolder?: string): Promise<string> {
+      const data = await invokeJson<{ path: string; canceled?: boolean }>(invokeImpl, 'bridge_pick_image', {
+        initialFolder: initialFolder || '',
+      })
+      return String(data.path || '')
+    },
+    async pickFolder(initialFolder?: string): Promise<string> {
+      const data = await invokeJson<{ path: string; canceled?: boolean }>(invokeImpl, 'bridge_pick_folder', {
+        initialFolder: initialFolder || '',
+      })
+      return String(data.path || '')
+    },
+    async getLaunchPath(): Promise<PathInfo> {
+      return invokeJson<PathInfo>(invokeImpl, 'bridge_launch_path')
+    },
+    async getPathInfo(path: string): Promise<PathInfo> {
+      return invokeJson<PathInfo>(invokeImpl, 'bridge_path_info', { path })
+    },
     async listImages(folder: string, limit = 0): Promise<string[]> {
       const data = await invokeJson<{ items: string[] }>(invokeImpl, 'bridge_list_images', { folder, limit })
       return Array.isArray(data.items) ? data.items : []
@@ -396,6 +603,30 @@ function createTauriBridge(invokeImpl: TauriInvoke): DesktopBridge {
     },
     async saveMetadata(path: string, payload: SavePayload): Promise<void> {
       await invokeJson<{ saved: boolean }>(invokeImpl, 'bridge_save_metadata', { path, payload })
+    },
+    async addNameBar(path: string, options: NameBarOptions): Promise<NameBarResult> {
+      return invokeJson<NameBarResult>(invokeImpl, 'bridge_add_name_bar', { path, options })
+    },
+    async renameImage(path: string, newName: string): Promise<RenameImageResult> {
+      return invokeJson<RenameImageResult>(invokeImpl, 'bridge_rename_image', { path, newName })
+    },
+    async autofillMetadata(path: string, options: MetadataAutofillOptions): Promise<MetadataAutofillResult> {
+      return invokeJson<MetadataAutofillResult>(invokeImpl, 'bridge_autofill_metadata', { path, options })
+    },
+    async generateBiography(path: string, options: { form?: Record<string, unknown> }): Promise<BiographyResult> {
+      return invokeJson<BiographyResult>(invokeImpl, 'bridge_generate_biography', { path, options })
+    },
+    async readAppSettings(): Promise<AppSettingsResult> {
+      return invokeJson<AppSettingsResult>(invokeImpl, 'bridge_read_app_settings')
+    },
+    async saveAppSettings(settings: AppSettings): Promise<AppSettingsResult> {
+      return invokeJson<AppSettingsResult>(invokeImpl, 'bridge_save_app_settings', { settings })
+    },
+    async openPath(path: string): Promise<void> {
+      await invokeJson<{ opened: boolean }>(invokeImpl, 'bridge_open_path', { path })
+    },
+    async revealPath(path: string): Promise<void> {
+      await invokeJson<{ revealed: boolean }>(invokeImpl, 'bridge_reveal_path', { path })
     },
     async getDefaultScraperBaseRoot(): Promise<string> {
       const data = await invokeJson<{ base_root: string }>(invokeImpl, 'bridge_get_default_scraper_base_root')
@@ -443,9 +674,20 @@ function createTauriBridge(invokeImpl: TauriInvoke): DesktopBridge {
         control: options?.control || {},
       })
     },
+    async clearScraperReviewItem(
+      outputRoot: string,
+      detailUrl: string,
+      options?: { baseRoot?: string },
+    ): Promise<ScraperReviewClearResult> {
+      return invokeJson<ScraperReviewClearResult>(invokeImpl, 'bridge_clear_scraper_review_item', {
+        outputRoot,
+        detailUrl,
+        baseRoot: options?.baseRoot || '',
+      })
+    },
     getPreviewUrl(path: string): string {
       if (typeof convertFileSrcImpl === 'function') {
-        return convertFileSrcImpl(String(path || ''))
+        return convertFileSrcImpl(normalizeWindowsPathText(path))
       }
       return ''
     },
@@ -457,6 +699,24 @@ function createHttpBridge(): DesktopBridge {
     provider: 'vite-native',
     async ping(): Promise<BridgeHealth> {
       return fetchJson<BridgeHealth>('/api/bridge/ping')
+    },
+    async pickImage(initialFolder?: string): Promise<string> {
+      return String(initialFolder || '').trim()
+    },
+    async pickFolder(initialFolder?: string): Promise<string> {
+      return String(initialFolder || '').trim()
+    },
+    async getLaunchPath(): Promise<PathInfo> {
+      return {
+        path: '',
+        exists: false,
+        is_file: false,
+        is_dir: false,
+      }
+    },
+    async getPathInfo(path: string): Promise<PathInfo> {
+      const params = new URLSearchParams({ path: normalizeWindowsPathText(path) })
+      return fetchJson<PathInfo>(`/api/bridge/path-info?${params.toString()}`)
     },
     async listImages(folder: string, limit = 0): Promise<string[]> {
       const params = new URLSearchParams({
@@ -481,6 +741,72 @@ function createHttpBridge(): DesktopBridge {
           path,
           payload,
         }),
+      })
+    },
+    async addNameBar(path: string, options: NameBarOptions): Promise<NameBarResult> {
+      return fetchJson<NameBarResult>('/api/bridge/name-bar', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ path, options }),
+      })
+    },
+    async renameImage(path: string, newName: string): Promise<RenameImageResult> {
+      return fetchJson<RenameImageResult>('/api/bridge/rename', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ path, newName }),
+      })
+    },
+    async autofillMetadata(path: string, options: MetadataAutofillOptions): Promise<MetadataAutofillResult> {
+      return fetchJson<MetadataAutofillResult>('/api/bridge/autofill-metadata', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ path, options }),
+      })
+    },
+    async generateBiography(path: string, options: { form?: Record<string, unknown> }): Promise<BiographyResult> {
+      return fetchJson<BiographyResult>('/api/bridge/generate-biography', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ path, options }),
+      })
+    },
+    async readAppSettings(): Promise<AppSettingsResult> {
+      return fetchJson<AppSettingsResult>('/api/bridge/settings')
+    },
+    async saveAppSettings(settings: AppSettings): Promise<AppSettingsResult> {
+      return fetchJson<AppSettingsResult>('/api/bridge/settings', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ settings }),
+      })
+    },
+    async openPath(path: string): Promise<void> {
+      await fetchJson<{ opened: boolean }>('/api/bridge/open-path', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ path }),
+      })
+    },
+    async revealPath(path: string): Promise<void> {
+      await fetchJson<{ revealed: boolean }>('/api/bridge/reveal-path', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ path }),
       })
     },
     async getDefaultScraperBaseRoot(): Promise<string> {
@@ -543,8 +869,25 @@ function createHttpBridge(): DesktopBridge {
         }),
       })
     },
+    async clearScraperReviewItem(
+      outputRoot: string,
+      detailUrl: string,
+      options?: { baseRoot?: string },
+    ): Promise<ScraperReviewClearResult> {
+      return fetchJson<ScraperReviewClearResult>('/api/bridge/scraper/review-clear', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          outputRoot,
+          detailUrl,
+          baseRoot: options?.baseRoot || '',
+        }),
+      })
+    },
     getPreviewUrl(path: string): string {
-      const params = new URLSearchParams({ path: String(path || '') })
+      const params = new URLSearchParams({ path: normalizeWindowsPathText(path) })
       return `/api/bridge/preview?${params.toString()}`
     },
   }

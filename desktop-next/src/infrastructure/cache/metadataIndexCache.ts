@@ -118,6 +118,7 @@ export function createMetadataIndexCache() {
   }
 
   return {
+    countIndexed,
     forgetItem,
     forgetItems,
     getItem,

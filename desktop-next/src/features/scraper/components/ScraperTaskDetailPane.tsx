@@ -1,4 +1,4 @@
-import type { ScraperControlOptions, ScraperTaskDetail, ScraperProgressRow } from '../../../types'
+import type { ScraperControlOptions, ScraperTaskDetail, ScraperProgressRow, ScraperReviewRow } from '../../../types'
 
 type ScraperTaskDetailPaneProps = {
   actionBusy: boolean
@@ -8,6 +8,9 @@ type ScraperTaskDetailPaneProps = {
   onContinueTask: () => void
   onRetryTask: () => void
   onRewriteMetadataTask: () => void
+  onOpenReviewImage: (path: string) => void
+  onRevealReviewImage: (path: string) => void
+  onClearReviewItem: (detailUrl: string) => void
   onSetMode: (mode: string) => void
   onSetAutoFallback: (value: boolean) => void
   onSetDisablePageImages: (value: boolean) => void
@@ -54,13 +57,89 @@ function renderProgressRows(rows: ScraperProgressRow[]) {
   )
 }
 
+function renderReviewRows(
+  rows: ScraperReviewRow[],
+  props: {
+    actionBusy: boolean
+    onOpenReviewImage: (path: string) => void
+    onRevealReviewImage: (path: string) => void
+    onClearReviewItem: (detailUrl: string) => void
+  },
+) {
+  if (rows.length === 0) {
+    return <p className="batch-report-empty">当前没有待复核条目。</p>
+  }
+
+  return (
+    <div className="scraper-table-wrap">
+      <table className="scraper-table scraper-review-table">
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>人物</th>
+            <th>状态</th>
+            <th>原因</th>
+            <th>操作</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row) => (
+            <tr key={`${row.idx}-${row.detail_url || row.name}`}>
+              <td>{row.idx}</td>
+              <td>
+                <strong>{row.name || '-'}</strong>
+                {row.detail_url ? <span className="scraper-row-sub">{row.detail_url}</span> : null}
+                {row.image_path ? <span className="scraper-row-sub">{row.image_path}</span> : null}
+              </td>
+              <td>
+                <span>{`详情 ${row.detail || '-'} / 图片 ${row.image || '-'} / 元数据 ${row.meta || '-'}`}</span>
+              </td>
+              <td>
+                <span>{row.reason || '-'}</span>
+                {row.missing_fields.length > 0 ? (
+                  <span className="scraper-row-sub">{row.missing_fields.join(', ')}</span>
+                ) : null}
+              </td>
+              <td>
+                <div className="scraper-row-actions">
+                  <button
+                    onClick={() => props.onOpenReviewImage(row.image_path)}
+                    disabled={props.actionBusy || !row.image_path}
+                  >
+                    打开
+                  </button>
+                  <button
+                    onClick={() => props.onRevealReviewImage(row.image_path)}
+                    disabled={props.actionBusy || !row.image_path}
+                  >
+                    定位
+                  </button>
+                  <button
+                    onClick={() => props.onClearReviewItem(row.detail_url)}
+                    disabled={props.actionBusy || !row.detail_url}
+                  >
+                    移出
+                  </button>
+                </div>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
 export function ScraperTaskDetailPane(props: ScraperTaskDetailPaneProps) {
   const {
     actionBusy,
     controlOptions,
     detail,
     onContinueTask,
+    onClearReviewItem,
+    onOpenReviewImage,
     onPauseTask,
+    onRevealReviewImage,
     onRetryTask,
     onRewriteMetadataTask,
     onSetAutoFallback,
@@ -212,6 +291,19 @@ export function ScraperTaskDetailPane(props: ScraperTaskDetailPaneProps) {
           </div>
 
           <div className="scraper-columns">
+            <div className="scraper-detail-card">
+              <div className="scraper-block-head">
+                <p className="scraper-detail-title">待复核队列</p>
+                <span>{detail.review_queue.length}</span>
+              </div>
+              {renderReviewRows(detail.review_queue, {
+                actionBusy,
+                onClearReviewItem,
+                onOpenReviewImage,
+                onRevealReviewImage,
+              })}
+            </div>
+
             <div className="scraper-detail-card">
               <div className="scraper-block-head">
                 <p className="scraper-detail-title">待处理 / 失败</p>

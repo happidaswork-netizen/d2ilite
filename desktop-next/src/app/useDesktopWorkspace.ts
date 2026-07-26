@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
-import type { MetadataItem } from '../types'
+import type { AppSettings, MetadataAutofillInputMode, MetadataItem, NameBarOptions } from '../types'
 import {
   applyBatchRoleOperation,
   createRoleAliasFormItem,
@@ -29,7 +29,6 @@ import { createMetadataIndexCache } from '../infrastructure/cache/metadataIndexC
 import {
   createDesktopBridge,
   reportDesktopFrontendStatus,
-  runDesktopSmokeRoundtrip,
 } from '../infrastructure/desktopBridge'
 import { loadPreferredFolder, persistPreferredFolder } from '../infrastructure/runtime/folderPreference'
 import { getFileName } from '../shared/path'
@@ -43,12 +42,94 @@ const EMPTY_BATCH_PROGRESS: BatchExecutionProgress = {
   failed: 0,
 }
 
-export function useDesktopWorkspace() {
+function folderOfPath(value: string): string {
+  return String(value || '').replace(/[\\/][^\\/]*$/, '')
+}
+
+function samePath(left: string, right: string): boolean {
+  return normalizeWindowsPath(left).toLowerCase() === normalizeWindowsPath(right).toLowerCase()
+}
+
+function normalizeWindowsPath(value: string): string {
+  let text = String(value || '').trim().replace(/^"+|"+$/g, '')
+  if (!text) {
+    return ''
+  }
+  text = text.replace(/\//g, '\\')
+  while (text.startsWith('\\\\\\') && !text.startsWith('\\\\?\\')) {
+    text = text.replace(/^\\\\\\/, '\\\\')
+  }
+  const lower = text.toLowerCase()
+  if (lower.startsWith('\\\\?\\unc\\')) {
+    return `\\\\${text.slice(8)}`
+  }
+  if (lower.startsWith('\\?\\unc\\')) {
+    return `\\\\${text.slice(7)}`
+  }
+  if (lower.startsWith('?\\unc\\')) {
+    return `\\\\${text.slice(6)}`
+  }
+  if (lower.startsWith('\\\\?\\')) {
+    return text.slice(4)
+  }
+  if (lower.startsWith('\\?\\')) {
+    return text.slice(3)
+  }
+  if (lower.startsWith('?\\')) {
+    return text.slice(2)
+  }
+  return text
+}
+
+type UseDesktopWorkspaceOptions = {
+  initialPath?: string
+}
+
+function sortImagePaths(paths: string[]): string[] {
+  return [...paths].sort((left, right) =>
+    getFileName(left).localeCompare(getFileName(right), undefined, { sensitivity: 'base' }),
+  )
+}
+
+function uniqueNormalizedPaths(paths: string[]): string[] {
+  const seen = new Set<string>()
+  const out: string[] = []
+  for (const path of paths) {
+    const normalized = normalizeWindowsPath(path)
+    if (!normalized) {
+      continue
+    }
+    const key = normalized.toLowerCase()
+    if (seen.has(key)) {
+      continue
+    }
+    seen.add(key)
+    out.push(normalized)
+  }
+  return out
+}
+
+function metadataReadErrorOf(item: MetadataItem): string {
+  return String(
+    item.metadata_read_error ||
+      (item.other_exif && typeof item.other_exif.metadata_read_error === 'string'
+        ? item.other_exif.metadata_read_error
+        : '') ||
+      '',
+  ).trim()
+}
+
+function metadataReadStatusText(item: MetadataItem, successText: string): string {
+  const metadataReadError = metadataReadErrorOf(item)
+  return metadataReadError ? `已打开图片，但元数据读取失败：${metadataReadError}` : successText
+}
+
+export function useDesktopWorkspace(options?: UseDesktopWorkspaceOptions) {
   const bridge = useMemo(() => createDesktopBridge(), [])
   const metadataIndexCacheRef = useRef(createMetadataIndexCache())
-  const startupSmokeRef = useRef<boolean>(false)
   const currentItemRef = useRef<MetadataItem | null>(null)
   const selectedPathRef = useRef<string>('')
+  const externalPathRef = useRef<string>('')
 
   const [folder, setFolder] = useState<string>(loadPreferredFolder)
   const [items, setItems] = useState<string[]>([])
@@ -75,6 +156,12 @@ export function useDesktopWorkspace() {
   const [batchMatchMode, setBatchMatchMode] = useState<BatchMatchMode>('all')
   const [batchProgress, setBatchProgress] = useState<BatchExecutionProgress>(EMPTY_BATCH_PROGRESS)
   const [lastBatchReport, setLastBatchReport] = useState<BatchExecutionReport | null>(null)
+  const [imageActionBusy, setImageActionBusy] = useState<boolean>(false)
+  const [metadataAiBusy, setMetadataAiBusy] = useState<boolean>(false)
+  const [settingsBusy, setSettingsBusy] = useState<boolean>(false)
+  const [settingsOpen, setSettingsOpen] = useState<boolean>(false)
+  const [appSettings, setAppSettings] = useState<AppSettings | null>(null)
+  const [settingsPath, setSettingsPath] = useState<string>('')
 
   const provider = bridge.provider
   const selectedName = selectedPath ? getFileName(selectedPath) : ''
@@ -158,14 +245,6 @@ export function useDesktopWorkspace() {
         } catch {
           // ignore frontend status report failures during startup
         }
-        if (!startupSmokeRef.current) {
-          startupSmokeRef.current = true
-          try {
-            await runDesktopSmokeRoundtrip(bridge, provider, health)
-          } catch {
-            // ignore smoke bootstrap failures during startup
-          }
-        }
       } catch (error) {
         if (disposed) return
         setBridgeVersion('不可用')
@@ -188,7 +267,6 @@ export function useDesktopWorkspace() {
   }, [bridge, provider])
 
   useEffect(() => {
-    let disposed = false
     const cache = metadataIndexCacheRef.current
     const currentPath = selectedPathRef.current
 
@@ -196,56 +274,66 @@ export function useDesktopWorkspace() {
       cache.rememberItem(currentItemRef.current)
     }
 
-    const applySnapshot = (): void => {
-      if (disposed) {
-        return
-      }
-      setRoleSummaryByPath(cache.getSummarySnapshot(items))
-    }
+    setRoleSummaryByPath(cache.getSummarySnapshot(items))
+    setIndexBusy(false)
+  }, [items])
 
-    applySnapshot()
-
-    if (items.length === 0) {
-      setIndexBusy(false)
-      return () => {
-        disposed = true
-      }
-    }
-
-    const run = async (): Promise<void> => {
-      await cache.hydrateRoleSummaries(items, (path) => bridge.readMetadata(path), {
-        flushEvery: 12,
-        onUpdate: ({ indexedCount, totalCount }) => {
-          if (disposed) {
-            return
-          }
-          applySnapshot()
-          setIndexBusy(indexedCount < totalCount)
-        },
-      })
-      if (!disposed) {
-        applySnapshot()
-        setIndexBusy(false)
-      }
-    }
-
-    void run().catch(() => {
-      if (!disposed) {
-        setIndexBusy(false)
-      }
-    })
-
-    return () => {
-      disposed = true
-    }
-  }, [bridge, items])
-
-  const rememberMetadataItem = (item: MetadataItem): void => {
+  const rememberMetadataItem = useCallback((item: MetadataItem): void => {
     const summary = metadataIndexCacheRef.current.rememberItem(item)
     if (item.filepath) {
       setRoleSummaryByPath((prev) => ({ ...prev, [item.filepath]: summary }))
     }
-  }
+  }, [])
+
+  useEffect(() => {
+    if (!selectedPath || items.length <= 1) {
+      return undefined
+    }
+
+    const currentIndex = items.findIndex((path) => samePath(path, selectedPath))
+    if (currentIndex < 0) {
+      return undefined
+    }
+
+    const neighborPaths = [items[currentIndex - 1], items[currentIndex + 1]].filter(
+      (path): path is string => Boolean(path),
+    )
+    if (neighborPaths.length === 0) {
+      return undefined
+    }
+
+    let disposed = false
+    const previewImages: HTMLImageElement[] = []
+    for (const rawPath of neighborPaths) {
+      const neighborPath = normalizeWindowsPath(rawPath)
+      if (!neighborPath) {
+        continue
+      }
+
+      const previewSrc = bridge.getPreviewUrl(neighborPath)
+      if (previewSrc) {
+        const image = new Image()
+        image.src = previewSrc
+        previewImages.push(image)
+      }
+
+      void metadataIndexCacheRef.current
+        .readMetadata(neighborPath, (targetPath) => bridge.readMetadata(targetPath))
+        .then((item) => {
+          if (!disposed) {
+            rememberMetadataItem(item)
+          }
+        })
+        .catch(() => {
+          // Adjacent image prefetch is an opportunistic speed-up.
+        })
+    }
+
+    return () => {
+      disposed = true
+      previewImages.length = 0
+    }
+  }, [bridge, items, rememberMetadataItem, selectedPath])
 
   const loadMetadata = async (
     path: string,
@@ -254,20 +342,21 @@ export function useDesktopWorkspace() {
       forceRefresh?: boolean
     },
   ): Promise<void> => {
+    const normalizedPath = normalizeWindowsPath(path)
     setBusy(true)
     setStatus(statusText)
     try {
       if (options?.forceRefresh) {
-        metadataIndexCacheRef.current.forgetItem(path)
+        metadataIndexCacheRef.current.forgetItem(normalizedPath)
       }
-      const data = await metadataIndexCacheRef.current.readMetadata(path, (targetPath) => bridge.readMetadata(targetPath))
+      const data = await metadataIndexCacheRef.current.readMetadata(normalizedPath, (targetPath) => bridge.readMetadata(targetPath))
       const nextForm = toForm(data)
       rememberMetadataItem(data)
       setCurrentItem(data)
-      setSelectedPath(path)
+      setSelectedPath(normalizedPath)
       setLoadedForm(nextForm)
       setForm(nextForm)
-      setStatus(`已读取：${getFileName(path)}`)
+      setStatus(metadataReadStatusText(data, `已读取：${getFileName(normalizedPath)}`))
     } catch (error) {
       setStatus(`读取失败：${String(error)}`)
     } finally {
@@ -275,29 +364,94 @@ export function useDesktopWorkspace() {
     }
   }
 
-  const confirmDiscard = (): boolean => {
+  const openImagePath = useCallback(
+    async (
+      path: string,
+      options?: {
+        statusText?: string
+        successText?: string
+        setFolderFromPath?: boolean
+        loadSiblingList?: boolean
+      },
+    ): Promise<void> => {
+      const normalizedPath = normalizeWindowsPath(path)
+      if (!normalizedPath) {
+        setStatus('请输入图片路径')
+        return
+      }
+      const targetFolder = folderOfPath(normalizedPath)
+      if (options?.setFolderFromPath !== false) {
+        if (targetFolder) {
+          setFolder(targetFolder)
+        }
+      }
+      setBusy(true)
+      setStatus(options?.statusText || '正在打开图片...')
+      try {
+        let nextItems: string[] | null = null
+        if (options?.loadSiblingList !== false && targetFolder) {
+          try {
+            const siblings = await bridge.listImages(targetFolder, 500)
+            const normalizedSiblings = uniqueNormalizedPaths(siblings)
+            nextItems = normalizedSiblings.some((item) => samePath(item, normalizedPath))
+              ? normalizedSiblings
+              : sortImagePaths([...normalizedSiblings, normalizedPath])
+          } catch {
+            nextItems = null
+          }
+        }
+        setItems((prev) => {
+          if (nextItems) {
+            return nextItems
+          }
+          return prev.some((item) => samePath(item, normalizedPath)) ? prev : [normalizedPath]
+        })
+        setSelectedPaths([])
+        setRoleSummaryByPath({})
+        metadataIndexCacheRef.current.forgetItem(normalizedPath)
+        const data = await bridge.readMetadata(normalizedPath)
+        const nextForm = toForm(data)
+        rememberMetadataItem(data)
+        setSelectedPath(normalizedPath)
+        setCurrentItem(data)
+        setLoadedForm(nextForm)
+        setForm(nextForm)
+        setStatus(metadataReadStatusText(data, options?.successText || `已打开：${getFileName(normalizedPath)}`))
+      } catch (error) {
+        setStatus(`打开图片失败：${String(error)}；路径：${normalizedPath}`)
+      } finally {
+        setBusy(false)
+      }
+    },
+    [bridge, rememberMetadataItem],
+  )
+
+  const confirmDiscard = useCallback((): boolean => {
     if (!isDirty) {
       return true
     }
     return window.confirm('当前有未保存修改，确定放弃并切换条目吗？')
-  }
+  }, [isDirty])
 
-  const onLoadFolder = async (): Promise<void> => {
-    const targetFolder = folder.trim()
-    if (!targetFolder) {
+  const loadFolderPath = useCallback(async (targetFolder: string, options?: { skipConfirm?: boolean }): Promise<void> => {
+    const normalizedFolder = normalizeWindowsPath(targetFolder)
+    if (!normalizedFolder) {
       setStatus('请输入目录路径')
       return
     }
-    if (!confirmDiscard()) {
+    if (!options?.skipConfirm && !confirmDiscard()) {
       return
     }
 
     setBusy(true)
     setStatus('正在加载目录...')
     try {
-      const list = await bridge.listImages(targetFolder, 500)
+      setFolder(normalizedFolder)
+      const list = uniqueNormalizedPaths(await bridge.listImages(normalizedFolder, 500))
       setItems(list)
       setSelectedPaths([])
+      setRoleSummaryByPath({})
+      setIndexBusy(false)
       if (list.length === 0) {
         setSelectedPath('')
         setCurrentItem(null)
@@ -308,7 +462,7 @@ export function useDesktopWorkspace() {
         return
       }
 
-      const preferred = selectedPath && list.includes(selectedPath) ? selectedPath : list[0]
+      const preferred = selectedPath && list.some((path) => samePath(path, selectedPath)) ? selectedPath : list[0]
       const data = await metadataIndexCacheRef.current.readMetadata(preferred, (path) => bridge.readMetadata(path))
       const nextForm = toForm(data)
       rememberMetadataItem(data)
@@ -316,12 +470,520 @@ export function useDesktopWorkspace() {
       setCurrentItem(data)
       setLoadedForm(nextForm)
       setForm(nextForm)
-      setStatus(`已加载 ${list.length} 项`)
+      setStatus(metadataReadStatusText(data, `已加载 ${list.length} 项`))
     } catch (error) {
       setStatus(`加载失败：${String(error)}`)
     } finally {
       setBusy(false)
     }
+  }, [bridge, confirmDiscard, rememberMetadataItem, selectedPath])
+
+  const onLoadFolder = async (): Promise<void> => {
+    await loadFolderPath(folder)
+  }
+
+  const onPickAndOpenImage = async (): Promise<void> => {
+    if (!confirmDiscard()) {
+      return
+    }
+    setBusy(true)
+    setStatus('请选择图片...')
+    try {
+      const picked = await bridge.pickImage(folder)
+      if (!picked) {
+        setStatus('已取消选择图片')
+        return
+      }
+      setBusy(false)
+      await openImagePath(picked)
+    } catch (error) {
+      setStatus(`打开图片失败：${String(error)}`)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const onPickAndLoadFolder = async (): Promise<void> => {
+    if (!confirmDiscard()) {
+      return
+    }
+    setBusy(true)
+    setStatus('请选择图片目录...')
+    try {
+      const picked = await bridge.pickFolder(folder)
+      if (!picked) {
+        setStatus('已取消选择目录')
+        return
+      }
+      setBusy(false)
+      await loadFolderPath(normalizeWindowsPath(picked), { skipConfirm: true })
+    } catch (error) {
+      setStatus(`选择目录失败：${String(error)}`)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const onPickFolderPath = async (initialFolder?: string): Promise<string> => {
+    setStatus('请选择目录...')
+    const picked = await bridge.pickFolder(initialFolder || folder)
+    const normalizedPicked = normalizeWindowsPath(picked)
+    if (!normalizedPicked) {
+      setStatus('已取消选择目录')
+      return ''
+    }
+    setStatus(`已选择目录：${normalizedPicked}`)
+    return normalizedPicked
+  }
+
+  const onBuildRoleIndex = async (): Promise<void> => {
+    if (items.length === 0) {
+      setStatus('请先加载目录')
+      return
+    }
+
+    const cache = metadataIndexCacheRef.current
+    if (selectedPathRef.current && currentItemRef.current && items.includes(selectedPathRef.current)) {
+      cache.rememberItem(currentItemRef.current)
+    }
+
+    setIndexBusy(true)
+    setStatus('正在建立角色索引...')
+    try {
+      await cache.hydrateRoleSummaries(items, (path) => bridge.readMetadata(path), {
+        flushEvery: 8,
+        onUpdate: ({ indexedCount, totalCount }) => {
+          setRoleSummaryByPath(cache.getSummarySnapshot(items))
+          setStatus(`正在建立角色索引：${indexedCount}/${totalCount}`)
+        },
+      })
+      setRoleSummaryByPath(cache.getSummarySnapshot(items))
+      setStatus(`角色索引完成：${cache.countIndexed(items)}/${items.length}`)
+    } catch (error) {
+      setStatus(`建立角色索引失败：${String(error)}`)
+    } finally {
+      setIndexBusy(false)
+    }
+  }
+
+  const openExternalPath = useCallback(async (path: string): Promise<void> => {
+    const targetPath = normalizeWindowsPath(path)
+    if (!targetPath) {
+      return
+    }
+    if (!confirmDiscard()) {
+      return
+    }
+
+    setBusy(true)
+    setStatus('正在打开外部路径...')
+    try {
+      const info = await bridge.getPathInfo(targetPath)
+      const normalizedInfoPath = normalizeWindowsPath(info.path || targetPath)
+      setBusy(false)
+      if (info.is_dir) {
+        await loadFolderPath(normalizedInfoPath, { skipConfirm: true })
+        return
+      }
+      if (info.is_file) {
+        await openImagePath(normalizedInfoPath, {
+          statusText: '正在打开外部图片...',
+          successText: `已打开：${getFileName(normalizedInfoPath)}`,
+        })
+        return
+      }
+      setStatus(`外部路径不存在或不可读取：${normalizedInfoPath}`)
+    } catch (error) {
+      setStatus(`打开路径失败：${String(error)}；路径：${targetPath}`)
+    } finally {
+      setBusy(false)
+    }
+  }, [bridge, confirmDiscard, loadFolderPath, openImagePath])
+
+  useEffect(() => {
+    const targetPath = normalizeWindowsPath(options?.initialPath || '')
+    if (!targetPath || targetPath === externalPathRef.current) {
+      return
+    }
+    externalPathRef.current = targetPath
+    void openExternalPath(targetPath)
+  }, [openExternalPath, options?.initialPath])
+
+  useEffect(() => {
+    let disposed = false
+    const run = async (): Promise<void> => {
+      try {
+        const info = await bridge.getLaunchPath()
+        if (disposed) return
+        const targetPath = normalizeWindowsPath(info.path || '')
+        if (!targetPath || targetPath === externalPathRef.current) {
+          return
+        }
+        externalPathRef.current = targetPath
+        void openExternalPath(targetPath)
+      } catch {
+        // Launch path is optional; ignore unsupported runtimes.
+      }
+    }
+    void run()
+    return () => {
+      disposed = true
+    }
+  }, [bridge, openExternalPath])
+
+  const replaceImagePath = (oldPath: string, newPath: string): void => {
+    const cache = metadataIndexCacheRef.current
+    cache.forgetItem(oldPath)
+    setItems((prev) => prev.map((path) => (path === oldPath ? newPath : path)))
+    setSelectedPaths((prev) => prev.map((path) => (path === oldPath ? newPath : path)))
+    setRoleSummaryByPath((prev) => {
+      const next = { ...prev }
+      if (oldPath in next) {
+        next[newPath] = next[oldPath]
+        delete next[oldPath]
+      }
+      return next
+    })
+  }
+
+  const insertGeneratedImage = (sourcePath: string, outputPath: string): void => {
+    const target = String(outputPath || '').trim()
+    if (!target) {
+      return
+    }
+    const sourceFolder = folderOfPath(sourcePath).toLowerCase()
+    const outputFolder = folderOfPath(target).toLowerCase()
+    if (!sourceFolder || sourceFolder !== outputFolder) {
+      return
+    }
+    metadataIndexCacheRef.current.forgetItem(target)
+    setItems((prev) => (prev.includes(target) ? prev : sortImagePaths([...prev, target])))
+  }
+
+  const onAddNameBar = async (options: NameBarOptions): Promise<void> => {
+    const target = selectedPathRef.current
+    const label = String(options?.name || '').trim()
+    if (!target || !label) {
+      setStatus('请先选择图片并输入名字')
+      return
+    }
+    setImageActionBusy(true)
+    setStatus('正在加名字...')
+    try {
+      const actionOptions: NameBarOptions = {
+        name: label,
+        output_name: options?.output_name === 'label' ? 'label' : 'suffix',
+      }
+      const outputDir = String(options?.output_dir || '').trim()
+      const outputFormat = String(options?.output_format || '').trim()
+      if (outputDir) {
+        actionOptions.output_dir = outputDir
+      }
+      if (outputFormat) {
+        actionOptions.output_format = outputFormat
+      }
+
+      const result = await bridge.addNameBar(target, actionOptions)
+      const outputPath = String(result.output_path || '').trim()
+      setStatus(`已生成：${outputPath || result.message}`)
+      insertGeneratedImage(target, outputPath)
+      if (outputPath && options?.open_after_generate) {
+        if (!isDirty || window.confirm('当前有未保存元数据修改，打开生成图会放弃这些修改。确定继续吗？')) {
+          await openImagePath(outputPath, {
+            statusText: '已生成，正在打开新图...',
+            successText: `已打开生成图：${getFileName(outputPath)}`,
+            loadSiblingList: true,
+          })
+        }
+      }
+      if (outputPath && options?.reveal_after_generate) {
+        await bridge.revealPath(outputPath)
+        setStatus(`已生成并定位：${getFileName(outputPath)}`)
+      }
+    } catch (error) {
+      setStatus(`加名字失败：${String(error)}`)
+    } finally {
+      setImageActionBusy(false)
+    }
+  }
+
+  const onRenameCurrentImage = async (name: string): Promise<void> => {
+    const target = selectedPathRef.current
+    const nextName = String(name || '').trim()
+    if (!target || !nextName) {
+      setStatus('请先选择图片并输入新文件名')
+      return
+    }
+    if (isDirty && !window.confirm('当前有未保存元数据修改，重命名会重新读取文件并放弃这些修改。确定继续吗？')) {
+      return
+    }
+    setImageActionBusy(true)
+    setStatus('正在重命名当前图片...')
+    try {
+      const result = await bridge.renameImage(target, nextName)
+      replaceImagePath(result.old_path || target, result.new_path)
+      await loadMetadata(result.new_path, '已重命名，正在读取元数据...', { forceRefresh: true })
+      setStatus(`已重命名为：${result.filename}`)
+    } catch (error) {
+      setStatus(`重命名失败：${String(error)}`)
+    } finally {
+      setImageActionBusy(false)
+    }
+  }
+
+  const applyAutofillResult = (payload: Record<string, unknown>): string[] => {
+    const applied: string[] = []
+    setForm((prev) => {
+      if (!prev) {
+        return prev
+      }
+      const next: FormState = { ...prev }
+      const setIfEmpty = (key: keyof FormState, value: unknown): void => {
+        if (key === 'role_aliases') {
+          return
+        }
+        if (String(next[key] || '').trim()) {
+          return
+        }
+        const text = String(value || '').trim()
+        if (!text) {
+          return
+        }
+        next[key] = text as never
+        applied.push(String(key))
+      }
+
+      setIfEmpty('title', payload.title)
+      setIfEmpty('person', payload.person)
+      setIfEmpty('gender', payload.gender)
+      setIfEmpty('position', payload.position)
+      setIfEmpty('city', payload.city)
+      setIfEmpty('source', payload.source)
+      setIfEmpty('image_url', payload.image_url)
+      setIfEmpty('description', payload.description)
+
+      if (!String(next.keywords_text || '').trim() && Array.isArray(payload.keywords)) {
+        const keywords = payload.keywords.map((item) => String(item || '').trim()).filter(Boolean)
+        if (keywords.length > 0) {
+          next.keywords_text = keywords.join(', ')
+          applied.push('keywords')
+        }
+      }
+
+      if (!String(next.original_role_name || '').trim()) {
+        const extraFields = payload.extra_fields
+        const extraName =
+          extraFields && typeof extraFields === 'object'
+            ? String((extraFields as Record<string, unknown>).name || '').trim()
+            : ''
+        const roleName = extraName || String(payload.person || '').trim()
+        if (roleName) {
+          next.original_role_name = roleName
+          applied.push('original_role_name')
+        }
+      }
+
+      return next
+    })
+    return applied
+  }
+
+  const onAiAutofillCurrentMetadata = async (inputMode: MetadataAutofillInputMode): Promise<void> => {
+    const target = selectedPathRef.current
+    if (!target || !form) {
+      setStatus('请先选择图片')
+      return
+    }
+    setMetadataAiBusy(true)
+    setStatus('AI 自动补全中...')
+    try {
+      const result = await bridge.autofillMetadata(target, {
+        input_mode: inputMode,
+        form: {
+          title: form.title,
+          person: form.person,
+          gender: form.gender,
+          position: form.position,
+          city: form.city,
+          source: form.source,
+          image_url: form.image_url,
+          keywords_text: form.keywords_text,
+          description: form.description,
+        },
+      })
+      const applied = applyAutofillResult(result.result || {})
+      setStatus(applied.length > 0 ? `AI 自动补全完成：${applied.join(', ')}` : 'AI 自动补全完成（无可应用字段）')
+    } catch (error) {
+      setStatus(`AI 自动补全失败：${String(error)}`)
+    } finally {
+      setMetadataAiBusy(false)
+    }
+  }
+
+  const buildCurrentFormPayload = (): Record<string, unknown> => {
+    const current = form
+    if (!current) {
+      return {}
+    }
+    return {
+      title: current.title,
+      person: current.person,
+      gender: current.gender,
+      position: current.position,
+      city: current.city,
+      source: current.source,
+      image_url: current.image_url,
+      keywords_text: current.keywords_text,
+      description: current.description,
+      original_role_name: current.original_role_name,
+    }
+  }
+
+  const onGenerateBiography = async (): Promise<void> => {
+    const target = selectedPathRef.current
+    if (!target || !form) {
+      setStatus('请先选择图片')
+      return
+    }
+    setMetadataAiBusy(true)
+    setStatus('AI 小传生成中...')
+    try {
+      const result = await bridge.generateBiography(target, {
+        form: buildCurrentFormPayload(),
+      })
+      const biography = String(result.result.biography_short || result.result.description || '').trim()
+      if (!biography) {
+        setStatus('AI 小传生成完成（无可应用内容）')
+        return
+      }
+      setForm((prev) => {
+        if (!prev) {
+          return prev
+        }
+        const currentDescription = String(prev.description || '').trim()
+        const nextDescription = currentDescription ? `${currentDescription}\n\n小传：${biography}` : biography
+        return {
+          ...prev,
+          description: nextDescription,
+        }
+      })
+      setStatus('AI 小传已写入描述')
+    } catch (error) {
+      setStatus(`AI 小传失败：${String(error)}`)
+    } finally {
+      setMetadataAiBusy(false)
+    }
+  }
+
+  const onReloadAppSettings = async (): Promise<void> => {
+    setSettingsBusy(true)
+    setStatus('正在读取全局设置...')
+    try {
+      const result = await bridge.readAppSettings()
+      setAppSettings(result.settings)
+      setSettingsPath(result.path || '')
+      setStatus('全局设置已读取')
+    } catch (error) {
+      setStatus(`读取全局设置失败：${String(error)}`)
+    } finally {
+      setSettingsBusy(false)
+    }
+  }
+
+  const onOpenSettingsPanel = async (): Promise<void> => {
+    setSettingsOpen(true)
+    if (!appSettings) {
+      await onReloadAppSettings()
+    }
+  }
+
+  const onSaveAppSettings = async (settings: AppSettings): Promise<void> => {
+    setSettingsBusy(true)
+    setStatus('正在保存全局设置...')
+    try {
+      const result = await bridge.saveAppSettings(settings)
+      setAppSettings(result.settings)
+      setSettingsPath(result.path || '')
+      setStatus('全局设置已保存')
+    } catch (error) {
+      setStatus(`保存全局设置失败：${String(error)}`)
+    } finally {
+      setSettingsBusy(false)
+    }
+  }
+
+  const onOpenCurrentFile = async (): Promise<void> => {
+    const target = selectedPathRef.current
+    if (!target) {
+      setStatus('请先选择图片')
+      return
+    }
+    try {
+      await bridge.openPath(target)
+      setStatus(`已打开：${getFileName(target)}`)
+    } catch (error) {
+      setStatus(`打开文件失败：${String(error)}`)
+    }
+  }
+
+  const onRevealCurrentFile = async (): Promise<void> => {
+    const target = selectedPathRef.current
+    if (!target) {
+      setStatus('请先选择图片')
+      return
+    }
+    try {
+      await bridge.revealPath(target)
+      setStatus(`已定位：${getFileName(target)}`)
+    } catch (error) {
+      setStatus(`定位文件失败：${String(error)}`)
+    }
+  }
+
+  const onGotoOffset = async (offset: number): Promise<void> => {
+    if (!selectedPath) {
+      return
+    }
+    if (!confirmDiscard()) {
+      return
+    }
+    let navigableItems = items
+    if (navigableItems.length <= 1) {
+      const targetFolder = folderOfPath(selectedPath)
+      if (targetFolder) {
+        try {
+          const rescanned = uniqueNormalizedPaths(await bridge.listImages(targetFolder, 500))
+          navigableItems = rescanned.some((path) => samePath(path, selectedPath))
+            ? rescanned
+            : sortImagePaths([...rescanned, selectedPath])
+          setItems(navigableItems)
+          setFolder(targetFolder)
+          setStatus(`已刷新目录：${navigableItems.length} 项`)
+        } catch (error) {
+          setStatus(`刷新当前目录失败：${String(error)}`)
+          return
+        }
+      }
+    }
+    const currentIndex = navigableItems.findIndex((path) => samePath(path, selectedPath))
+    if (currentIndex < 0) {
+      setStatus('当前图片不在目录列表中')
+      return
+    }
+    const nextIndex = currentIndex + offset
+    if (nextIndex < 0 || nextIndex >= navigableItems.length) {
+      setStatus(offset < 0 ? '已经是第一张' : '已经是最后一张')
+      return
+    }
+    await loadMetadata(navigableItems[nextIndex], '读取元数据...')
+  }
+
+  const onGotoPrev = async (): Promise<void> => {
+    await onGotoOffset(-1)
+  }
+
+  const onGotoNext = async (): Promise<void> => {
+    await onGotoOffset(1)
   }
 
   const onOpenItem = async (path: string): Promise<void> => {
@@ -533,6 +1195,7 @@ export function useDesktopWorkspace() {
   return {
     activeMetaTab,
     activeTabPayload,
+    appSettings,
     batchAliasMode,
     batchAliasText,
     batchMatchMode,
@@ -541,19 +1204,22 @@ export function useDesktopWorkspace() {
     batchProgress,
     batchScope,
     bridgeVersion,
-    busy,
+    busy: busy || imageActionBusy || metadataAiBusy || settingsBusy,
     currentItem,
     filterText,
     filteredItems,
     folder,
     form,
+    getPreviewUrl: bridge.getPreviewUrl,
     hasBatchOperation,
+    imageActionBusy,
     indexedCount,
     indexBusy,
     isDirty,
     items,
     keywordCount,
     lastBatchReport,
+    metadataAiBusy,
     previewFailed,
     previewUrl,
     provider,
@@ -563,6 +1229,9 @@ export function useDesktopWorkspace() {
     selectedName,
     selectedPath,
     selectedPaths,
+    settingsBusy,
+    settingsOpen,
+    settingsPath,
     status,
     setActiveMetaTab,
     setBatchAliasMode,
@@ -576,15 +1245,31 @@ export function useDesktopWorkspace() {
     setPreviewFailed,
     setRoleFilterAlias,
     setRoleFilterOriginal,
+    setSettingsOpen,
     onApplyBatchRoleChanges,
+    onAddNameBar,
+    onAiAutofillCurrentMetadata,
     onFieldChange: updateField,
+    onGenerateBiography,
+    onGotoNext,
+    onGotoPrev,
+    onPickAndOpenImage,
+    onPickAndLoadFolder,
+    onPickFolderPath,
     onLoadFolder,
+    onBuildRoleIndex,
     onOpenItem,
+    onOpenCurrentFile,
     onReloadCurrent,
+    onReloadAppSettings,
+    onOpenSettingsPanel,
+    onRevealCurrentFile,
     onRoleAliasAdd: addRoleAlias,
     onRoleAliasChange: updateRoleAlias,
     onRoleAliasRemove: removeRoleAlias,
     onSave,
+    onSaveAppSettings,
+    onRenameCurrentImage,
     onSelectFiltered: selectFiltered,
     onClearSelection: clearSelection,
     onToggleSelection: toggleSelection,

@@ -253,6 +253,15 @@ async function readJsonlRows(filePath: string, maxRows = 0): Promise<JsonRecord[
   }
 }
 
+async function writeJsonlRows(filePath: string, rows: JsonRecord[]): Promise<void> {
+  await mkdir(path.dirname(filePath), { recursive: true })
+  const body = rows
+    .filter((row) => row && typeof row === 'object' && !Array.isArray(row))
+    .map((row) => JSON.stringify(row))
+    .join('\n')
+  await writeFile(filePath, body ? `${body}\n` : '', 'utf-8')
+}
+
 async function countJsonlRows(filePath: string): Promise<number> {
   const target = String(filePath || '').trim()
   if (!target || !existsSync(target)) {
@@ -1824,6 +1833,47 @@ async function collectScraperProgressRows(root: string, maxRows = 3000): Promise
   return output
 }
 
+function reviewRowDetailUrl(row: JsonRecord): string {
+  const detailUrl = String(row.detail_url || '').trim()
+  if (detailUrl) {
+    return detailUrl
+  }
+  const record = asRecord(row.record)
+  return String(record?.detail_url || '').trim()
+}
+
+async function collectScraperReviewRows(root: string, progressRows: JsonRecord[], limit = 120): Promise<JsonRecord[]> {
+  const reviewRows = await readJsonlRows(path.join(root, 'raw', 'review_queue.jsonl'), Math.max(1, Math.trunc(limit || 120)))
+  const progressByDetail = new Map<string, JsonRecord>()
+  for (const row of progressRows) {
+    const detailUrl = String(row.detail_url || '').trim()
+    if (detailUrl) {
+      progressByDetail.set(detailUrl, row)
+    }
+  }
+
+  return reviewRows.map((row, index) => {
+    const record = asRecord(row.record) || {}
+    const detailUrl = reviewRowDetailUrl(row)
+    const progress = progressByDetail.get(detailUrl) || {}
+    const missingFields = Array.isArray(row.missing_fields)
+      ? row.missing_fields.map((item) => String(item || '').trim()).filter(Boolean)
+      : []
+    return {
+      idx: String(index + 1),
+      detail_url: detailUrl,
+      name: String(row.name || record.name || progress.name || '').trim(),
+      reason: String(row.reason || progress.reason || '').trim(),
+      missing_fields: missingFields,
+      scraped_at: String(row.scraped_at || record.scraped_at || '').trim(),
+      image_path: String(row.image_path || record.image_path || progress.image_path || '').trim(),
+      detail: String(progress.detail || '').trim(),
+      image: String(progress.image || '').trim(),
+      meta: String(progress.meta || '').trim(),
+    }
+  })
+}
+
 async function derivePublicTaskStatus(root: string, entry: RegistryEntry | null, currentActiveRoot: string): Promise<string> {
   const listRows = await countJsonlRows(path.join(root, 'raw', 'list_records.jsonl'))
   const profileRows = await countJsonlRows(path.join(root, 'raw', 'profiles.jsonl'))
@@ -1993,6 +2043,7 @@ async function buildScraperWorkspacePayload(
   if (selectedRoot) {
     const progressRows = await collectScraperProgressRows(selectedRoot, Math.max(20, Math.trunc(options?.progressLimit || 300)))
     const split = splitScraperProgressRows(progressRows)
+    const reviewQueue = await collectScraperReviewRows(selectedRoot, progressRows, 120)
     const counts = summarizeScraperProgressRows(progressRows)
     const listRows = await countJsonlRows(path.join(selectedRoot, 'raw', 'list_records.jsonl'))
     const profileRows = await countJsonlRows(path.join(selectedRoot, 'raw', 'profiles.jsonl'))
@@ -2027,6 +2078,7 @@ async function buildScraperWorkspacePayload(
       metadata_rows: metadataRows,
       review_rows: Math.max(0, Math.trunc(ensureNumber(selectedTask?.review, 0))),
       failure_rows: Math.max(0, Math.trunc(ensureNumber(selectedTask?.failures, 0))),
+      review_queue: reviewQueue,
       pending_rows: split.pending,
       done_rows: split.done,
       log_tail: logTail,
@@ -2286,6 +2338,39 @@ export async function runNativeScraperAction(
   }
 }
 
+export async function clearNativeScraperReviewItem(
+  outputRoot: string,
+  detailUrl: string,
+  options?: { baseRoot?: string },
+): Promise<JsonRecord> {
+  const root = normalizePublicTaskRoot(outputRoot)
+  const detail = String(detailUrl || '').trim()
+  if (!root) throw new Error('请先选择一个抓取任务。')
+  if (!detail) throw new Error('缺少复核条目的详情链接。')
+
+  const reviewPath = path.join(root, 'raw', 'review_queue.jsonl')
+  const rows = await readJsonlRows(reviewPath)
+  const kept: JsonRecord[] = []
+  let removed = 0
+  for (const row of rows) {
+    if (reviewRowDetailUrl(row) === detail) {
+      removed += 1
+      continue
+    }
+    kept.push(row)
+  }
+  if (removed > 0) {
+    await writeJsonlRows(reviewPath, kept)
+  }
+
+  return {
+    ok: true,
+    message: removed > 0 ? `已移出复核队列：${removed} 条` : '复核队列中没有匹配条目',
+    removed,
+    workspace: await buildScraperWorkspacePayload(options?.baseRoot || path.join(projectRoot, 'data', 'public_archive'), { selectedRoot: root }),
+  }
+}
+
 async function readOptionsFile(filePath: string): Promise<JsonRecord> {
   const payload = await readJsonFile(filePath)
   return payload
@@ -2321,6 +2406,12 @@ export async function executeScraperCli(args: string[]): Promise<JsonRecord> {
     const optionsFile = rest.includes('--options-file') ? rest[rest.indexOf('--options-file') + 1] || '' : ''
     const control = optionsFile ? await readOptionsFile(optionsFile) : {}
     return runNativeScraperAction(action, outputRoot, { baseRoot, control })
+  }
+  if (command === 'review-clear') {
+    const outputRoot = rest[rest.indexOf('--output-root') + 1] || ''
+    const detailUrl = rest[rest.indexOf('--detail-url') + 1] || ''
+    const baseRoot = rest.includes('--base-root') ? rest[rest.indexOf('--base-root') + 1] || '' : ''
+    return clearNativeScraperReviewItem(outputRoot, detailUrl, { baseRoot })
   }
   throw new Error(`unsupported command: ${String(command || '').trim() || '<empty>'}`)
 }

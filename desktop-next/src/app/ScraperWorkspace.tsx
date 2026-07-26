@@ -4,8 +4,14 @@ import { ScraperTaskListPane } from '../features/scraper/components/ScraperTaskL
 
 import { useScraperWorkspace } from './useScraperWorkspace'
 
-export function ScraperWorkspace() {
-  const workspace = useScraperWorkspace()
+type ScraperWorkspaceProps = {
+  onOpenImage?: (path: string) => void
+}
+
+export function ScraperWorkspace(props: ScraperWorkspaceProps) {
+  const workspace = useScraperWorkspace({
+    onOpenImage: props.onOpenImage,
+  })
 
   return (
     <div className="workspace">
@@ -46,6 +52,7 @@ export function ScraperWorkspace() {
         templates={workspace.launchTemplates}
         onFieldChange={workspace.onLaunchFieldChange}
         onFillDefaultOutputRoot={() => void workspace.onFillDefaultOutputRoot()}
+        onPickOutputRoot={() => void workspace.onPickLaunchOutputRoot()}
         onSelectTemplate={(templatePath) => void workspace.onSelectLaunchTemplate(templatePath)}
         onStartTask={() => void workspace.onStartTask()}
       />
@@ -64,7 +71,10 @@ export function ScraperWorkspace() {
           controlOptions={workspace.controlOptions}
           detail={workspace.detail}
           onContinueTask={() => void workspace.onContinueTask()}
+          onClearReviewItem={(detailUrl) => void workspace.onClearReviewItem(detailUrl)}
+          onOpenReviewImage={workspace.onOpenReviewImage}
           onPauseTask={() => void workspace.onPauseTask()}
+          onRevealReviewImage={(path) => void workspace.onRevealReviewImage(path)}
           onRetryTask={() => void workspace.onRetryTask()}
           onRewriteMetadataTask={() => void workspace.onRewriteMetadataTask()}
           onSetAutoFallback={workspace.setControlAutoFallback}

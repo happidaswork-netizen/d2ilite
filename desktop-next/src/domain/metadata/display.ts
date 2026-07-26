@@ -26,10 +26,45 @@ export function formatFileSize(value: number | undefined): string {
   return `${size >= 10 || unitIndex === 0 ? size.toFixed(0) : size.toFixed(1)} ${units[unitIndex]}`
 }
 
+function formatDateParts(date: Date): string {
+  const pad = (value: number): string => String(value).padStart(2, '0')
+  return [
+    `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`,
+    `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`,
+  ].join(' ')
+}
+
+function normalizeExifTimestamp(value: string): string | null {
+  const match = value.match(
+    /^(\d{4}):(\d{2}):(\d{2})[ T](\d{2}):(\d{2}):(\d{2})(?:\s*([+-]\d{2}:?\d{2}|Z))?$/i,
+  )
+  if (!match) {
+    return null
+  }
+  const [, year, month, day, hour, minute, second, offset] = match
+  if (!offset) {
+    return `${year}-${month}-${day} ${hour}:${minute}:${second}`
+  }
+  const normalizedOffset =
+    offset.toUpperCase() === 'Z' || offset.includes(':')
+      ? offset.toUpperCase()
+      : `${offset.slice(0, 3)}:${offset.slice(3)}`
+  return `${year}-${month}-${day}T${hour}:${minute}:${second}${normalizedOffset}`
+}
+
 export function formatTimestamp(value: string | undefined): string {
   const target = String(value || '').trim()
   if (!target) {
     return '-'
   }
-  return target.replace('T', ' ').replace('Z', '')
+  const normalizedExif = normalizeExifTimestamp(target)
+  const normalized = normalizedExif || target
+  const hasExplicitTimezone = /(?:Z|[+-]\d{2}:?\d{2})$/i.test(normalized)
+  if (hasExplicitTimezone) {
+    const parsed = new Date(normalized)
+    if (!Number.isNaN(parsed.getTime())) {
+      return formatDateParts(parsed)
+    }
+  }
+  return normalized.replace('T', ' ').replace(/Z$/i, '')
 }

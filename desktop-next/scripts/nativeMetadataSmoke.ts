@@ -10,7 +10,7 @@ async function main(): Promise<void> {
   const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'd2i-native-metadata-'))
   const scriptsRoot = path.dirname(fileURLToPath(import.meta.url))
   const repoRoot = path.resolve(scriptsRoot, '..', '..')
-  const imagePath = path.join(tempRoot, 'sample.jpg')
+  const imagePath = path.join(tempRoot, '测试人物_中文.jpg')
 
   const pythonExec = process.platform === 'win32'
     ? path.join(repoRoot, '.venv', 'Scripts', 'python.exe')
@@ -43,7 +43,7 @@ async function main(): Promise<void> {
   assert.equal(ping.provider, NATIVE_METADATA_PROVIDER)
 
   const before = await readNativeMetadata(imagePath)
-  assert.equal(String((before.item as Record<string, unknown>).filename || ''), 'sample.jpg')
+  assert.equal(String((before.item as Record<string, unknown>).filename || ''), '测试人物_中文.jpg')
 
   const marker = `native-metadata-${Date.now()}`
   const roleAliases = [{ name: '角色A', note: '测试', enabled: true }]

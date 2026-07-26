@@ -7,11 +7,12 @@ type ScraperLaunchPaneProps = {
   onFieldChange: <K extends keyof ScraperLaunchForm>(field: K, value: ScraperLaunchForm[K]) => void
   onSelectTemplate: (templatePath: string) => void
   onFillDefaultOutputRoot: () => void
+  onPickOutputRoot: () => void
   onStartTask: () => void
 }
 
 export function ScraperLaunchPane(props: ScraperLaunchPaneProps) {
-  const { busy, form, templates, onFieldChange, onSelectTemplate, onFillDefaultOutputRoot, onStartTask } = props
+  const { busy, form, templates, onFieldChange, onSelectTemplate, onFillDefaultOutputRoot, onPickOutputRoot, onStartTask } = props
 
   return (
     <section className="scraper-pane shell scraper-launch-pane">
@@ -60,13 +61,18 @@ export function ScraperLaunchPane(props: ScraperLaunchPaneProps) {
           <div className="scraper-launch-row">
             <label className="input-stack input-stack-wide">
               <span>输出目录</span>
-              <input
-                className="path-input"
-                value={form.output_root}
-                onChange={(event) => onFieldChange('output_root', event.target.value)}
-                disabled={busy}
-                placeholder="输入最终任务输出目录"
-              />
+              <div className="path-pick-row">
+                <input
+                  className="path-input"
+                  value={form.output_root}
+                  onChange={(event) => onFieldChange('output_root', event.target.value)}
+                  disabled={busy}
+                  placeholder="输入最终任务输出目录"
+                />
+                <button type="button" onClick={onPickOutputRoot} disabled={busy}>
+                  选择
+                </button>
+              </div>
             </label>
             <div className="action-group">
               <button onClick={onFillDefaultOutputRoot} disabled={busy || Boolean(form.selected_template_path)}>

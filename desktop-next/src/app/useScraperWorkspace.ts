@@ -25,6 +25,10 @@ type LoadOptions = {
   silent?: boolean
 }
 
+type UseScraperWorkspaceOptions = {
+  onOpenImage?: (path: string) => void
+}
+
 const ACTION_LABELS: Record<ScraperActionName, string> = {
   pause: '暂停任务',
   continue: '继续任务',
@@ -32,7 +36,7 @@ const ACTION_LABELS: Record<ScraperActionName, string> = {
   rewrite: '重写元数据',
 }
 
-export function useScraperWorkspace() {
+export function useScraperWorkspace(options?: UseScraperWorkspaceOptions) {
   const bridge = useMemo(() => createDesktopBridge(), [])
   const baseRootRef = useRef('')
   const selectedRootRef = useRef('')
@@ -252,6 +256,67 @@ export function useScraperWorkspace() {
     [applySnapshot, bridge],
   )
 
+  const onOpenReviewImage = useCallback(
+    (path: string): void => {
+      const target = String(path || '').trim()
+      if (!target) {
+        setStatus('复核条目没有可打开的本地图片')
+        return
+      }
+      if (typeof options?.onOpenImage === 'function') {
+        options.onOpenImage(target)
+        return
+      }
+      void bridge.openPath(target).catch((error) => {
+        setStatus(`打开复核图片失败：${String(error)}`)
+      })
+    },
+    [bridge, options],
+  )
+
+  const onRevealReviewImage = useCallback(
+    async (path: string): Promise<void> => {
+      const target = String(path || '').trim()
+      if (!target) {
+        setStatus('复核条目没有可定位的本地图片')
+        return
+      }
+      try {
+        await bridge.revealPath(target)
+        setStatus('已定位复核图片')
+      } catch (error) {
+        setStatus(`定位复核图片失败：${String(error)}`)
+      }
+    },
+    [bridge],
+  )
+
+  const onClearReviewItem = useCallback(
+    async (detailUrl: string): Promise<void> => {
+      const root = String(selectedRootRef.current || '').trim()
+      const currentBaseRoot = String(baseRootRef.current || '').trim()
+      const detail = String(detailUrl || '').trim()
+      if (!root || !detail) {
+        setStatus('请先选择一个复核条目')
+        return
+      }
+      setActionBusy(true)
+      setStatus('正在移出复核队列...')
+      try {
+        const result = await bridge.clearScraperReviewItem(root, detail, {
+          baseRoot: currentBaseRoot,
+        })
+        applySnapshot(result.workspace)
+        setStatus(String(result.message || '复核队列已更新'))
+      } catch (error) {
+        setStatus(`移出复核队列失败：${String(error)}`)
+      } finally {
+        setActionBusy(false)
+      }
+    },
+    [applySnapshot, bridge],
+  )
+
   const onLaunchFieldChange = useCallback(
     <K extends keyof ScraperLaunchForm>(field: K, value: ScraperLaunchForm[K]) => {
       setLaunchForm((prev) => (prev ? { ...prev, [field]: value } : prev))
@@ -278,6 +343,26 @@ export function useScraperWorkspace() {
       setLaunchForm((prev) => (prev ? { ...prev, output_root: suggested.output_root } : prev))
     } catch (error) {
       setStatus(`默认输出目录生成失败：${String(error)}`)
+    }
+  }, [bridge])
+
+  const onPickLaunchOutputRoot = useCallback(async (): Promise<void> => {
+    const current = launchFormRef.current
+    if (!current) {
+      return
+    }
+    setStatus('请选择输出目录...')
+    try {
+      const picked = await bridge.pickFolder(current.output_root || baseRootRef.current)
+      const target = String(picked || '').trim()
+      if (!target) {
+        setStatus('已取消选择输出目录')
+        return
+      }
+      setLaunchForm((prev) => (prev ? { ...prev, output_root: target } : prev))
+      setStatus(`已选择输出目录：${target}`)
+    } catch (error) {
+      setStatus(`选择输出目录失败：${String(error)}`)
     }
   }, [bridge])
 
@@ -324,12 +409,16 @@ export function useScraperWorkspace() {
     setControlDisablePageImages,
     setControlMode,
     onContinueTask: () => onRunAction('continue'),
+    onClearReviewItem,
     onFillDefaultOutputRoot,
+    onPickLaunchOutputRoot,
     onLaunchFieldChange,
     onPauseTask: () => onRunAction('pause'),
+    onOpenReviewImage,
     onRefresh,
     onRetryTask: () => onRunAction('retry'),
     onRewriteMetadataTask: () => onRunAction('rewrite'),
+    onRevealReviewImage,
     onSelectLaunchTemplate,
     onSelectTask,
     onStartTask,

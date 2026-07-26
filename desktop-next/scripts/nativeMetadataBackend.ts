@@ -394,14 +394,49 @@ function resolveExiftoolExecutable(): string {
   return 'exiftool'
 }
 
+function normalizeWindowsPathText(value: string): string {
+  let text = String(value || '').trim().replace(/^"+|"+$/g, '').replace(/\//g, '\\')
+  if (process.platform === 'win32') {
+    while (text.startsWith('\\\\\\') && !text.startsWith('\\\\?\\')) {
+      text = text.replace(/^\\\\\\/, '\\\\')
+    }
+    const lower = text.toLowerCase()
+    if (lower.startsWith('\\\\?\\unc\\')) {
+      text = `\\\\${text.slice(8)}`
+    } else if (lower.startsWith('\\?\\unc\\')) {
+      text = `\\\\${text.slice(7)}`
+    } else if (lower.startsWith('?\\unc\\')) {
+      text = `\\\\${text.slice(6)}`
+    } else if (lower.startsWith('\\\\?\\')) {
+      text = text.slice(4)
+    } else if (lower.startsWith('\\?\\')) {
+      text = text.slice(3)
+    } else if (lower.startsWith('?\\')) {
+      text = text.slice(2)
+    }
+  }
+  return text
+}
+
+function resolveInputPath(value: string): string {
+  const normalized = normalizeWindowsPathText(value)
+  if (!normalized) {
+    return ''
+  }
+  if (process.platform === 'win32' && normalized.startsWith('\\\\')) {
+    return normalized
+  }
+  return path.resolve(normalized)
+}
+
 function runExiftool(args: string[]): Promise<string> {
   return new Promise((resolve, reject) => {
     const child = spawn(
       resolveExiftoolExecutable(),
-      ['-config', exiftoolConfigPath, '-charset', 'ExifTool=UTF8', '-charset', 'filename=UTF8', ...args],
+      ['-config', exiftoolConfigPath, '-charset', 'ExifTool=UTF8', ...args],
       {
-      cwd: projectRoot,
-      windowsHide: true,
+        cwd: projectRoot,
+        windowsHide: true,
       },
     )
     const stdout: Buffer[] = []
@@ -433,7 +468,7 @@ async function runExiftoolWithArgsFile(args: string[]): Promise<string> {
 }
 
 async function readTagMap(filePath: string): Promise<JsonRecord> {
-  const payload = await runExiftool(['-json', '-G1', '-a', '-struct', filePath])
+  const payload = await runExiftoolWithArgsFile(['-json', '-G1', '-a', '-struct', filePath])
   const parsed = JSON.parse(payload) as unknown
   if (!Array.isArray(parsed) || !parsed[0] || typeof parsed[0] !== 'object') {
     throw new Error(`invalid exiftool payload: ${payload}`)
@@ -502,7 +537,7 @@ export function buildNativeMetadataPing(): JsonRecord {
 }
 
 export async function readNativeMetadata(filePath: string): Promise<JsonRecord> {
-  const targetPath = path.resolve(String(filePath || '').trim())
+  const targetPath = resolveInputPath(filePath)
   if (!targetPath) {
     throw new Error('path is required')
   }
@@ -514,7 +549,7 @@ export async function readNativeMetadata(filePath: string): Promise<JsonRecord> 
 }
 
 export async function saveNativeMetadata(filePath: string, rawPayload: SavePayload): Promise<JsonRecord> {
-  const targetPath = path.resolve(String(filePath || '').trim())
+  const targetPath = resolveInputPath(filePath)
   if (!targetPath) {
     throw new Error('path is required')
   }

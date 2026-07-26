@@ -5,12 +5,28 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
+
 use serde_json::{json, Map, Value};
 
 const MANIFEST_DIR: &str = env!("CARGO_MANIFEST_DIR");
 const IMAGE_EXTS: [&str; 7] = ["jpg", "jpeg", "png", "webp", "bmp", "tif", "tiff"];
 const NATIVE_METADATA_PROVIDER: &str = "native-exiftool";
-const NATIVE_METADATA_VERSION: &str = "metadata-native-v1";
+const NATIVE_METADATA_VERSION: &str = "metadata-native-v2-nas-paths";
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+fn hide_command_window(command: &mut Command) {
+    #[cfg(windows)]
+    {
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = command;
+    }
+}
 
 fn desktop_root() -> PathBuf {
     Path::new(MANIFEST_DIR)
@@ -28,6 +44,18 @@ fn scraper_backend_script_path(root: &Path) -> PathBuf {
     root.join("desktop-next")
         .join("scripts")
         .join("nativeScraperBackend.ts")
+}
+
+fn image_action_cli_path(root: &Path) -> PathBuf {
+    root.join("scripts").join("image_action_cli.py")
+}
+
+fn metadata_ai_cli_path(root: &Path) -> PathBuf {
+    root.join("scripts").join("metadata_ai_cli.py")
+}
+
+fn settings_cli_path(root: &Path) -> PathBuf {
+    root.join("scripts").join("settings_cli.py")
 }
 
 fn exiftool_config_path(root: &Path) -> PathBuf {
@@ -57,7 +85,10 @@ fn resolve_exiftool_executable(root: &Path) -> PathBuf {
 
 fn resolve_node_executable(root: &Path) -> PathBuf {
     let candidates = [
-        root.join("desktop-next").join("node_modules").join(".bin").join("node"),
+        root.join("desktop-next")
+            .join("node_modules")
+            .join(".bin")
+            .join("node"),
         root.join("desktop-next")
             .join("node_modules")
             .join(".bin")
@@ -67,6 +98,167 @@ fn resolve_node_executable(root: &Path) -> PathBuf {
         .into_iter()
         .find(|candidate| candidate.exists())
         .unwrap_or_else(|| PathBuf::from("node"))
+}
+
+fn resolve_python_executable(root: &Path) -> PathBuf {
+    let candidates = [
+        root.join(".venv").join("Scripts").join("python.exe"),
+        root.join(".venv").join("bin").join("python"),
+    ];
+    candidates
+        .into_iter()
+        .find(|candidate| candidate.exists())
+        .unwrap_or_else(|| {
+            if cfg!(windows) {
+                PathBuf::from("python")
+            } else {
+                PathBuf::from("python3")
+            }
+        })
+}
+
+fn sanitize_filename_stem(value: &str, fallback: &str) -> String {
+    let mut out = String::new();
+    for ch in value.trim().chars() {
+        let invalid = matches!(ch, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*')
+            || (ch as u32) < 0x20;
+        out.push(if invalid { '_' } else { ch });
+    }
+    let collapsed = out.split_whitespace().collect::<Vec<_>>().join(" ");
+    let cleaned = collapsed
+        .trim_matches(|ch| ch == '.' || ch == ' ')
+        .to_string();
+    if cleaned.is_empty() {
+        fallback.to_string()
+    } else {
+        cleaned
+    }
+}
+
+fn unique_sibling_path(source: &Path, new_name: &str) -> Result<PathBuf, String> {
+    let parent = source
+        .parent()
+        .ok_or_else(|| String::from("source file has no parent directory"))?;
+    let fallback = source
+        .file_stem()
+        .and_then(|v| v.to_str())
+        .unwrap_or("image");
+    let stem = sanitize_filename_stem(new_name, fallback);
+    let extension = source
+        .extension()
+        .and_then(|v| v.to_str())
+        .map(|v| format!(".{v}"))
+        .unwrap_or_default();
+    let first = parent.join(format!("{stem}{extension}"));
+    if first == source || !first.exists() {
+        return Ok(first);
+    }
+    for index in 2..10000 {
+        let candidate = parent.join(format!("{stem}_{index}{extension}"));
+        if !candidate.exists() {
+            return Ok(candidate);
+        }
+    }
+    Err(String::from("unable to create unique filename"))
+}
+
+fn normalize_windows_path_text(value: &str) -> String {
+    let mut text = value.trim().trim_matches('"').replace('/', "\\");
+    if cfg!(windows) {
+        while text.starts_with("\\\\\\") && !text.starts_with("\\\\?\\") {
+            text = text.replacen("\\\\\\", "\\\\", 1);
+        }
+        let lower = text.to_lowercase();
+        if lower.starts_with("\\\\?\\unc\\") {
+            text = format!("\\\\{}", &text[8..]);
+        } else if lower.starts_with("\\?\\unc\\") {
+            text = format!("\\\\{}", &text[7..]);
+        } else if lower.starts_with("?\\unc\\") {
+            text = format!("\\\\{}", &text[6..]);
+        } else if lower.starts_with("\\\\?\\") {
+            text = text[4..].to_string();
+        } else if lower.starts_with("\\?\\") {
+            text = text[3..].to_string();
+        } else if lower.starts_with("?\\") {
+            text = text[2..].to_string();
+        }
+        let lower = text.to_lowercase();
+        if lower.starts_with("\\?\\unc\\") {
+            text = format!("\\\\{}", &text[7..]);
+        } else if lower.starts_with("?\\unc\\") {
+            text = format!("\\\\{}", &text[6..]);
+        } else if lower.starts_with("\\\\?\\") {
+            text = text[4..].to_string();
+        } else if lower.starts_with("\\?\\") {
+            text = text[3..].to_string();
+        } else if lower.starts_with("?\\") {
+            text = text[2..].to_string();
+        }
+    }
+    text
+}
+
+fn normalize_input_path(value: &str) -> PathBuf {
+    PathBuf::from(normalize_windows_path_text(value))
+}
+
+fn normalize_existing_path(value: &str) -> PathBuf {
+    normalize_input_path(value)
+}
+
+fn app_path_text(path: &Path) -> String {
+    normalize_windows_path_text(&path.to_string_lossy())
+}
+
+fn require_existing_file_path(value: &str) -> Result<PathBuf, String> {
+    let target = normalize_existing_path(value);
+    if target.is_file() {
+        Ok(target)
+    } else {
+        Err(format!(
+            "image not found (raw={}, normalized={})",
+            value.trim(),
+            target.display()
+        ))
+    }
+}
+
+fn open_with_system(path: &Path, reveal: bool) -> Result<(), String> {
+    let target = path.to_path_buf();
+    if !target.exists() {
+        return Err(format!("path not found ({})", target.display()));
+    }
+
+    let mut command = if cfg!(windows) {
+        let mut cmd = Command::new("explorer.exe");
+        if reveal {
+            cmd.arg(format!("/select,{}", target.to_string_lossy()));
+        } else {
+            cmd.arg(target.to_string_lossy().to_string());
+        }
+        cmd
+    } else if cfg!(target_os = "macos") {
+        let mut cmd = Command::new("open");
+        if reveal {
+            cmd.arg("-R");
+        }
+        cmd.arg(target.to_string_lossy().to_string());
+        cmd
+    } else {
+        let mut cmd = Command::new("xdg-open");
+        if reveal {
+            let parent = target.parent().unwrap_or_else(|| Path::new("."));
+            cmd.arg(parent.to_string_lossy().to_string());
+        } else {
+            cmd.arg(target.to_string_lossy().to_string());
+        }
+        cmd
+    };
+
+    command
+        .spawn()
+        .map_err(|error| format!("failed to open path: {error}"))?;
+    Ok(())
 }
 
 fn parse_bridge_error(payload: &Value) -> String {
@@ -80,6 +272,183 @@ fn parse_bridge_error(payload: &Value) -> String {
     } else {
         format!("{error} ({detail})")
     }
+}
+
+fn run_python_json_cli(
+    root: &Path,
+    script_path: PathBuf,
+    args: &[String],
+    failure_context: &str,
+) -> Result<Value, String> {
+    let mut command = Command::new(resolve_python_executable(root));
+    command.current_dir(root).arg(script_path);
+    for arg in args {
+        command.arg(arg);
+    }
+    hide_command_window(&mut command);
+    let output = command
+        .output()
+        .map_err(|error| format!("failed to run {failure_context}: {error}"))?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let last_line = stdout
+        .lines()
+        .rev()
+        .find(|line| !line.trim().is_empty())
+        .unwrap_or("");
+    let payload = serde_json::from_str::<Value>(last_line)
+        .map_err(|error| format!("failed to parse {failure_context} output: {error}; {stderr}"))?;
+    if !output.status.success() || payload.get("ok").and_then(Value::as_bool) != Some(true) {
+        return Err(parse_bridge_error(&payload));
+    }
+    Ok(payload)
+}
+
+#[cfg(windows)]
+fn powershell_pick_result_path(kind: &str) -> PathBuf {
+    std::env::temp_dir().join(format!(
+        "d2i-lite-{kind}-{}-{}.txt",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ))
+}
+
+#[cfg(windows)]
+fn read_powershell_pick_result(path: &Path) -> Result<Option<String>, String> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    let text = fs::read_to_string(path)
+        .map_err(|error| format!("failed to read picker result: {error}"))?;
+    let _ = fs::remove_file(path);
+    let picked = normalize_windows_path_text(text.trim_start_matches('\u{feff}').trim());
+    if picked.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(picked))
+    }
+}
+
+#[cfg(windows)]
+fn pick_folder_with_system_dialog(
+    initial_folder: Option<String>,
+) -> Result<Option<String>, String> {
+    let result_path = powershell_pick_result_path("folder");
+    let script = r#"
+Add-Type -AssemblyName System.Windows.Forms
+$dialog = New-Object System.Windows.Forms.FolderBrowserDialog
+$dialog.Description = 'Select image folder'
+$dialog.ShowNewFolderButton = $false
+$initial = [string]$env:D2I_INITIAL_FOLDER
+if ($initial -and (Test-Path -LiteralPath $initial -PathType Container)) {
+  $dialog.SelectedPath = $initial
+}
+$result = $dialog.ShowDialog()
+if ($result -eq [System.Windows.Forms.DialogResult]::OK) {
+  [System.IO.File]::WriteAllText([string]$env:D2I_PICK_RESULT_FILE, $dialog.SelectedPath, [System.Text.UTF8Encoding]::new($false))
+}
+"#;
+    let mut command = Command::new("powershell.exe");
+    command
+        .arg("-NoProfile")
+        .arg("-Sta")
+        .arg("-ExecutionPolicy")
+        .arg("Bypass")
+        .arg("-Command")
+        .arg(script)
+        .env(
+            "D2I_INITIAL_FOLDER",
+            initial_folder
+                .map(|value| normalize_windows_path_text(&value))
+                .unwrap_or_default(),
+        )
+        .env(
+            "D2I_PICK_RESULT_FILE",
+            result_path.to_string_lossy().to_string(),
+        );
+    hide_command_window(&mut command);
+    let output = command
+        .output()
+        .map_err(|error| format!("failed to open folder picker: {error}"))?;
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    if !output.status.success() {
+        let _ = fs::remove_file(&result_path);
+        return Err(if stderr.is_empty() {
+            String::from("folder picker failed")
+        } else {
+            stderr
+        });
+    }
+    read_powershell_pick_result(&result_path)
+}
+
+#[cfg(windows)]
+fn pick_image_with_system_dialog(initial_folder: Option<String>) -> Result<Option<String>, String> {
+    let result_path = powershell_pick_result_path("image");
+    let script = r#"
+Add-Type -AssemblyName System.Windows.Forms
+$dialog = New-Object System.Windows.Forms.OpenFileDialog
+$dialog.Title = 'Select image'
+$dialog.Filter = 'Images|*.jpg;*.jpeg;*.png;*.webp;*.bmp;*.tif;*.tiff|All files|*.*'
+$dialog.Multiselect = $false
+$initial = [string]$env:D2I_INITIAL_FOLDER
+if ($initial -and (Test-Path -LiteralPath $initial -PathType Container)) {
+  $dialog.InitialDirectory = $initial
+}
+$result = $dialog.ShowDialog()
+if ($result -eq [System.Windows.Forms.DialogResult]::OK) {
+  [System.IO.File]::WriteAllText([string]$env:D2I_PICK_RESULT_FILE, $dialog.FileName, [System.Text.UTF8Encoding]::new($false))
+}
+"#;
+    let mut command = Command::new("powershell.exe");
+    command
+        .arg("-NoProfile")
+        .arg("-Sta")
+        .arg("-ExecutionPolicy")
+        .arg("Bypass")
+        .arg("-Command")
+        .arg(script)
+        .env(
+            "D2I_INITIAL_FOLDER",
+            initial_folder
+                .map(|value| normalize_windows_path_text(&value))
+                .unwrap_or_default(),
+        )
+        .env(
+            "D2I_PICK_RESULT_FILE",
+            result_path.to_string_lossy().to_string(),
+        );
+    hide_command_window(&mut command);
+    let output = command
+        .output()
+        .map_err(|error| format!("failed to open image picker: {error}"))?;
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    if !output.status.success() {
+        let _ = fs::remove_file(&result_path);
+        return Err(if stderr.is_empty() {
+            String::from("image picker failed")
+        } else {
+            stderr
+        });
+    }
+    read_powershell_pick_result(&result_path)
+}
+
+#[cfg(not(windows))]
+fn pick_image_with_system_dialog(
+    _initial_folder: Option<String>,
+) -> Result<Option<String>, String> {
+    Ok(None)
+}
+
+#[cfg(not(windows))]
+fn pick_folder_with_system_dialog(
+    _initial_folder: Option<String>,
+) -> Result<Option<String>, String> {
+    Ok(None)
 }
 
 fn normalize_text(value: Option<&Value>) -> String {
@@ -152,7 +521,17 @@ fn normalize_police_id_value(raw: &str) -> String {
     }
     let lowered = text.to_lowercase();
     let unknown_tokens = [
-        "unknown", "unkonw", "n/a", "na", "none", "null", "未知", "未详", "不详", "待补充", "-",
+        "unknown",
+        "unkonw",
+        "n/a",
+        "na",
+        "none",
+        "null",
+        "未知",
+        "未详",
+        "不详",
+        "待补充",
+        "-",
     ];
     if unknown_tokens.contains(&lowered.as_str()) || unknown_tokens.contains(&text) {
         String::new()
@@ -180,10 +559,7 @@ fn extract_police_id_from_profile(profile: Option<&Map<String, Value>>) -> Strin
                 return value;
             }
         }
-        if let Some(extra_fields) = profile_map
-            .get("extra_fields")
-            .and_then(Value::as_object)
-        {
+        if let Some(extra_fields) = profile_map.get("extra_fields").and_then(Value::as_object) {
             for key in candidate_keys {
                 let value = normalize_police_id_value(&normalize_text(extra_fields.get(key)));
                 if !value.is_empty() {
@@ -318,10 +694,7 @@ fn list_images_in_folder(folder: &Path, limit: usize) -> Result<Vec<String>, Str
         items.truncate(limit);
     }
 
-    Ok(items
-        .into_iter()
-        .map(|path| path.to_string_lossy().to_string())
-        .collect())
+    Ok(items.into_iter().map(|path| app_path_text(&path)).collect())
 }
 
 fn run_scraper_backend(args: &[String]) -> Result<Value, String> {
@@ -341,9 +714,10 @@ fn run_scraper_backend(args: &[String]) -> Result<Value, String> {
     ];
     command_args.extend(args.iter().cloned());
 
-    let output = Command::new(resolve_node_executable(&root))
-        .args(&command_args)
-        .current_dir(&root)
+    let mut command = Command::new(resolve_node_executable(&root));
+    command.args(&command_args).current_dir(&root);
+    hide_command_window(&mut command);
+    let output = command
         .output()
         .map_err(|error| format!("failed to run scraper backend: {error}"))?;
 
@@ -376,23 +750,27 @@ fn run_exiftool_raw(args: &[String]) -> Result<String, String> {
     let executable = resolve_exiftool_executable(&root);
     let config_path = exiftool_config_path(&root);
 
-    let output = Command::new(executable)
+    let mut command = Command::new(executable);
+    command
         .arg("-config")
         .arg(config_path)
         .arg("-charset")
         .arg("ExifTool=UTF8")
-        .arg("-charset")
-        .arg("filename=UTF8")
         .args(args)
-        .current_dir(&root)
+        .current_dir(&root);
+    hide_command_window(&mut command);
+    let output = command
         .output()
         .map_err(|error| format!("failed to run exiftool: {error}"))?;
 
     let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
     if !output.status.success() {
+        return Err(if stderr.is_empty() { stdout } else { stderr });
+    }
+    if stdout.is_empty() {
         return Err(if stderr.is_empty() {
-            stdout
+            String::from("exiftool returned empty output")
         } else {
             stderr
         });
@@ -413,7 +791,8 @@ fn run_exiftool_with_args_file(args: &[String]) -> Result<String, String> {
             .as_nanos()
     ));
     let body = format!("{}\n", args.join("\n"));
-    fs::write(&args_path, body).map_err(|error| format!("failed to write exiftool args file: {error}"))?;
+    fs::write(&args_path, body)
+        .map_err(|error| format!("failed to write exiftool args file: {error}"))?;
     let result = run_exiftool_raw(&[String::from("-@"), args_path.to_string_lossy().to_string()]);
     let _ = fs::remove_file(args_path);
     result
@@ -427,9 +806,9 @@ fn read_exiftool_tags(path: &str) -> Result<Map<String, Value>, String> {
         String::from("-struct"),
         String::from(path),
     ];
-    let payload = run_exiftool_raw(&args)?;
-    let parsed: Value =
-        serde_json::from_str(&payload).map_err(|error| format!("invalid exiftool json: {error}"))?;
+    let payload = run_exiftool_with_args_file(&args)?;
+    let parsed: Value = serde_json::from_str(&payload)
+        .map_err(|error| format!("invalid exiftool json: {error}"))?;
     parsed
         .as_array()
         .and_then(|items| items.first())
@@ -445,10 +824,16 @@ fn metadata_keywords(payload: &Map<String, Value>) -> Vec<String> {
         .unwrap_or_default()
 }
 
-fn build_merged_titi_json(payload: &Map<String, Value>, existing: Option<&Map<String, Value>>) -> Value {
+fn build_merged_titi_json(
+    payload: &Map<String, Value>,
+    existing: Option<&Map<String, Value>>,
+) -> Value {
     let mut base = existing.cloned().unwrap_or_default();
     if normalize_text(base.get("schema")).is_empty() {
-        base.insert(String::from("schema"), Value::String(String::from("titi-meta")));
+        base.insert(
+            String::from("schema"),
+            Value::String(String::from("titi-meta")),
+        );
     }
     if !matches!(base.get("schema_version"), Some(Value::Number(_))) {
         base.insert(String::from("schema_version"), Value::Number(1.into()));
@@ -458,7 +843,10 @@ fn build_merged_titi_json(payload: &Map<String, Value>, existing: Option<&Map<St
         base.insert(String::from("app"), Value::String(String::from("PWI")));
     }
     if normalize_text(base.get("component")).is_empty() {
-        base.insert(String::from("component"), Value::String(String::from("forge")));
+        base.insert(
+            String::from("component"),
+            Value::String(String::from("forge")),
+        );
     }
 
     let requested_asset_id = normalize_text(payload.get("titi_asset_id"));
@@ -485,7 +873,10 @@ fn build_merged_titi_json(payload: &Map<String, Value>, existing: Option<&Map<St
 
     let image_url = normalize_text(payload.get("image_url"));
     if !image_url.is_empty() {
-        base.insert(String::from("source_image"), Value::String(image_url.clone()));
+        base.insert(
+            String::from("source_image"),
+            Value::String(image_url.clone()),
+        );
     }
 
     let mut profile = base
@@ -517,9 +908,11 @@ fn build_merged_titi_json(payload: &Map<String, Value>, existing: Option<&Map<St
     let keywords = metadata_keywords(payload);
     let source = normalize_text(payload.get("source"));
     let city = normalize_text(payload.get("city"));
-    let gender = normalize_gender_value(payload.get("gender").or_else(|| {
-        profile_payload.and_then(|data| data.get("gender"))
-    }));
+    let gender = normalize_gender_value(
+        payload
+            .get("gender")
+            .or_else(|| profile_payload.and_then(|data| data.get("gender"))),
+    );
     let mut police_id = normalize_police_id_value(&normalize_text(payload.get("police_id")));
     if police_id.is_empty() {
         police_id = extract_police_id_from_profile(profile_payload);
@@ -566,7 +959,10 @@ fn build_merged_titi_json(payload: &Map<String, Value>, existing: Option<&Map<St
             profile.insert(String::from("police_id"), Value::String(existing_police));
         }
     }
-    if profile_payload.is_none() && person.is_empty() && !title.is_empty() && normalize_text(profile.get("name")).is_empty()
+    if profile_payload.is_none()
+        && person.is_empty()
+        && !title.is_empty()
+        && normalize_text(profile.get("name")).is_empty()
     {
         let fallback = title
             .split(" - ")
@@ -615,15 +1011,12 @@ fn build_metadata_item(path: &str, tags: &Map<String, Value>) -> Result<Value, S
         .cloned();
     let keywords = normalize_list(tags.get("XMP-dc:Subject"));
     let person_list = normalize_list(tags.get("XMP-iptcExt:PersonInImage"));
-    let person = person_list
-        .first()
-        .cloned()
-        .unwrap_or_else(|| {
-            adaptive_profile
-                .as_ref()
-                .map(|profile| normalize_text(profile.get("name")))
-                .unwrap_or_default()
-        });
+    let person = person_list.first().cloned().unwrap_or_else(|| {
+        adaptive_profile
+            .as_ref()
+            .map(|profile| normalize_text(profile.get("name")))
+            .unwrap_or_default()
+    });
     let title = normalize_text(tags.get("XMP-dc:Title"));
     let description = {
         let direct = normalize_text(tags.get("XMP-dc:Description"));
@@ -722,15 +1115,47 @@ fn build_metadata_item(path: &str, tags: &Map<String, Value>) -> Result<Value, S
     }))
 }
 
+fn build_fallback_metadata_item(path: &str, reason: &str) -> Result<Value, String> {
+    let metadata = fs::metadata(path).map_err(|error| format!("failed to stat file: {error}"))?;
+    let filename = Path::new(path)
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default();
+    Ok(json!({
+        "filepath": path,
+        "filename": filename,
+        "title": "",
+        "description": "",
+        "keywords": [],
+        "source": "",
+        "image_url": "",
+        "city": "",
+        "person": "",
+        "gender": "",
+        "position": "",
+        "police_id": "",
+        "titi_asset_id": "",
+        "titi_world_id": "default",
+        "filesize": metadata.len(),
+        "modified_time": "",
+        "titi_json": Value::Null,
+        "other_xmp": json!({}),
+        "other_exif": json!({
+            "metadata_read_error": reason,
+        }),
+        "other_iptc": json!({}),
+        "metadata_read_error": reason,
+        "status": "none",
+        "matched_row": Value::Null,
+    }))
+}
+
 fn save_metadata_native(path: &str, payload: &Value) -> Result<(), String> {
     let tags = read_exiftool_tags(path)?;
-    let payload_map = payload
-        .as_object()
-        .cloned()
-        .unwrap_or_default();
+    let payload_map = payload.as_object().cloned().unwrap_or_default();
     let merged_titi_json = build_merged_titi_json(&payload_map, parse_titi_json(&tags).as_ref());
-    let merged_json_text =
-        serde_json::to_string(&merged_titi_json).map_err(|error| format!("failed to serialize titi json: {error}"))?;
+    let merged_json_text = serde_json::to_string(&merged_titi_json)
+        .map_err(|error| format!("failed to serialize titi json: {error}"))?;
 
     let title = normalize_text(payload_map.get("title"));
     let description = normalize_text(payload_map.get("description"));
@@ -743,7 +1168,8 @@ fn save_metadata_native(path: &str, payload: &Value) -> Result<(), String> {
     let user_comment_existing = normalize_text(tags.get("EXIF:UserComment")).to_lowercase();
     let can_update_user_comment = user_comment_existing.is_empty()
         || user_comment_existing.contains("titi_asset_id")
-        || (user_comment_existing.contains("schema") && user_comment_existing.contains("titi-meta"));
+        || (user_comment_existing.contains("schema")
+            && user_comment_existing.contains("titi-meta"));
 
     let mut args = vec![String::from("-overwrite_original")];
     if !title.is_empty() {
@@ -806,12 +1232,65 @@ fn bridge_ping() -> Result<Value, String> {
 }
 
 #[tauri::command]
+fn bridge_pick_image(initial_folder: Option<String>) -> Result<Value, String> {
+    let picked = pick_image_with_system_dialog(initial_folder)?;
+    let canceled = picked.is_none();
+    Ok(json!({
+        "ok": true,
+        "path": picked.unwrap_or_default(),
+        "canceled": canceled,
+    }))
+}
+
+#[tauri::command]
+fn bridge_pick_folder(initial_folder: Option<String>) -> Result<Value, String> {
+    let picked = pick_folder_with_system_dialog(initial_folder)?;
+    let canceled = picked.is_none();
+    Ok(json!({
+        "ok": true,
+        "path": picked.unwrap_or_default(),
+        "canceled": canceled,
+    }))
+}
+
+#[tauri::command]
+fn bridge_path_info(path: String) -> Result<Value, String> {
+    let target_path = normalize_existing_path(&path);
+    Ok(json!({
+        "ok": true,
+        "path": app_path_text(&target_path),
+        "exists": target_path.exists(),
+        "is_file": target_path.is_file(),
+        "is_dir": target_path.is_dir(),
+    }))
+}
+
+#[tauri::command]
+fn bridge_launch_path() -> Result<Value, String> {
+    let picked = std::env::args()
+        .skip(1)
+        .find(|arg| {
+            let text = arg.trim();
+            !text.is_empty() && !text.starts_with('-')
+        })
+        .unwrap_or_default();
+    let target_path = normalize_existing_path(&picked);
+    Ok(json!({
+        "ok": true,
+        "path": if picked.trim().is_empty() { String::new() } else { app_path_text(&target_path) },
+        "exists": !picked.trim().is_empty() && target_path.exists(),
+        "is_file": !picked.trim().is_empty() && target_path.is_file(),
+        "is_dir": !picked.trim().is_empty() && target_path.is_dir(),
+    }))
+}
+
+#[tauri::command]
 fn bridge_list_images(folder: String, limit: Option<i64>) -> Result<Value, String> {
-    let folder_path = PathBuf::from(folder.trim());
+    let folder_path = normalize_existing_path(&folder);
     let items = list_images_in_folder(&folder_path, limit.unwrap_or_default().max(0) as usize)?;
     Ok(json!({
         "ok": true,
-        "folder": folder_path.to_string_lossy().to_string(),
+        "folder": app_path_text(&folder_path),
         "count": items.len(),
         "items": items,
     }))
@@ -819,11 +1298,12 @@ fn bridge_list_images(folder: String, limit: Option<i64>) -> Result<Value, Strin
 
 #[tauri::command]
 fn bridge_read_metadata(path: String) -> Result<Value, String> {
-    let target_path = PathBuf::from(path.trim())
-        .canonicalize()
-        .unwrap_or_else(|_| PathBuf::from(path.trim()));
-    let tags = read_exiftool_tags(&target_path.to_string_lossy())?;
-    let item = build_metadata_item(&target_path.to_string_lossy(), &tags)?;
+    let target_path = require_existing_file_path(&path)?;
+    let target_text = app_path_text(&target_path);
+    let item = match read_exiftool_tags(&target_text) {
+        Ok(tags) => build_metadata_item(&target_text, &tags)?,
+        Err(error) => build_fallback_metadata_item(&target_text, &error)?,
+    };
     Ok(json!({
         "ok": true,
         "item": item,
@@ -907,15 +1387,236 @@ fn bridge_run_scraper_action(
 }
 
 #[tauri::command]
+fn bridge_clear_scraper_review_item(
+    output_root: String,
+    detail_url: String,
+    base_root: Option<String>,
+) -> Result<Value, String> {
+    run_scraper_backend(&[
+        String::from("review-clear"),
+        String::from("--output-root"),
+        output_root,
+        String::from("--detail-url"),
+        detail_url,
+        String::from("--base-root"),
+        base_root.unwrap_or_default(),
+    ])
+}
+
+#[tauri::command]
 fn bridge_save_metadata(path: String, payload: Value) -> Result<Value, String> {
-    let target_path = PathBuf::from(path.trim())
-        .canonicalize()
-        .unwrap_or_else(|_| PathBuf::from(path.trim()));
-    save_metadata_native(&target_path.to_string_lossy(), &payload)?;
+    let target_path = require_existing_file_path(&path)?;
+    let target_text = app_path_text(&target_path);
+    save_metadata_native(&target_text, &payload)?;
     Ok(json!({
         "ok": true,
         "saved": true,
-        "path": target_path.to_string_lossy().to_string(),
+        "path": target_text,
+    }))
+}
+
+#[tauri::command]
+fn bridge_add_name_bar(path: String, options: Value) -> Result<Value, String> {
+    let root = project_root();
+    let target_path = require_existing_file_path(&path)?;
+    let opts = options.as_object().cloned().unwrap_or_default();
+    let name = normalize_text(opts.get("name"));
+    if name.is_empty() {
+        return Err(String::from("name is required"));
+    }
+
+    let mut command = Command::new(resolve_python_executable(&root));
+    command
+        .current_dir(&root)
+        .arg(image_action_cli_path(&root))
+        .arg("name-bar")
+        .arg("--image")
+        .arg(target_path.to_string_lossy().to_string())
+        .arg("--name")
+        .arg(name);
+
+    let output_dir = normalize_text(opts.get("output_dir"));
+    if !output_dir.is_empty() {
+        command.arg("--output-dir").arg(output_dir);
+    }
+    let output_format = normalize_text(opts.get("output_format"));
+    if !output_format.is_empty() {
+        command.arg("--format").arg(output_format);
+    }
+    let output_name = normalize_text(opts.get("output_name"));
+    if !output_name.is_empty() {
+        command.arg("--output-name").arg(output_name);
+    }
+
+    hide_command_window(&mut command);
+    let output = command
+        .output()
+        .map_err(|error| format!("failed to run image action: {error}"))?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let last_line = stdout
+        .lines()
+        .rev()
+        .find(|line| !line.trim().is_empty())
+        .unwrap_or("");
+    let payload = serde_json::from_str::<Value>(last_line)
+        .map_err(|error| format!("failed to parse image action output: {error}; {stderr}"))?;
+    if !output.status.success() || payload.get("ok").and_then(Value::as_bool) != Some(true) {
+        return Err(parse_bridge_error(&payload));
+    }
+    let mut body = payload.as_object().cloned().unwrap_or_default();
+    body.insert(String::from("ok"), Value::Bool(true));
+    Ok(Value::Object(body))
+}
+
+#[tauri::command]
+fn bridge_rename_image(path: String, new_name: String) -> Result<Value, String> {
+    let target_path = require_existing_file_path(&path)?;
+    let next_path = unique_sibling_path(&target_path, &new_name)?;
+    if next_path != target_path {
+        fs::rename(&target_path, &next_path)
+            .map_err(|error| format!("failed to rename image: {error}"))?;
+    }
+    Ok(json!({
+        "ok": true,
+        "old_path": app_path_text(&target_path),
+        "new_path": app_path_text(&next_path),
+        "filename": next_path.file_name().and_then(|v| v.to_str()).unwrap_or("").to_string(),
+    }))
+}
+
+#[tauri::command]
+fn bridge_autofill_metadata(path: String, options: Value) -> Result<Value, String> {
+    let root = project_root();
+    let target_path = require_existing_file_path(&path)?;
+    let opts = options.as_object().cloned().unwrap_or_default();
+    let input_mode = normalize_text(opts.get("input_mode"));
+    let input_mode = if input_mode.is_empty() {
+        String::from("filename_metadata")
+    } else {
+        input_mode
+    };
+
+    let mut command = Command::new(resolve_python_executable(&root));
+    command
+        .current_dir(&root)
+        .arg(metadata_ai_cli_path(&root))
+        .arg("autofill")
+        .arg("--image")
+        .arg(target_path.to_string_lossy().to_string())
+        .arg("--input-mode")
+        .arg(input_mode.clone());
+
+    if let Some(form) = opts.get("form") {
+        command
+            .arg("--form-json")
+            .arg(serde_json::to_string(form).unwrap_or_else(|_| String::from("{}")));
+    }
+
+    hide_command_window(&mut command);
+    let output = command
+        .output()
+        .map_err(|error| format!("failed to run metadata AI: {error}"))?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let last_line = stdout
+        .lines()
+        .rev()
+        .find(|line| !line.trim().is_empty())
+        .unwrap_or("");
+    let payload = serde_json::from_str::<Value>(last_line)
+        .map_err(|error| format!("failed to parse metadata AI output: {error}; {stderr}"))?;
+    if !output.status.success() || payload.get("ok").and_then(Value::as_bool) != Some(true) {
+        return Err(parse_bridge_error(&payload));
+    }
+    Ok(json!({
+        "ok": true,
+        "result": payload.get("result").cloned().unwrap_or_else(|| json!({})),
+        "input_mode": payload.get("input_mode").and_then(Value::as_str).unwrap_or(&input_mode),
+    }))
+}
+
+#[tauri::command]
+fn bridge_generate_biography(path: String, options: Value) -> Result<Value, String> {
+    let root = project_root();
+    let target_path = require_existing_file_path(&path)?;
+    let opts = options.as_object().cloned().unwrap_or_default();
+
+    let mut args = vec![
+        String::from("biography"),
+        String::from("--image"),
+        target_path.to_string_lossy().to_string(),
+    ];
+    if let Some(form) = opts.get("form") {
+        args.push(String::from("--form-json"));
+        args.push(serde_json::to_string(form).unwrap_or_else(|_| String::from("{}")));
+    }
+    let payload = run_python_json_cli(
+        &root,
+        metadata_ai_cli_path(&root),
+        &args,
+        "metadata AI biography",
+    )?;
+    Ok(json!({
+        "ok": true,
+        "result": payload.get("result").cloned().unwrap_or_else(|| json!({})),
+    }))
+}
+
+#[tauri::command]
+fn bridge_read_app_settings() -> Result<Value, String> {
+    let root = project_root();
+    let payload = run_python_json_cli(
+        &root,
+        settings_cli_path(&root),
+        &[String::from("get")],
+        "settings CLI",
+    )?;
+    Ok(json!({
+        "ok": true,
+        "settings": payload.get("settings").cloned().unwrap_or_else(|| json!({})),
+        "path": payload.get("path").and_then(Value::as_str).unwrap_or(""),
+    }))
+}
+
+#[tauri::command]
+fn bridge_save_app_settings(settings: Value) -> Result<Value, String> {
+    let root = project_root();
+    let payload_json = serde_json::to_string(&settings).unwrap_or_else(|_| String::from("{}"));
+    let payload = run_python_json_cli(
+        &root,
+        settings_cli_path(&root),
+        &[
+            String::from("save"),
+            String::from("--payload-json"),
+            payload_json,
+        ],
+        "settings CLI",
+    )?;
+    Ok(json!({
+        "ok": true,
+        "settings": payload.get("settings").cloned().unwrap_or_else(|| json!({})),
+        "path": payload.get("path").and_then(Value::as_str).unwrap_or(""),
+    }))
+}
+
+#[tauri::command]
+fn bridge_open_path(path: String) -> Result<Value, String> {
+    let target_path = normalize_existing_path(&path);
+    open_with_system(&target_path, false)?;
+    Ok(json!({
+        "ok": true,
+        "opened": true,
+    }))
+}
+
+#[tauri::command]
+fn bridge_reveal_path(path: String) -> Result<Value, String> {
+    let target_path = normalize_existing_path(&path);
+    open_with_system(&target_path, true)?;
+    Ok(json!({
+        "ok": true,
+        "revealed": true,
     }))
 }
 
@@ -924,6 +1625,10 @@ pub fn run() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
             bridge_ping,
+            bridge_pick_image,
+            bridge_pick_folder,
+            bridge_path_info,
+            bridge_launch_path,
             bridge_list_images,
             bridge_read_metadata,
             bridge_get_default_scraper_base_root,
@@ -931,15 +1636,24 @@ pub fn run() {
             bridge_read_scraper_workspace,
             bridge_start_scraper_task,
             bridge_run_scraper_action,
+            bridge_clear_scraper_review_item,
             bridge_save_metadata,
+            bridge_add_name_bar,
+            bridge_rename_image,
+            bridge_autofill_metadata,
+            bridge_generate_biography,
+            bridge_read_app_settings,
+            bridge_save_app_settings,
+            bridge_open_path,
+            bridge_reveal_path,
         ])
         .setup(|app| {
             if cfg!(debug_assertions) {
-                app.handle().plugin(
+                let _ = app.handle().plugin(
                     tauri_plugin_log::Builder::default()
                         .level(log::LevelFilter::Info)
                         .build(),
-                )?;
+                );
             }
             Ok(())
         })

@@ -13,6 +13,7 @@ type LibraryPaneProps = {
   selectedPath: string
   selectedPaths: string[]
   onAliasRoleFilterChange: (value: string) => void
+  onBuildRoleIndex: () => void
   onClearSelection: () => void
   onFilterTextChange: (value: string) => void
   onOpenItem: (path: string) => void
@@ -20,6 +21,7 @@ type LibraryPaneProps = {
   onSelectFiltered: () => void
   onToggleSelection: (path: string) => void
   getFileName: (path: string) => string
+  getPreviewUrl: (path: string) => string
 }
 
 function renderRoleSummary(summary: RoleMetadataSummary | undefined, indexBusy: boolean): string {
@@ -51,6 +53,7 @@ export function LibraryPane({
   selectedPath,
   selectedPaths,
   onAliasRoleFilterChange,
+  onBuildRoleIndex,
   onClearSelection,
   onFilterTextChange,
   onOpenItem,
@@ -58,6 +61,7 @@ export function LibraryPane({
   onSelectFiltered,
   onToggleSelection,
   getFileName,
+  getPreviewUrl,
 }: LibraryPaneProps) {
   const selectedSet = new Set(selectedPaths)
 
@@ -101,6 +105,9 @@ export function LibraryPane({
             </span>
           </div>
           <div className="list-actions">
+            <button type="button" onClick={onBuildRoleIndex} disabled={busy || indexBusy || items.length === 0}>
+              建立角色索引
+            </button>
             <button type="button" onClick={onSelectFiltered} disabled={busy || filteredItems.length === 0}>
               勾选筛选结果
             </button>
@@ -119,6 +126,9 @@ export function LibraryPane({
             {filteredItems.map((path) => {
               const summary = roleSummaryByPath[path]
               const checked = selectedSet.has(path)
+              const fileName = getFileName(path)
+              const previewUrl = getPreviewUrl(path)
+              const extension = fileName.includes('.') ? fileName.split('.').pop()?.toUpperCase() || 'IMG' : 'IMG'
               return (
                 <li key={path} className={checked ? 'item-row item-row-selected' : 'item-row'}>
                   <label className="item-select">
@@ -135,10 +145,15 @@ export function LibraryPane({
                     onClick={() => onOpenItem(path)}
                     disabled={busy}
                   >
-                    <span className="item-name">{getFileName(path)}</span>
-                    <span className="item-path">{path}</span>
-                    <span className={summary ? 'item-summary' : 'item-summary item-summary-muted'}>
-                      {renderRoleSummary(summary, indexBusy)}
+                    <span className="item-thumb" aria-hidden="true">
+                      {previewUrl ? <img src={previewUrl} alt="" loading="lazy" /> : <span>{extension}</span>}
+                    </span>
+                    <span className="item-copy">
+                      <span className="item-name">{fileName}</span>
+                      <span className="item-path">{path}</span>
+                      <span className={summary ? 'item-summary' : 'item-summary item-summary-muted'}>
+                        {renderRoleSummary(summary, indexBusy)}
+                      </span>
                     </span>
                   </button>
                 </li>
