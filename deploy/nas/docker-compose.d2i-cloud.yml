@@ -22,8 +22,10 @@ services:
       D2I_PORTRAIT_HOST_ROOT: /vol1/1001/角色肖像
       D2I_PEOPLE_DB: /runtime/people/people.sqlite
       TMPDIR: /runtime/d2i-cloud-data/tmp
-      # Host project .env supplies this via compose substitution (NAS production must enable Bearer).
-      D2I_WEB_TOKEN: ${D2I_WEB_TOKEN:-}
+      # App-layer Bearer OFF by default: public entry is Cloudflare Access;
+      # frontend must not prompt for D2I_WEB_TOKEN. Set D2I_WEB_TOKEN only when
+      # deliberately re-enabling app auth (CLI/automation may still use a token file).
+      # D2I_WEB_TOKEN: ${D2I_WEB_TOKEN:-}
       D2I_VISION_ENABLED: ${D2I_VISION_ENABLED:-1}
       D2I_VISION_API_KEY_FILE: /run/secrets/d2i_vision_api_key
       D2I_VISION_CONCURRENCY: ${D2I_VISION_CONCURRENCY:-3}

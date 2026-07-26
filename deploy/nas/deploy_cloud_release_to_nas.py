@@ -376,17 +376,23 @@ try:
     assert st == 200 and body.get('ok') is True, ('health', st, body)
     st, body = get('/api/v1/status')
     assert st == 200 and body.get('ok') is True, ('status', st)
-    assert body.get('auth_enabled') is True, ('auth_enabled_expected_true', body.get('auth_enabled'))
+    # Default production posture: no app-layer Bearer (Cloudflare Access covers public).
+    # If a token is deliberately set, require 401 without it; otherwise open status is fine.
+    auth_on = bool(body.get('auth_enabled'))
+    print('auth_enabled', auth_on)
     st, body = get('/api/v1/queues?limit=1')
     assert st == 200 and isinstance(body.get('queues'), list), ('queues', st)
     st, body = get('/api/v1/ai/vision/status')
     assert st == 200 and isinstance(body.get('jobs'), dict), ('vision_status', st)
-    # unauth must 401 when token is on
-    try:
-        get('/api/v1/status', auth=False)
-        raise AssertionError('unauth status must 401')
-    except urllib.error.HTTPError as e:
-        assert e.code == 401, ('unauth_status', e.code)
+    if auth_on:
+        try:
+            get('/api/v1/status', auth=False)
+            raise AssertionError('unauth status must 401 when auth_enabled')
+        except urllib.error.HTTPError as e:
+            assert e.code == 401, ('unauth_status', e.code)
+    else:
+        st, body = get('/api/v1/status', auth=False)
+        assert st == 200 and body.get('ok') is True, ('open_status', st)
     print('critical_gate_ok')
 except Exception as exc:
     print('critical_gate_FAILED', repr(exc))
