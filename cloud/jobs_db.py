@@ -428,8 +428,15 @@ def update_vision_job(
     error: Optional[str] = None,
     finished: bool = False,
     mark_started: bool = False,
+    expected_status: Optional[str] = None,
     db_path: Optional[Path] = None,
 ) -> Optional[Dict[str, Any]]:
+    """Update one vision job row.
+
+    expected_status(F2 CAS): 传入时 UPDATE 带 WHERE status=?,当前状态不匹配
+    则一行都不改(如取消后终态写不进,保留 cancelled)。返回值始终是重查后的
+    最新行,调用方通过 status 判断写入是否生效。
+    """
     current = get_vision_job(job_id, db_path=db_path)
     if not current:
         return None
@@ -473,7 +480,11 @@ def update_vision_job(
     with _LOCK:
         conn = _connect(db_path)
         try:
-            conn.execute(f"UPDATE vision_jobs SET {', '.join(sets)} WHERE id = :id", fields)
+            where = "id = :id"
+            if expected_status is not None:
+                fields["expected_status"] = str(expected_status)
+                where += " AND status = :expected_status"
+            conn.execute(f"UPDATE vision_jobs SET {', '.join(sets)} WHERE {where}", fields)
             conn.commit()
         finally:
             conn.close()
@@ -535,13 +546,17 @@ def cancel_vision_job(job_id: str, db_path: Optional[Path] = None) -> Optional[D
     current = get_vision_job(job_id, db_path=db_path)
     if not current:
         return None
-    if str(current.get("status") or "") not in {"queued", "running"}:
+    st = str(current.get("status") or "")
+    if st not in {"queued", "running"}:
         return current
+    # CAS:检查到写入之间状态变了(比如恰好跑完)就不覆盖,返回真实终态。
+    # running 态的协作取消由 vision_service.run_vision_job 逐片检查完成。
     return update_vision_job(
         job_id,
         status="cancelled",
         error="cancelled by operator",
         finished=True,
+        expected_status=st,
         db_path=db_path,
     )
 
@@ -550,9 +565,16 @@ def requeue_stale_running_vision_jobs(
     db_path: Optional[Path] = None,
     *,
     reason: str = "reset stale running after restart",
+    stale_after_seconds: float = 1800.0,
 ) -> int:
-    """Move orphaned running vision jobs back to queued (e.g. after container restart)."""
+    """Move orphaned running vision jobs back to queued (e.g. after container restart).
+
+    F1: 只有 started_at/updated_at 均早于 stale_after_seconds(默认 30 分钟)
+    的 running 行才算 stale——活着的泵每片都会刷新 updated_at,在跑的批
+    不会被打回 queued 重复计费。传 0 表示不设阈值(显式恢复场景)。
+    """
     now = time.time()
+    threshold = now - max(0.0, float(stale_after_seconds or 0.0))
     with _LOCK:
         conn = _connect(db_path)
         try:
@@ -564,8 +586,12 @@ def requeue_stale_running_vision_jobs(
                     error=?,
                     updated_at=?
                 WHERE status='running'
+                  AND MAX(
+                        COALESCE(started_at, 0),
+                        COALESCE(updated_at, 0)
+                      ) < ?
                 """,
-                (str(reason or "reset stale running"), now),
+                (str(reason or "reset stale running"), now, threshold),
             )
             conn.commit()
             return int(cur.rowcount or 0)

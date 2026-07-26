@@ -13,7 +13,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from cloud.paths import people_db_path, portrait_root
+from cloud.paths import default_tasks_base_root, people_db_path, portrait_root
 from image_asset_safety import sha256_file
 from llm_client import OpenAICompatibleClient
 from visual_classifier import (
@@ -55,10 +55,77 @@ def _norm(path: Any) -> str:
     return str(path or "").replace("\\", "/").strip()
 
 
+# H5: 拦截语义与 cloud/queue_service._is_protected_path(预览路由防护)保持同步——
+# 选角、repair_backup、__hdd_prebind 一律拒绝;vision 外呼另叠加"备份"通配,
+# 因为这些图片会 base64 后发外部 Grok。改动任一处时请同步另一处。
+_PROTECTED_VISION_MARKERS = ("选角", "备份")
+_PROTECTED_VISION_MARKERS_LOWER = ("repair_backup", "__hdd_prebind")
+
+
+def _is_protected_vision_path(path_value: Any) -> bool:
+    """选角/备份/__hdd_prebind 永不允许经 vision 外呼离开 NAS。"""
+    text = _norm(path_value)
+    if not text:
+        return False
+    lowered = text.lower()
+    if any(marker in text for marker in _PROTECTED_VISION_MARKERS):
+        return True
+    if any(marker in lowered for marker in _PROTECTED_VISION_MARKERS_LOWER):
+        return True
+    return False
+
+
+def _vision_allowed_roots() -> List[Path]:
+    """H5 白名单根:portrait 终落点根 + 任务输出根,其余一律不外呼。
+
+    根的取法与 promote_service 落图一致:cloud.paths.portrait_root /
+    default_tasks_base_root,再加 resolve_image_path 本就互映的宿主机/容器
+    portrait 挂载点。
+    """
+    roots: List[Path] = [
+        _HOST_PORTRAIT,
+        _RUNTIME_PORTRAIT,
+        Path("/vol3/1001/生成图片/角色肖像"),
+    ]
+    try:
+        roots.append(portrait_root())
+    except Exception:
+        pass
+    try:
+        tasks_root = str(default_tasks_base_root() or "").strip()
+        if tasks_root:
+            roots.append(Path(tasks_root))
+    except Exception:
+        pass
+    resolved: List[Path] = []
+    for root in roots:
+        try:
+            resolved.append(root.resolve())
+        except OSError:
+            resolved.append(root)
+    return resolved
+
+
+def _under_any_root(path: Path, roots: List[Path]) -> bool:
+    for root in roots:
+        try:
+            path.relative_to(root)
+            return True
+        except (ValueError, OSError):
+            continue
+    return False
+
+
 def resolve_image_path(path_value: Any) -> Optional[Path]:
-    """Map host/container portrait paths to a readable local file."""
+    """Map host/container portrait paths to a readable local file.
+
+    H5: 只放行 portrait 终落点根 / 任务输出根内的真实路径(realpath 后校验,
+    防 .. 与软链逃逸);含 选角/备份/__hdd_prebind 的路径直接拒绝。
+    """
     raw = _norm(path_value)
     if not raw:
+        return None
+    if _is_protected_vision_path(raw):
         return None
     candidates: List[Path] = [Path(raw)]
     # Legacy scrape root → 角色肖像 (and 政府/ variant)
@@ -103,6 +170,7 @@ def resolve_image_path(path_value: Any) -> Optional[Path]:
         candidates.append(_HOST_PORTRAIT / raw)
         candidates.append(_HOST_PORTRAIT / "政府" / raw)
         candidates.append(_RUNTIME_PORTRAIT / raw)
+    allowed_roots = _vision_allowed_roots()
     seen: set[str] = set()
     for cand in candidates:
         key = str(cand)
@@ -110,10 +178,17 @@ def resolve_image_path(path_value: Any) -> Optional[Path]:
             continue
         seen.add(key)
         try:
-            if cand.is_file():
-                return cand.resolve()
+            if not cand.is_file():
+                continue
+            # realpath 防 ../ 与软链逃逸,再做白名单/保护段校验
+            resolved = cand.resolve()
         except OSError:
             continue
+        if _is_protected_vision_path(resolved):
+            continue
+        if not _under_any_root(resolved, allowed_roots):
+            continue
+        return resolved
     return None
 
 
@@ -205,6 +280,39 @@ def _table_cols(conn: sqlite3.Connection, table: str) -> set[str]:
     return {str(r[1]) for r in conn.execute(f"PRAGMA table_info({table})")}
 
 
+def _match_people_by_name(
+    conn: sqlite3.Connection,
+    cols: set[str],
+    *,
+    name: str,
+    unit_name: str = "",
+    city: str = "",
+    province: str = "",
+    select: str = "*",
+) -> List[sqlite3.Row]:
+    """M6: name 回退强制附加 unit/city/province 约束(有信息就带上)。
+
+    最多取 2 行,让调用方区分"唯一命中"与"同名多行";绝不 ORDER BY rowid
+    硬挑一行——同名官员写错人比不写更糟。
+    """
+    clauses = ["name=?"]
+    params: List[Any] = [name]
+    if unit_name and "unit_name" in cols:
+        clauses.append("unit_name LIKE ?")
+        params.append(f"%{unit_name}%")
+    if city and "city" in cols:
+        clauses.append("city=?")
+        params.append(city)
+    if province and "province" in cols:
+        clauses.append("province=?")
+        params.append(province)
+    sql = (
+        f"SELECT {select} FROM people WHERE {' AND '.join(clauses)} "
+        "ORDER BY rowid DESC LIMIT 2"
+    )
+    return list(conn.execute(sql, tuple(params)))
+
+
 def write_visual_to_people(
     conn: sqlite3.Connection,
     *,
@@ -215,6 +323,9 @@ def write_visual_to_people(
     image_sha256: str = "",
     model: str = "",
     dry_run: bool = False,
+    unit_name: str = "",
+    city: str = "",
+    province: str = "",
 ) -> Dict[str, Any]:
     """Write visual_* only. Never touches gender / source facts."""
     cols = _table_cols(conn, "people")
@@ -233,10 +344,20 @@ def write_visual_to_people(
                 (name, primary_image_path),
             ).fetchone()
         if row is None:
-            row = conn.execute(
-                "SELECT * FROM people WHERE name=? ORDER BY rowid DESC LIMIT 1",
-                (name,),
-            ).fetchone()
+            # M6: name-only 回退带 unit/city 约束;约束后仍多行命中 → ambiguous,不写库
+            matches = _match_people_by_name(
+                conn, cols, name=name, unit_name=unit_name, city=city, province=province
+            )
+            if len(matches) == 1:
+                row = matches[0]
+            elif len(matches) > 1:
+                return {
+                    "action": "ambiguous",
+                    "error": "ambiguous_name_match",
+                    "name": name,
+                    "person_id": person_id,
+                    "candidates": len(matches),
+                }
     if row is None:
         return {"action": "miss", "name": name, "person_id": person_id}
 
@@ -310,6 +431,9 @@ def classify_and_write_person(
     runtime: Optional[VisionRuntime] = None,
     client: Optional[OpenAICompatibleClient] = None,
     people_db: Optional[Path] = None,
+    unit_name: str = "",
+    city: str = "",
+    province: str = "",
 ) -> Dict[str, Any]:
     path_hint = image_path or primary_image_path
     path = resolve_image_path(path_hint)
@@ -335,8 +459,9 @@ def classify_and_write_person(
 
     people_rec: Dict[str, Any] = {}
     db_path = Path(people_db) if people_db else people_db_path()
-    if write_people and not force and db_path.is_file() and not dry_run:
-        # skip if visual_gender already filled (unless force)
+    if write_people and not force and db_path.is_file():
+        # skip if visual_gender already filled (unless force).
+        # F3: dry_run 同样走去重跳过——预览不该比真跑更费 Grok。
         try:
             conn = _open_people(db_path)
             try:
@@ -348,10 +473,17 @@ def classify_and_write_person(
                         (person_id,),
                     ).fetchone()
                 if row is None and name and "visual_gender" in cols:
-                    row = conn.execute(
-                        "SELECT person_id, name, visual_gender, primary_image_path FROM people WHERE name=? ORDER BY rowid DESC LIMIT 1",
-                        (name,),
-                    ).fetchone()
+                    # M6: name 回退带 unit/city 约束;同名多行时不猜,交由写库层给 ambiguous
+                    matches = _match_people_by_name(
+                        conn,
+                        cols,
+                        name=name,
+                        unit_name=unit_name,
+                        city=city,
+                        province=province,
+                        select="person_id, name, visual_gender, primary_image_path",
+                    )
+                    row = matches[0] if len(matches) == 1 else None
                 if row is not None and "visual_gender" in row.keys():
                     existing = str(row["visual_gender"] or "").strip()
                     if existing and existing not in {"", "不确定", "不适用"}:
@@ -394,6 +526,9 @@ def classify_and_write_person(
                     image_sha256=str(classified.get("image_sha256") or ""),
                     model=str(classified.get("model") or rt.model),
                     dry_run=dry_run,
+                    unit_name=unit_name,
+                    city=city,
+                    province=province,
                 )
             finally:
                 conn.close()
@@ -959,6 +1094,8 @@ def run_queue_vision(
                 force=force,
                 runtime=runtime,
                 client=client,
+                # M6: 队列是按单位建的,name 回退写库时带上单位约束
+                unit_name=unit,
             )
 
         workers = max(1, min(runtime.concurrency, len(to_classify) or 1))
@@ -1062,6 +1199,9 @@ def run_paths_vision(
     force: bool = False,
     names: Optional[List[str]] = None,
     person_ids: Optional[List[str]] = None,
+    unit_names: Optional[List[str]] = None,
+    cities: Optional[List[str]] = None,
+    provinces: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     runtime = VisionRuntime.from_environment()
     report: Dict[str, Any] = {
@@ -1087,14 +1227,24 @@ def run_paths_vision(
         return report
     client = _client_for(runtime)
     work: List[Dict[str, Any]] = []
+
+    def _at(seq: Optional[List[str]], idx: int) -> str:
+        if seq and idx < len(seq):
+            return str(seq[idx] or "")
+        return ""
+
     for idx, raw in enumerate(paths):
-        name = ""
-        pid = ""
-        if names and idx < len(names):
-            name = str(names[idx] or "")
-        if person_ids and idx < len(person_ids):
-            pid = str(person_ids[idx] or "")
-        work.append({"path": raw, "name": name, "person_id": pid})
+        work.append(
+            {
+                "path": raw,
+                "name": _at(names, idx),
+                "person_id": _at(person_ids, idx),
+                # M6: 省市单位随 item 带入,name 回退写库时作约束
+                "unit_name": _at(unit_names, idx),
+                "city": _at(cities, idx),
+                "province": _at(provinces, idx),
+            }
+        )
 
     def _one(row: Dict[str, Any]) -> Dict[str, Any]:
         return classify_and_write_person(
@@ -1107,6 +1257,9 @@ def run_paths_vision(
             force=force,
             runtime=runtime,
             client=client,
+            unit_name=str(row.get("unit_name") or ""),
+            city=str(row.get("city") or ""),
+            province=str(row.get("province") or ""),
         )
 
     _TRANSIENT = ("http_429", "rate_limit", "timed out", "Read timeout", "Connection")
@@ -1405,7 +1558,8 @@ def _compact_vision_item_outcome(raw: Dict[str, Any], seed: Optional[Dict[str, A
         "status": status,
         "ok": bool(raw.get("ok")),
         "skipped": bool(raw.get("skipped")),
-        "error": str(raw.get("error") or raw.get("reason") or ""),
+        # M6: 写库层 ambiguous(同名多行未写)也算该 item 的错误,便于人工跟进
+        "error": str(raw.get("error") or raw.get("reason") or people.get("error") or ""),
         "person_count": visual.get("person_count", raw.get("person_count")),
         "visual_gender": str(
             visual.get("visual_gender")
@@ -1734,7 +1888,13 @@ def requeue_failed_vision_items(
 
 
 def run_vision_job(job_id: str) -> Dict[str, Any]:
-    """Execute one vision_jobs row (paths concurrent via run_paths_vision pool)."""
+    """Execute one vision_jobs row, sliced so progress and cancel stay honest.
+
+    F4: 每跑完一片(5 个 item)回写一次 done/ok/failed 计数,进度条不再恒 0%。
+    F2: 每片开始前重读 job status,遇 cancelled 立即停止后续 Grok 调用并保留
+        已完成计数;终态写入走 CAS(expected_status='running'),写不中就保留
+        cancelled,绝不"取消后又变完成"。
+    """
     from cloud import jobs_db
 
     job = jobs_db.get_vision_job(job_id)
@@ -1742,81 +1902,153 @@ def run_vision_job(job_id: str) -> Dict[str, Any]:
         raise KeyError(f"vision job not found: {job_id}")
     st = str(job.get("status") or "")
     if st == "queued":
-        jobs_db.update_vision_job(job_id, status="running", mark_started=True)
+        # CAS 起跑:status 仍是 queued 才置 running,防并发双跑
+        jobs_db.update_vision_job(
+            job_id, status="running", mark_started=True, expected_status="queued"
+        )
         job = jobs_db.get_vision_job(job_id) or job
+        if str(job.get("status") or "") != "running":
+            return {"ok": False, "error": f"job status is {job.get('status')}", "job": job}
     elif st != "running":
         return {"ok": False, "error": f"job status is {st}", "job": job}
 
     items = list(job.get("items") or [])
-    paths = [str(x.get("path") or x.get("primary_image_path") or "") for x in items]
-    names = [str(x.get("name") or "") for x in items]
-    person_ids = [str(x.get("person_id") or "") for x in items]
+    agg_counts: Dict[str, int] = {
+        "candidates": len(items),
+        "classified": 0,
+        "failed": 0,
+        "skipped": 0,
+        "people_update": 0,
+        "missing": 0,
+    }
+    report: Dict[str, Any] = {
+        "ok": True,
+        "at": _utc_stamp(),
+        "model": "",
+        "prompt_version": PROMPT_VERSION,
+        "counts": agg_counts,
+        "items": [],
+    }
+    outcomes: List[Dict[str, Any]] = []
+    merged_items: List[Dict[str, Any]] = []
+    processed = 0
+    cancelled = False
+    slice_size = 5  # F4: flush progress every 5 items
     try:
-        report = run_paths_vision(
-            paths,
-            dry_run=bool(job.get("dry_run")),
-            write_people=bool(job.get("write_people")),
-            force=bool(job.get("force")),
-            names=names,
-            person_ids=person_ids,
-        )
-        counts = report.get("counts") or {}
-        raw_items = list(report.get("items") or [])
-        # Match outcomes back onto seed items. Thread pool may reorder; key by person_id/name/path.
-        outcomes: List[Dict[str, Any]] = []
-        used = [False] * len(raw_items)
+        for offset in range(0, len(items), slice_size):
+            # F2: cooperative cancel — 每片开始前重读一次终态
+            current = jobs_db.get_vision_job(job_id) or {}
+            if str(current.get("status") or "") != "running":
+                cancelled = True
+                break
+            chunk = items[offset : offset + slice_size]
+            chunk_report = run_paths_vision(
+                [str(x.get("path") or x.get("primary_image_path") or "") for x in chunk],
+                dry_run=bool(job.get("dry_run")),
+                write_people=bool(job.get("write_people")),
+                force=bool(job.get("force")),
+                names=[str(x.get("name") or "") for x in chunk],
+                person_ids=[str(x.get("person_id") or "") for x in chunk],
+                unit_names=[str(x.get("unit_name") or "") for x in chunk],
+                cities=[str(x.get("city") or "") for x in chunk],
+                provinces=[str(x.get("province") or "") for x in chunk],
+            )
+            counts = chunk_report.get("counts") or {}
+            for key in ("classified", "failed", "skipped", "people_update", "missing"):
+                agg_counts[key] += int(counts.get(key) or 0)
+            report["at"] = str(chunk_report.get("at") or report["at"])
+            report["model"] = str(chunk_report.get("model") or report.get("model") or "")
+            report["prompt_version"] = str(
+                chunk_report.get("prompt_version") or report.get("prompt_version") or ""
+            )
+            if chunk_report.get("error"):
+                report["error"] = str(chunk_report.get("error") or "")
+            raw_items = list(chunk_report.get("items") or [])
+            report["items"].extend(raw_items)
 
-        def _take(pred) -> Optional[Dict[str, Any]]:
-            for i, raw in enumerate(raw_items):
-                if used[i]:
-                    continue
-                if pred(raw):
-                    used[i] = True
-                    return raw
-            return None
+            # Match outcomes back onto seed items. Thread pool may reorder; key by person_id/name/path.
+            used = [False] * len(raw_items)
 
-        merged_items: List[Dict[str, Any]] = []
-        for seed in items:
-            pid = str(seed.get("person_id") or "").strip()
-            name = str(seed.get("name") or "").strip()
-            path = str(seed.get("path") or seed.get("primary_image_path") or "").strip()
-            raw = None
-            if pid:
-                raw = _take(lambda r, p=pid: str(r.get("person_id") or "") == p)
-            if raw is None and name:
-                raw = _take(lambda r, n=name: str(r.get("name") or "") == n)
-            if raw is None and path:
-                raw = _take(
-                    lambda r, p=path: str(r.get("path") or r.get("path_hint") or "") == p
-                    or str(r.get("path") or "").endswith(Path(p).name)
-                )
-            if raw is None:
-                raw = _take(lambda _r: True) or {"ok": False, "error": "no_outcome", "name": name, "person_id": pid}
-            compact = _compact_vision_item_outcome(raw, seed=seed)
-            outcomes.append(compact)
-            merged_items.append(compact)
+            def _take(pred) -> Optional[Dict[str, Any]]:
+                for i, raw in enumerate(raw_items):
+                    if used[i]:
+                        continue
+                    if pred(raw):
+                        used[i] = True
+                        return raw
+                return None
 
-        # leftover raw outcomes (should be rare)
-        for i, raw in enumerate(raw_items):
-            if not used[i]:
-                compact = _compact_vision_item_outcome(raw)
+            for seed in chunk:
+                pid = str(seed.get("person_id") or "").strip()
+                name = str(seed.get("name") or "").strip()
+                path = str(seed.get("path") or seed.get("primary_image_path") or "").strip()
+                raw = None
+                if pid:
+                    raw = _take(lambda r, p=pid: str(r.get("person_id") or "") == p)
+                if raw is None and name:
+                    raw = _take(lambda r, n=name: str(r.get("name") or "") == n)
+                if raw is None and path:
+                    raw = _take(
+                        lambda r, p=path: str(r.get("path") or r.get("path_hint") or "") == p
+                        or str(r.get("path") or "").endswith(Path(p).name)
+                    )
+                if raw is None:
+                    raw = _take(lambda _r: True) or {"ok": False, "error": "no_outcome", "name": name, "person_id": pid}
+                compact = _compact_vision_item_outcome(raw, seed=seed)
                 outcomes.append(compact)
                 merged_items.append(compact)
 
+            # leftover raw outcomes (should be rare)
+            for i, raw in enumerate(raw_items):
+                if not used[i]:
+                    compact = _compact_vision_item_outcome(raw)
+                    outcomes.append(compact)
+                    merged_items.append(compact)
+
+            processed += len(chunk)
+            # F4: 计数回写复用 update_vision_job(同一写路径,不另开连接风暴);
+            # 只写计数不动 status,即使刚被 cancel 也不会把终态改活。
+            try:
+                jobs_db.update_vision_job(
+                    job_id,
+                    done_count=processed,
+                    ok_count=agg_counts["classified"],
+                    failed_count=agg_counts["failed"],
+                    skipped_count=agg_counts["skipped"],
+                    missing_count=agg_counts["missing"],
+                )
+            except Exception:
+                pass
+            if str(report.get("error") or "") == "vision_runtime_unavailable":
+                # 运行时不可用时后续片只会同样失败,提前收尾
+                break
+
+        if cancelled:
+            # F2: 保留已完成计数,不写终态——cancelled 就是终态
+            job_out = jobs_db.get_vision_job(job_id) or {}
+            return {
+                "ok": True,
+                "job_id": job_id,
+                "cancelled": True,
+                "processed": processed,
+                "report": report,
+                "job": enrich_vision_job(job_out),
+            }
+
         jobs_db.update_vision_job(
             job_id,
-            status=_job_status_from_counts(counts, report),
-            done_count=int(counts.get("candidates") or len(paths)),
-            ok_count=int(counts.get("classified") or 0),
-            failed_count=int(counts.get("failed") or 0),
-            skipped_count=int(counts.get("skipped") or 0),
-            missing_count=int(counts.get("missing") or 0),
+            status=_job_status_from_counts(agg_counts, report),
+            done_count=processed,
+            ok_count=agg_counts["classified"],
+            failed_count=agg_counts["failed"],
+            skipped_count=agg_counts["skipped"],
+            missing_count=agg_counts["missing"],
             items=merged_items,
             result={
                 "at": report.get("at"),
                 "model": report.get("model"),
                 "prompt_version": report.get("prompt_version"),
-                "counts": counts,
+                "counts": agg_counts,
                 "item_results": outcomes,
                 "errors": [
                     {
@@ -1832,11 +2064,14 @@ def run_vision_job(job_id: str) -> Dict[str, Any]:
             },
             error=str(report.get("error") or ""),
             finished=True,
+            # F2: 终态 CAS——只覆盖仍在 running 的行;取消赢了就保持 cancelled
+            expected_status="running",
         )
         job_out = jobs_db.get_vision_job(job_id) or {}
         return {
             "ok": True,
             "job_id": job_id,
+            "cancelled": str(job_out.get("status") or "") == "cancelled",
             "report": report,
             "job": enrich_vision_job(job_out),
         }
@@ -1846,6 +2081,8 @@ def run_vision_job(job_id: str) -> Dict[str, Any]:
             status="failed",
             error=f"{type(exc).__name__}:{exc}",
             finished=True,
+            # F2: 异常也不许把 cancelled 改写成 failed
+            expected_status="running",
         )
         return {
             "ok": False,
@@ -1951,19 +2188,45 @@ def pump_vision_jobs(
     max_running: int = 1,
     max_claim: int = 0,
     background: bool = False,
+    stale_after_seconds: float = 1800.0,
 ) -> Dict[str, Any]:
     """
     Drain vision_jobs. background=True starts a daemon thread and returns immediately
     (needed for full 80+ batch backfill without HTTP timeout).
+
+    F1/M7: "检查+置位"在同一把 _PUMP_LOCK 临界区内完成,同步路径同样受
+    already_running 守护;requeue_stale 只在本次调用真正拿到泵之后执行,
+    且带 30 分钟 staleness 阈值——在跑的批绝不会被打回 queued 重复计费。
     """
     from cloud import jobs_db
 
-    # Recover jobs left in running after process/container death so pump can claim again.
+    with _PUMP_LOCK:
+        if _PUMP_STATE.get("running"):
+            busy_state = dict(_PUMP_STATE)
+        else:
+            busy_state = None
+            _PUMP_STATE.update(running=True, started_at=_utc_stamp(), finished_at="")
+    if busy_state is not None:
+        # 泵在跑:直接返回 pump_busy,不 requeue、不双跑
+        return {
+            "ok": True,
+            "background": bool(background),
+            "started": False,
+            "already_running": True,
+            "reason": "pump_busy",
+            "requeued_stale": 0,
+            "pump": busy_state,
+            "counts": jobs_db.vision_job_counts(),
+        }
+
+    # Recover jobs left in running after process/container death so pump can claim
+    # again. Only rows stale past the threshold move back (F1).
     requeued = 0
     try:
         requeued = int(
             jobs_db.requeue_stale_running_vision_jobs(
-                reason="reset stale running before pump"
+                reason="reset stale running before pump",
+                stale_after_seconds=stale_after_seconds,
             )
             or 0
         )
@@ -1971,17 +2234,6 @@ def pump_vision_jobs(
         requeued = 0
 
     if background:
-        with _PUMP_LOCK:
-            if _PUMP_STATE.get("running"):
-                return {
-                    "ok": True,
-                    "background": True,
-                    "started": False,
-                    "already_running": True,
-                    "requeued_stale": requeued,
-                    "pump": dict(_PUMP_STATE),
-                    "counts": jobs_db.vision_job_counts(),
-                }
 
         def _bg() -> None:
             try:
@@ -1989,12 +2241,16 @@ def pump_vision_jobs(
             except Exception:
                 pass
 
-        t = threading.Thread(
-            target=_bg,
-            name="d2i-vision-pump",
-            daemon=True,
-        )
-        t.start()
+        try:
+            t = threading.Thread(
+                target=_bg,
+                name="d2i-vision-pump",
+                daemon=True,
+            )
+            t.start()
+        except Exception:
+            _set_pump_state(running=False, finished_at=_utc_stamp())
+            raise
         # brief yield so state flips to running when possible
         time.sleep(0.05)
         return {
@@ -2007,7 +2263,11 @@ def pump_vision_jobs(
             "counts": jobs_db.vision_job_counts(),
         }
 
-    result = _pump_loop(max_running=max_running, max_claim=max_claim)
+    try:
+        result = _pump_loop(max_running=max_running, max_claim=max_claim)
+    except Exception:
+        # _pump_loop 的 finally 已复位 running;这里只透传异常
+        raise
     result["background"] = False
     result["requeued_stale"] = requeued
     result["pump"] = pump_state()
