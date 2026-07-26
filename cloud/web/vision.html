@@ -70,6 +70,7 @@
           <button type="button" id="btnEnqueue" class="btn primary" title="按省/市拆批入 vision_jobs">入队</button>
           <button type="button" id="btnPump" class="btn" title="后台串行排空 queued">启动泵</button>
           <button type="button" id="btnPumpOne" class="btn" title="同步只跑 1 个 queued">跑 1 批</button>
+          <button type="button" id="btnRequeueAll" class="btn danger ghost" title="所有失败/缺图条目重新入队（已识别自动跳过）">重跑全部失败</button>
         </div>
       </header>
 
@@ -87,7 +88,7 @@
           <div class="stat-value warn" id="statRunning">0</div>
         </article>
         <article class="stat-card">
-          <div class="stat-label">已完成 / 失败</div>
+          <div class="stat-label">完成 · 部分 · 失败</div>
           <div class="stat-value sm" id="statDone">—</div>
         </article>
       </section>
@@ -162,6 +163,7 @@
               <button type="button" class="pill" data-filter="queued">排队</button>
               <button type="button" class="pill" data-filter="running">运行</button>
               <button type="button" class="pill" data-filter="completed">完成</button>
+              <button type="button" class="pill" data-filter="completed_with_errors">部分失败</button>
               <button type="button" class="pill" data-filter="failed">失败</button>
             </div>
           </div>
@@ -189,6 +191,7 @@
               </div>
               <div class="detail-actions" id="detailActions">
                 <button type="button" data-action="run" class="btn primary">运行本批</button>
+                <button type="button" data-action="requeue" class="btn">重跑失败项</button>
                 <button type="button" data-action="cancel" class="btn danger ghost">取消</button>
               </div>
             </div>

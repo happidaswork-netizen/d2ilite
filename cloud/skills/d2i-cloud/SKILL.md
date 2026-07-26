@@ -53,6 +53,8 @@ Canonical field contract: `docs/d2i_cloud_template_extract_contract.md`
 | Vision enqueue | `POST /api/v1/ai/vision/enqueue` | create many **vision_jobs** (not scrape queues); optional `start` |
 | Vision jobs | `GET /api/v1/ai/vision/jobs` · `.../jobs/{id}` | list/show; detail items include per-person `visual_*` / status (from job snapshot + people DB) |
 | Vision pump | `POST /api/v1/ai/vision/pump` | drain queued vision jobs; `max_running=1` serial 排队; `background=true` for full backfill |
+| Vision requeue failed | `POST /api/v1/ai/vision/requeue-failed` | `{ "job_id"?, "start" }` → 只把失败/缺图条目重新入队（已识别的人自动跳过）；never rescrapes |
+| Vision normalize status | `POST /api/v1/ai/vision/normalize-status` | repair legacy rows: all-fail→`failed`, partial→`completed_with_errors` |
 | Vision one/batch paths | `POST /api/v1/ai/vision` | `{ "path"|"paths", "names", "person_ids", "write_people", "force" }` |
 | Vision scrape-queue stage 2 | `POST /api/v1/queues/{id}/ai/run` | `{ "steps": ["vision"] }` → classify + `vision_report.json` |
 | Vision report | `GET /api/v1/queues/{id}/ai/vision/report` | 漏图/错图/冲突 buckets + counts |

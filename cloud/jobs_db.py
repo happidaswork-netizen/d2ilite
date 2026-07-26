@@ -494,6 +494,43 @@ def vision_job_counts(db_path: Optional[Path] = None) -> Dict[str, int]:
             conn.close()
 
 
+def normalize_vision_job_statuses(db_path: Optional[Path] = None) -> Dict[str, Any]:
+    """One-shot repair: finished jobs whose status lies about their counts.
+
+    completed + ok=0 + failed>0        -> failed
+    completed + ok>0 + failed>0        -> completed_with_errors
+    """
+    now = time.time()
+    with _LOCK:
+        conn = _connect(db_path)
+        try:
+            to_failed = conn.execute(
+                "SELECT id FROM vision_jobs WHERE status='completed' AND ok_count=0 AND failed_count>0"
+            ).fetchall()
+            to_partial = conn.execute(
+                "SELECT id FROM vision_jobs WHERE status='completed' AND ok_count>0 AND failed_count>0"
+            ).fetchall()
+            conn.execute(
+                "UPDATE vision_jobs SET status='failed', updated_at=? "
+                "WHERE status='completed' AND ok_count=0 AND failed_count>0",
+                (now,),
+            )
+            conn.execute(
+                "UPDATE vision_jobs SET status='completed_with_errors', updated_at=? "
+                "WHERE status='completed' AND ok_count>0 AND failed_count>0",
+                (now,),
+            )
+            conn.commit()
+            return {
+                "ok": True,
+                "to_failed": [str(r["id"]) for r in to_failed],
+                "to_completed_with_errors": [str(r["id"]) for r in to_partial],
+                "counts": None,
+            }
+        finally:
+            conn.close()
+
+
 def cancel_vision_job(job_id: str, db_path: Optional[Path] = None) -> Optional[Dict[str, Any]]:
     current = get_vision_job(job_id, db_path=db_path)
     if not current:

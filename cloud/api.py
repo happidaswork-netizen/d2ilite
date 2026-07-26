@@ -95,6 +95,13 @@ class VisionPumpBody(BaseModel):
     background: bool = False
 
 
+class VisionRequeueBody(BaseModel):
+    job_id: str = ""
+    batch_size: int = 20
+    start: bool = False
+    max_running: int = 1
+
+
 class QueueVisionBody(BaseModel):
     dry_run: bool = False
     limit: int = 0
@@ -503,6 +510,30 @@ def create_app() -> FastAPI:
                 max_claim=int(payload.max_claim or 0),
                 background=bool(payload.background),
             )
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    @api.post("/ai/vision/requeue-failed")
+    def vision_requeue_failed(body: Optional[VisionRequeueBody] = None) -> Dict[str, Any]:
+        payload = body or VisionRequeueBody()
+        try:
+            return vision_service.requeue_failed_vision_items(
+                job_id=str(payload.job_id or ""),
+                batch_size=int(payload.batch_size or 20),
+                start=bool(payload.start),
+                max_running=int(payload.max_running or 1),
+            )
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    @api.post("/ai/vision/normalize-status")
+    def vision_normalize_status() -> Dict[str, Any]:
+        try:
+            out = jobs_db.normalize_vision_job_statuses()
+            out["counts"] = jobs_db.vision_job_counts()
+            return out
         except Exception as exc:
             raise HTTPException(status_code=500, detail=str(exc)) from exc
 

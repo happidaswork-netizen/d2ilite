@@ -1282,8 +1282,10 @@ dialog::backdrop { background: rgba(16, 24, 40, 0.28); }
 .tag.queued { background: var(--info-bg); color: var(--info); border: 1px solid var(--info-bd); }
 .tag.running { background: var(--primary-soft); color: var(--primary); border: 1px solid #c7d7fe; }
 .tag.completed { background: var(--success-bg); color: var(--success); border: 1px solid var(--success-bd); }
+.tag.completed_with_errors { background: var(--warning-bg); color: var(--warning); border: 1px solid var(--warning-bd); }
 .tag.failed { background: var(--danger-bg); color: var(--danger); border: 1px solid var(--danger-bd); }
 .tag.cancelled { background: var(--bg-muted); color: var(--muted); border: 1px solid var(--border); }
+.queue-metrics .metric .n.bad { color: var(--danger); }
 .muted-hint {
   color: var(--muted);
   font-size: 0.75rem;

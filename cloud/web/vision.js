@@ -112,6 +112,7 @@
       queued: "排队中",
       running: "运行中",
       completed: "已完成",
+      completed_with_errors: "部分失败",
       failed: "失败",
       cancelled: "已取消",
     };
@@ -158,7 +159,7 @@
     $("statTotal").textContent = String(c.total || state.jobs.length || 0);
     $("statQueued").textContent = String(c.queued || 0);
     $("statRunning").textContent = String(c.running || 0);
-    $("statDone").textContent = `${c.completed || 0} / ${c.failed || 0}`;
+    $("statDone").textContent = `${c.completed || 0} · 部分 ${c.completed_with_errors || 0} · 失败 ${c.failed || 0}`;
 
     const pump = (state.status && state.status.pump) || {};
     const model = (state.status && state.status.model) || "—";
@@ -205,7 +206,7 @@
           </div>
           <div class="queue-metrics">
             <div class="metric"><div class="n">${j.ok_count ?? 0}</div><div class="l">成功</div></div>
-            <div class="metric"><div class="n">${j.failed_count ?? 0}</div><div class="l">失败</div></div>
+            <div class="metric"><div class="n ${Number(j.failed_count || 0) > 0 ? "bad" : ""}">${j.failed_count ?? 0}</div><div class="l">失败</div></div>
             <div class="metric"><div class="n">${j.total ?? j.item_count ?? 0}</div><div class="l">总数</div></div>
             <div class="metric"><div class="n">${ratio}%</div><div class="l">进度</div></div>
           </div>
@@ -309,9 +310,13 @@
       const st = String(j.status || "");
       const canRun = st === "queued" || st === "failed" || st === "cancelled";
       const canCancel = st === "queued" || st === "running";
+      const canRequeue =
+        (Number(j.failed_count || 0) > 0 || Number(j.missing_count || 0) > 0) &&
+        (st === "completed" || st === "completed_with_errors" || st === "failed");
       $("detailActions").querySelectorAll("button[data-action]").forEach((btn) => {
         if (btn.dataset.action === "run") btn.disabled = state.busy || !canRun;
         if (btn.dataset.action === "cancel") btn.disabled = state.busy || !canCancel;
+        if (btn.dataset.action === "requeue") btn.disabled = state.busy || !canRequeue;
       });
 
       const cards = [
@@ -392,7 +397,7 @@
     state.jobs = data.jobs || [];
     if (data.counts) state.counts = data.counts;
     // stable-ish sort: running, queued, then others by priority/created
-    const rank = { running: 0, queued: 1, failed: 2, completed: 3, cancelled: 4 };
+    const rank = { running: 0, queued: 1, failed: 2, completed_with_errors: 3, completed: 4, cancelled: 5 };
     state.jobs.sort((a, b) => {
       const ra = rank[a.status] ?? 9;
       const rb = rank[b.status] ?? 9;
@@ -711,6 +716,28 @@
     }
   }
 
+  async function requeueFailed(jobId) {
+    if (state.busy) return;
+    state.busy = true;
+    try {
+      const body = { job_id: jobId || "", batch_size: 20, start: true, max_running: 1 };
+      const data = await api("/api/v1/ai/vision/requeue-failed", {
+        method: "POST",
+        body: JSON.stringify(body),
+        timeoutMs: 120000,
+      });
+      toast(
+        `失败重跑：新建 ${data.created_jobs || 0} 批 / ${data.requeued_items || 0} 人` +
+          (data.skipped_already_visioned ? ` · 已识别跳过 ${data.skipped_already_visioned}` : "")
+      );
+      await refreshAll({ softDetail: true });
+    } catch (err) {
+      toast(`重跑失败项出错：${err.message || err}`);
+    } finally {
+      state.busy = false;
+    }
+  }
+
   function bind() {
     $("btnRefresh")?.addEventListener("click", () => refreshAll({ showToast: true }));
     $("btnPump")?.addEventListener("click", () => startPump({ maxClaim: 0, background: true }));
@@ -719,6 +746,11 @@
     $("btnInventory2")?.addEventListener("click", () => runInventory());
     $("btnPlan")?.addEventListener("click", () => runPlan());
     $("btnEnqueue")?.addEventListener("click", () => runEnqueue());
+    $("btnRequeueAll")?.addEventListener("click", () => {
+      if (window.confirm("把所有批次的失败/缺图条目重新入队并启动泵？（已识别的人会自动跳过）")) {
+        requeueFailed("");
+      }
+    });
 
     $("invByCity")?.addEventListener("click", (ev) => {
       const btn = ev.target.closest("button[data-prov]");
@@ -747,6 +779,7 @@
       if (!btn || !state.selectedId) return;
       if (btn.dataset.action === "run") runJob(state.selectedId);
       if (btn.dataset.action === "cancel") cancelJob(state.selectedId);
+      if (btn.dataset.action === "requeue") requeueFailed(state.selectedId);
     });
   }
 

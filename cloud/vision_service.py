@@ -1109,13 +1109,30 @@ def run_paths_vision(
             client=client,
         )
 
+    _TRANSIENT = ("http_429", "rate_limit", "timed out", "Read timeout", "Connection")
+
+    def _one_with_retry(row: Dict[str, Any]) -> Dict[str, Any]:
+        # Grok relay throttles bursts; retry transient errors with a short backoff
+        # instead of burning the whole item.
+        delays = (3.0, 8.0)
+        result = _one(row)
+        for delay in delays:
+            if result.get("ok") or result.get("skipped"):
+                return result
+            err = str(result.get("error") or "")
+            if not any(marker in err for marker in _TRANSIENT):
+                return result
+            time.sleep(delay)
+            result = _one(row)
+        return result
+
     workers = max(1, min(runtime.concurrency, len(work) or 1))
     if workers <= 1 or len(work) <= 1:
-        results = [_one(row) for row in work]
+        results = [_one_with_retry(row) for row in work]
     else:
         results = [None] * len(work)
         with ThreadPoolExecutor(max_workers=workers) as pool:
-            futs = {pool.submit(_one, row): idx for idx, row in enumerate(work)}
+            futs = {pool.submit(_one_with_retry, row): idx for idx, row in enumerate(work)}
             for fut in as_completed(futs):
                 idx = futs[fut]
                 seed = work[idx]
@@ -1596,6 +1613,126 @@ def enrich_vision_job(job: Dict[str, Any], *, people_db: Optional[Path] = None) 
     return data
 
 
+def _job_status_from_counts(counts: Dict[str, Any], report: Dict[str, Any]) -> str:
+    """Honest terminal status: all-fail is failed, mixed is completed_with_errors."""
+    ok_n = int(counts.get("classified") or 0)
+    fail_n = int(counts.get("failed") or 0)
+    if str(report.get("error") or "") == "vision_runtime_unavailable":
+        return "failed"
+    if fail_n > 0 and ok_n == 0:
+        return "failed"
+    if fail_n > 0:
+        return "completed_with_errors"
+    return "completed"
+
+
+def requeue_failed_vision_items(
+    *,
+    job_id: str = "",
+    batch_size: int = 20,
+    start: bool = False,
+    max_running: int = 1,
+) -> Dict[str, Any]:
+    """Create retry vision_jobs from failed/missing items only (never rescrapes).
+
+    Re-checks people.sqlite first: anyone who has since gained a visual_gender
+    is dropped instead of re-billed against the Grok relay.
+    """
+    from cloud import jobs_db
+
+    if job_id:
+        sources = [j for j in [jobs_db.get_vision_job(job_id)] if j]
+        if not sources:
+            raise KeyError(f"vision job not found: {job_id}")
+    else:
+        sources = [
+            j
+            for j in jobs_db.list_vision_jobs(limit=500)
+            if int(j.get("failed_count") or 0) > 0
+            and str(j.get("status") or "") in {"failed", "completed", "completed_with_errors"}
+        ]
+
+    candidates: List[Dict[str, Any]] = []
+    seen: set = set()
+    for job in sources:
+        enriched = enrich_vision_job(job)
+        for it in enriched.get("items") or []:
+            if str(it.get("status") or "") not in {"failed", "missing"}:
+                continue
+            key = str(it.get("person_id") or "") or f"{it.get('name')}::{it.get('path')}"
+            if key in seen:
+                continue
+            seen.add(key)
+            candidates.append(
+                {
+                    "person_id": str(it.get("person_id") or ""),
+                    "name": str(it.get("name") or ""),
+                    "path": str(it.get("path") or it.get("primary_image_path") or ""),
+                    "primary_image_path": str(it.get("primary_image_path") or it.get("path") or ""),
+                    "province": str(it.get("province") or ""),
+                    "city": str(it.get("city") or ""),
+                    "unit_name": str(it.get("unit_name") or ""),
+                    "source_job": str(job.get("id") or ""),
+                    "last_error": str(it.get("error") or "")[:200],
+                }
+            )
+
+    # Drop anyone already visioned since the failure.
+    lookup = _people_visual_lookup(
+        [c["person_id"] for c in candidates if c["person_id"]],
+        names=[c["name"] for c in candidates if not c["person_id"] and c["name"]],
+    )
+    todo: List[Dict[str, Any]] = []
+    already = 0
+    for cand in candidates:
+        row = lookup.get(cand["person_id"]) or lookup.get(f"name:{cand['name']}")
+        existing = str((row or {}).get("visual_gender") or "").strip()
+        if existing and existing not in {"不确定", "不适用"}:
+            already += 1
+            continue
+        todo.append(cand)
+
+    size = max(5, min(int(batch_size or 20), 100))
+    created: List[Dict[str, Any]] = []
+    for offset in range(0, len(todo), size):
+        chunk = todo[offset : offset + size]
+        label = f"{chunk[0].get('province') or '?'}/{chunk[0].get('city') or '?'}"
+        job = jobs_db.create_vision_job(
+            name=f"retry {label} #{offset}",
+            batch_key=f"retry::{label}",
+            province=str(chunk[0].get("province") or ""),
+            city=str(chunk[0].get("city") or ""),
+            items=chunk,
+            priority=50 + offset // size,
+            force=False,
+            write_people=True,
+            dry_run=False,
+        )
+        created.append(
+            {
+                "id": job.get("id"),
+                "name": job.get("name"),
+                "total": job.get("total"),
+                "priority": job.get("priority"),
+            }
+        )
+
+    pump = None
+    if start and created:
+        pump = pump_vision_jobs(max_running=max_running, background=True)
+    return {
+        "ok": True,
+        "source_jobs": len(sources),
+        "failed_items_seen": len(candidates),
+        "skipped_already_visioned": already,
+        "requeued_items": len(todo),
+        "created_jobs": len(created),
+        "jobs": created,
+        "pump": pump,
+        "counts": jobs_db.vision_job_counts(),
+    }
+
+
 def run_vision_job(job_id: str) -> Dict[str, Any]:
     """Execute one vision_jobs row (paths concurrent via run_paths_vision pool)."""
     from cloud import jobs_db
@@ -1668,7 +1805,7 @@ def run_vision_job(job_id: str) -> Dict[str, Any]:
 
         jobs_db.update_vision_job(
             job_id,
-            status="completed" if report.get("ok") or int(counts.get("classified") or 0) > 0 else "failed",
+            status=_job_status_from_counts(counts, report),
             done_count=int(counts.get("candidates") or len(paths)),
             ok_count=int(counts.get("classified") or 0),
             failed_count=int(counts.get("failed") or 0),
