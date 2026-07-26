@@ -1011,6 +1011,20 @@ def queue_items(
     size = max(1, min(int(limit or 100), 2000))
     page = filtered[start : start + size]
     previewable = sum(1 for row in filtered if row.get("has_preview"))
+    reason_counts: Dict[str, int] = {}
+    for row in filtered:
+        reason = str(row.get("reason") or "").strip() or (
+            "无图" if not row.get("has_preview") and row.get("bucket") == "pending" else ""
+        )
+        if not reason:
+            continue
+        # Collapse free text to a short key (first 40 chars) so the UI can chip it.
+        key = reason if len(reason) <= 40 else reason[:40] + "…"
+        reason_counts[key] = int(reason_counts.get(key) or 0) + 1
+    reason_list = [
+        {"reason": k, "count": v}
+        for k, v in sorted(reason_counts.items(), key=lambda kv: (-kv[1], kv[0]))
+    ]
     return {
         "id": queue_id,
         "output_root": root,
@@ -1025,6 +1039,7 @@ def queue_items(
             "pending": sum(1 for row in items if row.get("bucket") == "pending"),
             "previewable": sum(1 for row in items if row.get("has_preview")),
         },
+        "reason_counts": reason_list,
     }
 
 

@@ -26,6 +26,8 @@
     fetchAuthorizedBlob,
     loadPreviewInto: loadPreviewIntoCore,
     looksLikeAccessGate,
+    explainError,
+    renderReasonChips,
   } = window.D2I;
 
   function statusLabel(status) {
@@ -39,6 +41,10 @@
       stopped: "已停止",
       error: "异常",
       cancelled: "已取消",
+      downloaded: "已下载",
+      pending: "未完成",
+      done: "已完成",
+      image: "有图",
     };
     return map[status] || status || "未知";
   }
@@ -207,6 +213,11 @@
     $("detailEmpty").hidden = false;
     $("detailBody").hidden = true;
     state.detailLoadedFor = "";
+    const chips = $("reasonChips");
+    if (chips) {
+      chips.hidden = true;
+      chips.innerHTML = "";
+    }
     clearItems();
   }
 
@@ -263,16 +274,55 @@ function loadPreviewInto(imgEl, previewUrl, fallbackEl, stillValid) {
       `<span class="tag soft">${escapeHtml(flagText(item.flags?.meta_ok, "元"))}</span>`,
     ].join("");
 
+    const exp = explainError(item.reason || "");
     const meta = [
       ["条目 ID", item.id || "—"],
-      ["状态", item.status || "—"],
+      ["状态", statusLabel(item.status || item.bucket || "") || "—"],
       ["落盘路径", item.image_path || "—"],
-      ["原因", item.reason || "—"],
+      ["失败原因", exp.label || item.reason || "—"],
       ["详情 URL", item.detail_url || "—"],
     ];
     $("itemSideMeta").innerHTML = meta
       .map(([k, v]) => `<dt>${escapeHtml(k)}</dt><dd title="${escapeHtml(v)}">${escapeHtml(v)}</dd>`)
       .join("");
+
+    const ev = $("itemSideEvidence");
+    if (ev) {
+      const reasonText = item.reason
+        ? exp.label || item.reason
+        : item.has_preview
+          ? "正常 / 可预览"
+          : "无图/未完成";
+      const hintText =
+        exp.hint ||
+        (item.reason
+          ? item.reason
+          : item.has_preview
+            ? "该条目当前无失败原因；可在下方查看路径与标志位。"
+            : "条目没有可预览的本地图片");
+      ev.hidden = false;
+      ev.innerHTML = `
+        <h4>判定说明</h4>
+        <div><strong>原因：</strong>${escapeHtml(reasonText)}</div>
+        <div><strong>说明：</strong>${escapeHtml(hintText)}</div>
+        <div class="ev-actions"><strong>建议：</strong>${escapeHtml(exp.action || "查看运行日志与详情页")}</div>
+        <pre>${escapeHtml(
+          JSON.stringify(
+            {
+              id: item.id,
+              status: item.status,
+              bucket: item.bucket,
+              reason: item.reason || null,
+              flags: item.flags || null,
+              image_path: item.image_path || null,
+              detail_url: item.detail_url || null,
+            },
+            null,
+            2
+          )
+        )}</pre>
+      `;
+    }
 
     const source = $("itemSideSource");
     const safeUrl = safeHttpUrl(item.detail_url);
@@ -329,7 +379,7 @@ function loadPreviewInto(imgEl, previewUrl, fallbackEl, stillValid) {
           <div class="item-body">
             <div class="item-name">${escapeHtml(row.name || "未命名")}</div>
             <div class="item-meta">
-              <span>${escapeHtml(row.status || row.bucket || "")}</span>
+              <span>${escapeHtml(statusLabel(row.status || row.bucket || ""))}</span>
               <span>${escapeHtml(flags)}</span>
             </div>
           </div>
@@ -383,7 +433,27 @@ function loadPreviewInto(imgEl, previewUrl, fallbackEl, stillValid) {
         total: payload.total,
         previewable: payload.previewable,
         counts: payload.counts || {},
+        reason_counts: payload.reason_counts || [],
       };
+      const chipHost = $("reasonChips");
+      if (chipHost) {
+        // Prefer live item reasons; fall back to server aggregates.
+        const fromItems = (payload.items || []).filter((row) => row.reason || (!row.has_preview && row.bucket === "pending"));
+        if (fromItems.length) {
+          renderReasonChips(chipHost, fromItems, "reason");
+        } else if ((payload.reason_counts || []).length) {
+          chipHost.hidden = false;
+          chipHost.innerHTML = (payload.reason_counts || [])
+            .map((g) => {
+              const exp = explainError(g.reason);
+              return `<span class="reason-chip tag soft" title="${escapeHtml(exp.hint || g.reason)}">${escapeHtml(exp.label)} · ${g.count}</span>`;
+            })
+            .join("");
+        } else {
+          chipHost.hidden = true;
+          chipHost.innerHTML = "";
+        }
+      }
       if (prevId && state.items.some((row) => row.id === prevId)) {
         state.selectedItemId = prevId;
       } else {

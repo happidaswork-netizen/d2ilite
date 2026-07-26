@@ -10,10 +10,13 @@
     polling: false,
     inventory: null,
     plan: null,
+    detailItems: [],
+    reasonFilter: "",
+    evidenceItemId: "",
   };
 
   const $ = (id) => document.getElementById(id);
-  const { api, escapeHtml, fmtTime, toast, looksLikeAccessGate } = window.D2I;
+  const { api, escapeHtml, fmtTime, toast, looksLikeAccessGate, explainError, renderReasonChips } = window.D2I;
 
   function statusLabel(status) {
     const map = {
@@ -137,14 +140,49 @@
     return map[st] || st || "—";
   }
 
-  function renderItemTable(items) {
+  function renderItemTable(items, { filterReason = "" } = {}) {
     const host = $("itemTable");
     const rows = items || [];
+    state.detailItems = rows;
     const okN = rows.filter((x) => x.status === "ok" || (x.visual_gender && x.status !== "failed")).length;
     const failN = rows.filter((x) => x.status === "failed" || x.status === "missing").length;
     $("itemsHint").textContent = `${rows.length} 人 · 成功/已识别 ${okN} · 失败 ${failN}`;
+
+    const chipHost = $("reasonChips");
+    if (chipHost) {
+      renderReasonChips(
+        chipHost,
+        rows.filter((x) => x.error || x.status === "failed" || x.status === "missing"),
+        "error"
+      );
+      chipHost.querySelectorAll(".reason-chip").forEach((btn) => {
+        btn.classList.toggle("active", Boolean(filterReason) && btn.dataset.reason === filterReason);
+        btn.onclick = () => {
+          const next = state.reasonFilter === btn.dataset.reason ? "" : btn.dataset.reason;
+          state.reasonFilter = next;
+          renderItemTable(state.detailItems || [], { filterReason: next });
+        };
+      });
+    }
+
+    const visible = filterReason
+      ? rows.filter((it) => {
+          const exp = explainError(it.error || "");
+          return exp.code === filterReason || String(it.error || "").includes(filterReason);
+        })
+      : rows;
+
     if (!rows.length) {
       host.innerHTML = `<div class="empty-state">本批无条目快照。</div>`;
+      const ev = $("itemEvidence");
+      if (ev) {
+        ev.hidden = true;
+        ev.innerHTML = "";
+      }
+      return;
+    }
+    if (!visible.length) {
+      host.innerHTML = `<div class="empty-state">当前原因筛选下没有条目。</div>`;
       return;
     }
     host.innerHTML = `
@@ -159,34 +197,93 @@
             <th>发型</th>
             <th>姿态</th>
             <th>人数</th>
-            <th>错误</th>
+            <th>失败原因</th>
             <th>路径</th>
           </tr>
         </thead>
         <tbody>
-          ${rows
+          ${visible
             .slice(0, 120)
             .map((it, idx) => {
               const path = it.path || it.primary_image_path || it.resolved_path || "—";
               const st = it.status || (it.visual_gender ? "ok" : it.error ? "failed" : "unknown");
-              const err = it.error || "";
-              return `<tr class="vision-row-${escapeHtml(st)}">
+              const exp = explainError(it.error || "");
+              const errLabel = exp.label || "—";
+              const errTitle = [exp.hint, exp.action, exp.raw].filter(Boolean).join(" · ");
+              const selected =
+                state.evidenceItemId &&
+                (it.person_id === state.evidenceItemId || it.name === state.evidenceItemId);
+              return `<tr class="vision-row-${escapeHtml(st)}${selected ? " is-selected" : ""}${
+                filterReason ? " reason-hit" : ""
+              }" data-item-key="${escapeHtml(it.person_id || it.name || String(idx))}">
                 <td>${idx + 1}</td>
                 <td>${escapeHtml(it.name || "—")}</td>
-                <td><span class="tag ${escapeHtml(st === "ok" ? "completed" : st === "failed" || st === "missing" ? "failed" : st === "skipped" ? "queued" : "running")}">${escapeHtml(itemStatusLabel(st))}</span></td>
+                <td><span class="tag ${escapeHtml(
+                  st === "ok"
+                    ? "completed"
+                    : st === "failed" || st === "missing"
+                      ? "failed"
+                      : st === "skipped"
+                        ? "queued"
+                        : "running"
+                )}">${escapeHtml(itemStatusLabel(st))}</span></td>
                 <td>${escapeHtml(it.visual_gender || "—")}</td>
                 <td>${escapeHtml(it.visual_body_type || "—")}</td>
                 <td>${escapeHtml(it.visual_hairstyle || "—")}</td>
                 <td>${escapeHtml(it.visual_pose || "—")}</td>
                 <td>${it.person_count ?? "—"}</td>
-                <td class="path-cell" title="${escapeHtml(err)}">${escapeHtml(err || "—")}</td>
+                <td class="path-cell" title="${escapeHtml(errTitle || errLabel)}">${escapeHtml(errLabel)}</td>
                 <td class="path-cell" title="${escapeHtml(path)}">${escapeHtml(path)}</td>
               </tr>`;
             })
             .join("")}
         </tbody>
       </table>
-      ${rows.length > 120 ? `<div class="muted-hint">仅显示前 120 / ${rows.length}</div>` : ""}
+      ${visible.length > 120 ? `<div class="muted-hint">仅显示前 120 / ${visible.length}</div>` : ""}
+    `;
+    host.querySelectorAll("tbody tr[data-item-key]").forEach((tr) => {
+      tr.addEventListener("click", () => {
+        const key = tr.dataset.itemKey;
+        const item = (state.detailItems || []).find(
+          (it, i) => String(it.person_id || it.name || i) === key
+        );
+        state.evidenceItemId = key;
+        showItemEvidence(item);
+        host.querySelectorAll("tr.is-selected").forEach((el) => el.classList.remove("is-selected"));
+        tr.classList.add("is-selected");
+      });
+    });
+  }
+
+  function showItemEvidence(item) {
+    const host = $("itemEvidence");
+    if (!host) return;
+    if (!item) {
+      host.hidden = true;
+      host.innerHTML = "";
+      return;
+    }
+    const exp = explainError(item.error || "");
+    const st = item.status || (item.visual_gender ? "ok" : item.error ? "failed" : "unknown");
+    const path = item.path || item.primary_image_path || item.resolved_path || "—";
+    const raw = {
+      status: st,
+      error: item.error || null,
+      visual_gender: item.visual_gender || null,
+      person_count: item.person_count ?? null,
+      path,
+      person_id: item.person_id || null,
+    };
+    host.hidden = false;
+    host.innerHTML = `
+      <h4>${escapeHtml(item.name || "未命名")} · ${escapeHtml(itemStatusLabel(st))}</h4>
+      <div><strong>判定：</strong>${escapeHtml(exp.label)}${
+        exp.code && exp.code !== exp.label ? `（${escapeHtml(exp.code)}）` : ""
+      }</div>
+      <div><strong>说明：</strong>${escapeHtml(exp.hint || "—")}</div>
+      <div class="ev-actions"><strong>建议：</strong>${escapeHtml(exp.action || "—")}</div>
+      <div class="ev-actions"><strong>路径：</strong>${escapeHtml(path)}</div>
+      <pre>${escapeHtml(JSON.stringify(raw, null, 2))}</pre>
     `;
   }
 
@@ -243,10 +340,10 @@
       const meta = [
         ["ID", j.id],
         ["状态", statusLabel(j.status)],
-        ["batch_key", j.batch_key || "—"],
+        ["批次键", j.batch_key || "—"],
         ["省 / 市", [j.province, j.city].filter(Boolean).join(" / ") || "—"],
-        ["force", j.force ? "是" : "否"],
-        ["dry_run", j.dry_run ? "是" : "否"],
+        ["强制重跑", j.force ? "是" : "否"],
+        ["演练 dry_run", j.dry_run ? "是（仍真实调用 Grok 计费，仅不写库）" : "否"],
         ["创建", fmtTime(j.created_at)],
         ["开始", fmtTime(j.started_at)],
         ["结束", fmtTime(j.finished_at)],
@@ -280,7 +377,18 @@
           ? "运行中，完成后写入 result…"
           : "（尚无结果）";
 
+      state.reasonFilter = "";
+      state.evidenceItemId = "";
+      const ev = $("itemEvidence");
+      if (ev) {
+        ev.hidden = true;
+        ev.innerHTML = "";
+      }
       renderItemTable(j.items || []);
+      if (!(j.items || []).length && j.error) {
+        const chipHost = $("reasonChips");
+        if (chipHost) renderReasonChips(chipHost, [{ error: j.error }], "error");
+      }
     } catch (err) {
       if (!soft) toast(err.message || String(err));
     }
