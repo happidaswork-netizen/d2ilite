@@ -1065,8 +1065,28 @@ def library_list(
     queue_id: str = "",
     queue_limit: int = 40,
     per_queue_limit: int = 200,
+    prefer_index: bool = True,
 ) -> Dict[str, Any]:
-    """Cross-queue result browser over Cloud queue output roots (not full portrait disk)."""
+    """Cross-queue result browser over Cloud queue output roots (not full portrait disk).
+
+    When the library_items index is populated, prefer SQL paging (no per-queue cap).
+    Empty index falls back to the legacy file-scan path so first boot still works.
+    """
+    if prefer_index:
+        try:
+            from cloud import library_index
+
+            indexed = library_index.library_list_from_index(
+                limit=limit,
+                offset=offset,
+                status=status,
+                q=q,
+                queue_id=queue_id,
+            )
+            if indexed is not None:
+                return indexed
+        except Exception:
+            pass
     status_filter = str(status or "").strip().lower()
     query = str(q or "").strip().lower()
     only_queue = str(queue_id or "").strip()

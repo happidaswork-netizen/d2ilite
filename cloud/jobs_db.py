@@ -83,6 +83,8 @@ def init_db(db_path: Optional[Path] = None) -> None:
             conn.commit()
         finally:
             conn.close()
+    # Keep the library index schema in lockstep with init_db callers.
+    ensure_library_items_schema(db_path)
 
 
 def _row_to_dict(row: sqlite3.Row) -> Dict[str, Any]:
@@ -595,5 +597,218 @@ def requeue_stale_running_vision_jobs(
             )
             conn.commit()
             return int(cur.rowcount or 0)
+        finally:
+            conn.close()
+
+
+# --- Library item index (jsonl is still the source of truth; this table is a cache) ---
+
+
+def ensure_library_items_schema(db_path: Optional[Path] = None) -> None:
+    with _LOCK:
+        conn = _connect(db_path)
+        try:
+            conn.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS library_items (
+                  library_id TEXT PRIMARY KEY,
+                  queue_id TEXT NOT NULL,
+                  queue_name TEXT NOT NULL DEFAULT '',
+                  item_id TEXT NOT NULL,
+                  name TEXT NOT NULL DEFAULT '',
+                  detail_url TEXT NOT NULL DEFAULT '',
+                  image_path TEXT NOT NULL DEFAULT '',
+                  bucket TEXT NOT NULL DEFAULT 'pending',
+                  status TEXT NOT NULL DEFAULT '',
+                  reason TEXT NOT NULL DEFAULT '',
+                  has_preview INTEGER NOT NULL DEFAULT 0,
+                  output_root TEXT NOT NULL DEFAULT '',
+                  indexed_at REAL NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_library_items_queue
+                  ON library_items(queue_id, has_preview DESC, bucket, name);
+                CREATE INDEX IF NOT EXISTS idx_library_items_name
+                  ON library_items(name);
+                CREATE INDEX IF NOT EXISTS idx_library_items_preview
+                  ON library_items(has_preview DESC, queue_name, name);
+                """
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+
+def replace_library_items_for_queue(
+    queue_id: str,
+    rows: List[Dict[str, Any]],
+    *,
+    db_path: Optional[Path] = None,
+) -> int:
+    """Atomic replace of one queue's index rows (delete + bulk insert)."""
+    qid = str(queue_id or "").strip()
+    if not qid:
+        return 0
+    ensure_library_items_schema(db_path)
+    payload: List[Dict[str, Any]] = []
+    for row in rows or []:
+        library_id = str(row.get("library_id") or "").strip()
+        item_id = str(row.get("item_id") or "").strip()
+        if not library_id or not item_id:
+            continue
+        payload.append(
+            {
+                "library_id": library_id,
+                "queue_id": qid,
+                "queue_name": str(row.get("queue_name") or qid),
+                "item_id": item_id,
+                "name": str(row.get("name") or ""),
+                "detail_url": str(row.get("detail_url") or ""),
+                "image_path": str(row.get("image_path") or ""),
+                "bucket": str(row.get("bucket") or "pending"),
+                "status": str(row.get("status") or ""),
+                "reason": str(row.get("reason") or ""),
+                "has_preview": 1 if row.get("has_preview") else 0,
+                "output_root": str(row.get("output_root") or ""),
+                "indexed_at": float(row.get("indexed_at") or time.time()),
+            }
+        )
+    with _LOCK:
+        conn = _connect(db_path)
+        try:
+            conn.execute("DELETE FROM library_items WHERE queue_id = ?", (qid,))
+            if payload:
+                conn.executemany(
+                    """
+                    INSERT INTO library_items (
+                      library_id, queue_id, queue_name, item_id, name, detail_url,
+                      image_path, bucket, status, reason, has_preview, output_root, indexed_at
+                    ) VALUES (
+                      :library_id, :queue_id, :queue_name, :item_id, :name, :detail_url,
+                      :image_path, :bucket, :status, :reason, :has_preview, :output_root, :indexed_at
+                    )
+                    """,
+                    payload,
+                )
+            conn.commit()
+            return len(payload)
+        finally:
+            conn.close()
+
+
+def library_items_stats(db_path: Optional[Path] = None) -> Dict[str, Any]:
+    ensure_library_items_schema(db_path)
+    with _LOCK:
+        conn = _connect(db_path)
+        try:
+            total = int(conn.execute("SELECT COUNT(*) FROM library_items").fetchone()[0] or 0)
+            previewable = int(
+                conn.execute("SELECT COUNT(*) FROM library_items WHERE has_preview = 1").fetchone()[0] or 0
+            )
+            queues = int(
+                conn.execute("SELECT COUNT(DISTINCT queue_id) FROM library_items").fetchone()[0] or 0
+            )
+            return {"total": total, "previewable": previewable, "queues": queues}
+        finally:
+            conn.close()
+
+
+def library_queue_summaries(db_path: Optional[Path] = None) -> List[Dict[str, Any]]:
+    ensure_library_items_schema(db_path)
+    with _LOCK:
+        conn = _connect(db_path)
+        try:
+            rows = conn.execute(
+                """
+                SELECT
+                  queue_id AS id,
+                  MAX(queue_name) AS name,
+                  MAX(output_root) AS output_root,
+                  COUNT(*) AS item_count,
+                  COUNT(*) AS total_items,
+                  0 AS truncated,
+                  SUM(CASE WHEN has_preview = 1 THEN 1 ELSE 0 END) AS previewable,
+                  MAX(indexed_at) AS updated_at
+                FROM library_items
+                GROUP BY queue_id
+                ORDER BY MAX(indexed_at) DESC, MAX(queue_name) ASC
+                """
+            ).fetchall()
+            out: List[Dict[str, Any]] = []
+            for row in rows:
+                data = dict(row)
+                data["truncated"] = False
+                data["previewable"] = int(data.get("previewable") or 0)
+                data["item_count"] = int(data.get("item_count") or 0)
+                data["total_items"] = int(data.get("total_items") or 0)
+                out.append(data)
+            return out
+        finally:
+            conn.close()
+
+
+def query_library_items(
+    *,
+    limit: int = 60,
+    offset: int = 0,
+    status: str = "",
+    q: str = "",
+    queue_id: str = "",
+    db_path: Optional[Path] = None,
+) -> Dict[str, Any]:
+    ensure_library_items_schema(db_path)
+    status_filter = str(status or "").strip().lower()
+    query = str(q or "").strip()
+    only_queue = str(queue_id or "").strip()
+    start = max(0, int(offset or 0))
+    size = max(1, min(int(limit or 60), 500))
+
+    where: List[str] = []
+    params: Dict[str, Any] = {}
+    if only_queue:
+        where.append("queue_id = :queue_id")
+        params["queue_id"] = only_queue
+    if status_filter in {"failed", "fail", "pending"}:
+        where.append("bucket = 'pending'")
+    elif status_filter in {"done", "completed", "ok"}:
+        where.append("bucket = 'done'")
+    elif status_filter in {"image", "downloaded", "has_image"}:
+        where.append("has_preview = 1")
+    if query:
+        where.append(
+            "("
+            "instr(lower(name), :q) > 0 OR "
+            "instr(lower(reason), :q) > 0 OR "
+            "instr(lower(detail_url), :q) > 0 OR "
+            "instr(lower(image_path), :q) > 0 OR "
+            "instr(lower(queue_name), :q) > 0 OR "
+            "instr(lower(queue_id), :q) > 0"
+            ")"
+        )
+        params["q"] = query.lower()
+
+    where_sql = (" WHERE " + " AND ".join(where)) if where else ""
+    order_sql = " ORDER BY has_preview DESC, CASE bucket WHEN 'done' THEN 0 ELSE 1 END, queue_name ASC, name ASC"
+    with _LOCK:
+        conn = _connect(db_path)
+        try:
+            total = int(
+                conn.execute(f"SELECT COUNT(*) FROM library_items{where_sql}", params).fetchone()[0] or 0
+            )
+            preview_where = where_sql + (" AND" if where else " WHERE") + " has_preview = 1"
+            previewable = int(
+                conn.execute(f"SELECT COUNT(*) FROM library_items{preview_where}", params).fetchone()[0] or 0
+            )
+            params_page = dict(params)
+            params_page["limit"] = size
+            params_page["offset"] = start
+            rows = conn.execute(
+                f"SELECT * FROM library_items{where_sql}{order_sql} LIMIT :limit OFFSET :offset",
+                params_page,
+            ).fetchall()
+            return {
+                "total": total,
+                "previewable": previewable,
+                "items": [dict(row) for row in rows],
+            }
         finally:
             conn.close()

@@ -399,6 +399,16 @@ def create_app() -> FastAPI:
             per_queue_limit=per_queue_limit,
         )
 
+    @api.post("/library/reindex")
+    def library_reindex(queue_id: str = Query(default="")) -> Dict[str, Any]:
+        """Rebuild the library_items SQLite index from workspace progress files."""
+        from cloud import library_index
+
+        qid = str(queue_id or "").strip()
+        if qid:
+            return library_index.index_queue(qid)
+        return library_index.index_all_queues()
+
     # --- Vision / AI (Grok 4.5 OpenAI-compatible) ---
 
     @api.get("/ai/vision/status")
