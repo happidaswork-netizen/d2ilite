@@ -1,5 +1,4 @@
 (() => {
-  const TOKEN_KEY = "d2i_cloud_token";
   const state = {
     queues: [],
     templates: [],
@@ -11,80 +10,83 @@
     selectedItemId: "",
     objectUrls: [],
     timer: null,
+    lastAutoUrl: "",
+    detailLoadedFor: "",
+    polling: false,
   };
 
   const $ = (id) => document.getElementById(id);
 
-  function token() {
-    return (localStorage.getItem(TOKEN_KEY) || "").trim();
+  function jsonHeaders() {
+    return { "Content-Type": "application/json", "Accept": "application/json" };
   }
 
-  function setToken(value) {
-    const next = String(value || "").trim();
-    if (next) localStorage.setItem(TOKEN_KEY, next);
-    else localStorage.removeItem(TOKEN_KEY);
-    return next;
-  }
-
-  // One-shot bootstrap: ?token= / #token= / ?access_token= then strip from URL.
-  function bootstrapTokenFromUrl() {
-    try {
-      const url = new URL(window.location.href);
-      const fromQuery =
-        url.searchParams.get("token") ||
-        url.searchParams.get("access_token") ||
-        url.searchParams.get("d2i_token") ||
-        "";
-      let fromHash = "";
-      if (url.hash && url.hash.length > 1) {
-        const hp = new URLSearchParams(url.hash.replace(/^#/, ""));
-        fromHash = hp.get("token") || hp.get("access_token") || hp.get("d2i_token") || "";
-      }
-      const boot = String(fromQuery || fromHash || "").trim();
-      if (!boot) return false;
-      setToken(boot);
-      url.searchParams.delete("token");
-      url.searchParams.delete("access_token");
-      url.searchParams.delete("d2i_token");
-      const cleanHash = new URLSearchParams(url.hash.replace(/^#/, ""));
-      cleanHash.delete("token");
-      cleanHash.delete("access_token");
-      cleanHash.delete("d2i_token");
-      const hashText = cleanHash.toString();
-      url.hash = hashText ? `#${hashText}` : "";
-      window.history.replaceState({}, document.title, url.pathname + url.search + url.hash);
+  function looksLikeAccessGate(text, contentType) {
+    const t = String(text || "");
+    const ct = String(contentType || "").toLowerCase();
+    if (ct.includes("text/html") && /cloudflare\s*access|cloudflareaccess\.com|Sign in/i.test(t)) {
       return true;
-    } catch {
-      return false;
     }
-  }
-
-  function authHeaders() {
-    const headers = { "Content-Type": "application/json" };
-    const t = token();
-    if (t) headers.Authorization = `Bearer ${t}`;
-    return headers;
+    if (/<title[^>]*>\s*Sign in\s*[·•]\s*Cloudflare Access/i.test(t)) return true;
+    if (/cloudflareaccess\.com/i.test(t) && /<html/i.test(t)) return true;
+    return false;
   }
 
   async function api(path, options = {}) {
-    const res = await fetch(path, {
-      ...options,
-      headers: { ...authHeaders(), ...(options.headers || {}) },
-    });
-    const text = await res.text();
-    let body = null;
+    const timeoutMs = Number(options.timeoutMs || 20000);
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+    const { timeoutMs: _t, headers: extraHeaders, ...fetchOpts } = options;
     try {
-      body = text ? JSON.parse(text) : null;
-    } catch {
-      body = { raw: text };
-    }
-    if (!res.ok) {
-      const detail = body?.detail || body?.error || res.statusText || "request failed";
-      const err = new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
-      err.status = res.status;
+      const res = await fetch(path, {
+        ...fetchOpts,
+        credentials: fetchOpts.credentials || "same-origin",
+        signal: ctrl.signal,
+        headers: { ...jsonHeaders(), ...(window.D2I ? D2I.authHeaders() : {}), ...(extraHeaders || {}) },
+      });
+      const text = await res.text();
+      const contentType = res.headers.get("content-type") || "";
+      if (looksLikeAccessGate(text, contentType)) {
+        const err = new Error("需要先完成 Cloudflare Access 登录（域名门禁）");
+        err.status = 401;
+        err.code = "cf_access";
+        err.loginUrl = window.location.origin + "/";
+        throw err;
+      }
+      let body = null;
+      try {
+        body = text ? JSON.parse(text) : null;
+      } catch {
+        const err = new Error(
+          contentType.includes("text/html")
+            ? "接口返回了网页而不是 JSON（可能未过域名门禁）"
+            : `接口返回非 JSON：${path}`
+        );
+        err.status = res.status || 0;
+        err.code = "non_json";
+        err.raw = text.slice(0, 200);
+        throw err;
+      }
+      if (res.status === 401 && window.D2I && !D2I.getToken()) {
+        if (D2I.promptToken()) return api(path, options);
+      }
+      if (!res.ok) {
+        const detail = body?.detail || body?.error || res.statusText || "request failed";
+        const err = new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
+        err.status = res.status;
+        throw err;
+      }
+      return body;
+    } catch (err) {
+      if (err && err.name === "AbortError") {
+        const e = new Error(`请求超时（${timeoutMs}ms）：${path}`);
+        e.status = 0;
+        throw e;
+      }
       throw err;
+    } finally {
+      clearTimeout(timer);
     }
-    return body;
   }
 
   function escapeHtml(value) {
@@ -140,8 +142,8 @@
   function setConn(ok, text) {
     const dot = $("connDot");
     const label = $("connText");
-    dot.className = `dot ${ok ? "ok" : "bad"}`;
-    label.textContent = text;
+    if (dot) dot.className = `dot ${ok ? "ok" : "bad"}`;
+    if (label) label.textContent = text;
   }
 
   function filteredQueues() {
@@ -159,6 +161,14 @@
   function renderQueues() {
     const list = $("queueList");
     const rows = filteredQueues();
+    // Skip DOM rewrite when nothing visible changed (kills 5s poll flicker).
+    const key = JSON.stringify([
+      state.filter,
+      state.selectedId,
+      rows.map((q) => [q.id, q.name, q.updated_at, q.speed_tier, q.runtime?.status, q.kpi]),
+    ]);
+    if (renderQueues._key === key) return;
+    renderQueues._key = key;
     if (!state.queues.length) {
       list.innerHTML = `<div class="empty-state">还没有队列。点击右上角「新建队列」开始。</div>`;
       return;
@@ -207,12 +217,12 @@
 
   async function loadStatus() {
     try {
-      const data = await api("/api/v1/status");
+      const data = await api("/api/v1/status", { timeoutMs: 25000 });
       setConn(true, `已连接 · v${data.version || "0.1"}`);
       renderOverview(data);
       return data;
     } catch (err) {
-      setConn(false, err.status === 401 ? "需要 Token" : `连接失败：${err.message}`);
+      setConn(false, formatConnError(err));
       throw err;
     }
   }
@@ -243,8 +253,13 @@
   function onTemplateChange() {
     const opt = $("templateId").selectedOptions[0];
     if (!opt) return;
-    if (!$("startUrl").value.trim() && opt.dataset.url) {
-      $("startUrl").value = opt.dataset.url;
+    const input = $("startUrl");
+    const current = input.value.trim();
+    const autoUrl = opt.dataset.url || "";
+    // Fill when empty, and keep following template switches until the user hand-edits the URL.
+    if (!current || current === state.lastAutoUrl) {
+      input.value = autoUrl;
+      state.lastAutoUrl = autoUrl;
     }
   }
 
@@ -260,12 +275,17 @@
     renderQueues();
     renderOverview();
     if (state.selectedId) {
-      const still = state.queues.some((q) => q.id === state.selectedId);
-      if (still) await showDetail(state.selectedId, false);
-      else {
+      const row = state.queues.find((q) => q.id === state.selectedId);
+      if (!row) {
         state.selectedId = "";
         localStorage.removeItem("d2i_cloud_selected_queue");
         clearDetail();
+      } else if (state.detailLoadedFor !== state.selectedId) {
+        // First restore after reload: full detail incl. items/logs.
+        await showDetail(state.selectedId).catch(() => renderDetailData(row));
+      } else {
+        // Poll refresh: reuse the list payload instead of a second GET per tick.
+        renderDetailData(row);
       }
     }
   }
@@ -273,6 +293,7 @@
   function clearDetail() {
     $("detailEmpty").hidden = false;
     $("detailBody").hidden = true;
+    state.detailLoadedFor = "";
     clearItems();
   }
 
@@ -297,14 +318,9 @@
     renderItemSide(null);
   }
 
-  function authQuery() {
-    const t = token();
-    return t ? `access_token=${encodeURIComponent(t)}` : "";
-  }
-
-  /** Fetch binary with Authorization (img src cannot set headers). */
+/** Fetch binary with Authorization (img src cannot set headers). */
   async function fetchAuthorizedBlob(url) {
-    const res = await fetch(url, { headers: authHeaders() });
+    const res = await fetch(url, { headers: window.D2I ? D2I.authHeaders() : {} });
     if (!res.ok) {
       const text = await res.text();
       let detail = res.statusText;
@@ -548,13 +564,7 @@
     if ($("lightboxDialog")?.open) openLightbox(state.items[next]);
   }
 
-  async function showDetail(id, fetchItems = true) {
-    state.selectedId = id;
-    localStorage.setItem("d2i_cloud_selected_queue", id);
-    renderQueues();
-
-    const data = await api(`/api/v1/queues/${encodeURIComponent(id)}`);
-    const q = data.queue || {};
+  function renderDetailData(q) {
     const kpi = q.kpi || {};
     const rt = q.runtime || {};
 
@@ -636,16 +646,24 @@
       <span>失败 ${kpi.failures ?? 0}</span>
       <span>复核 ${kpi.review ?? 0}</span>
     `;
+  }
 
-    if (fetchItems) {
-      try {
-        const logs = await api(`/api/v1/queues/${encodeURIComponent(id)}/logs?lines=100`);
-        $("logTail").textContent = logs.tail || "（暂无日志）";
-      } catch (err) {
-        $("logTail").textContent = `日志读取失败：${err.message}`;
-      }
-      await loadItems(id, { keepSelection: false });
+  async function showDetail(id) {
+    state.selectedId = id;
+    localStorage.setItem("d2i_cloud_selected_queue", id);
+    renderQueues();
+
+    const data = await api(`/api/v1/queues/${encodeURIComponent(id)}`);
+    renderDetailData(data.queue || {});
+    state.detailLoadedFor = id;
+
+    try {
+      const logs = await api(`/api/v1/queues/${encodeURIComponent(id)}/logs?lines=100`);
+      $("logTail").textContent = logs.tail || "（暂无日志）";
+    } catch (err) {
+      $("logTail").textContent = `日志读取失败：${err.message}`;
     }
+    await loadItems(id, { keepSelection: false });
   }
 
   function openCreate() {
@@ -732,16 +750,16 @@
   }
 
   function bind() {
-    $("btnRefresh").addEventListener("click", () => refreshAll(true));
-    $("btnOpenCreate").addEventListener("click", openCreate);
-    $("btnOpenCreate2").addEventListener("click", openCreate);
-    $("btnCloseCreate").addEventListener("click", closeCreate);
-    $("btnCancelCreate").addEventListener("click", closeCreate);
-    $("templateId").addEventListener("change", onTemplateChange);
-    $("speedTier").addEventListener("change", onTierChange);
-    $("createForm").addEventListener("submit", createQueue);
+    $("btnRefresh")?.addEventListener("click", () => refreshAll(true));
+    $("btnOpenCreate")?.addEventListener("click", openCreate);
+    $("btnOpenCreate2")?.addEventListener("click", openCreate);
+    $("btnCloseCreate")?.addEventListener("click", closeCreate);
+    $("btnCancelCreate")?.addEventListener("click", closeCreate);
+    $("templateId")?.addEventListener("change", onTemplateChange);
+    $("speedTier")?.addEventListener("change", onTierChange);
+    $("createForm")?.addEventListener("submit", createQueue);
 
-    $("filterPills").addEventListener("click", (ev) => {
+    $("filterPills")?.addEventListener("click", (ev) => {
       const btn = ev.target.closest("button[data-filter]");
       if (!btn) return;
       state.filter = btn.dataset.filter;
@@ -749,19 +767,19 @@
       renderQueues();
     });
 
-    $("queueList").addEventListener("click", (ev) => {
+    $("queueList")?.addEventListener("click", (ev) => {
       const card = ev.target.closest(".queue-card[data-id]");
       if (!card) return;
       showDetail(card.dataset.id).catch((err) => toast(err.message));
     });
 
-    $("detailActions").addEventListener("click", (ev) => {
+    $("detailActions")?.addEventListener("click", (ev) => {
       const btn = ev.target.closest("button[data-action]");
       if (!btn) return;
       control(btn.dataset.action);
     });
 
-    $("btnReloadLogs").addEventListener("click", async () => {
+    $("btnReloadLogs")?.addEventListener("click", async () => {
       if (!state.selectedId) return;
       try {
         const logs = await api(`/api/v1/queues/${encodeURIComponent(state.selectedId)}/logs?lines=100`);
@@ -814,42 +832,44 @@
       if (ev.key === "ArrowRight") shiftLightbox(1);
       if (ev.key === "Escape") $("lightboxDialog").close();
     });
+  }
 
-    const tokenDialog = $("tokenDialog");
-    $("btnToken").addEventListener("click", () => {
-      $("tokenInput").value = token();
-      $("tokenMsg").textContent = "";
-      tokenDialog.showModal();
-    });
-    tokenDialog.addEventListener("close", () => {
-      if (tokenDialog.returnValue === "save") {
-        setToken($("tokenInput").value);
-        refreshAll(true);
-      }
-    });
+  function formatConnError(err) {
+    if (!err) return "连接失败";
+    if (err.code === "cf_access") return "未过 Cloudflare Access，请先登录域名门禁";
+    return `连接失败：${err.message || err}`;
   }
 
   async function refreshAll(showToast = false) {
     try {
-      await loadStatus();
-      await loadTemplates();
-      await loadQueues();
+      try {
+        const health = await api("/api/v1/health", { timeoutMs: 8000 });
+        if (!health || health.ok !== true) {
+          throw new Error("健康检查响应异常");
+        }
+        setConn(true, "已连接");
+      } catch (probeErr) {
+        setConn(false, formatConnError(probeErr));
+        throw probeErr;
+      }
+      await Promise.all([
+        loadStatus().catch((err) => {
+          console.error(err);
+          setConn(false, formatConnError(err));
+        }),
+        loadTemplates().catch((err) => console.error(err)),
+        loadQueues().catch((err) => console.error(err)),
+      ]);
       if (showToast) toast("已刷新");
     } catch (err) {
-      if (err.status === 401) {
-        setConn(false, "需要 Token");
-        if (!$("tokenDialog").open) {
-          $("tokenInput").value = token();
-          $("tokenMsg").textContent = "未授权：请保存 API Token 后重试。";
-          $("tokenDialog").showModal();
-        }
-      } else if (err.status !== 401) {
-        console.error(err);
+      console.error(err);
+      const cur = String($("connText")?.textContent || "");
+      if (!cur.includes("失败") && !cur.includes("Access")) {
+        setConn(false, formatConnError(err));
       }
     }
   }
 
-  const booted = bootstrapTokenFromUrl();
   try {
     const bootQueue = new URL(window.location.href).searchParams.get("queue") || "";
     if (bootQueue.trim()) {
@@ -861,9 +881,12 @@
   }
   bind();
   onTierChange();
-  refreshAll(booted);
+  refreshAll(false);
   state.timer = setInterval(() => {
-    loadStatus().catch(() => {});
-    loadQueues().catch(() => {});
+    if (state.polling) return; // don't stack ticks behind a slow NAS response
+    state.polling = true;
+    Promise.allSettled([loadStatus().catch(() => {}), loadQueues().catch(() => {})]).finally(() => {
+      state.polling = false;
+    });
   }, 5000);
 })();

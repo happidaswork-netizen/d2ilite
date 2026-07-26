@@ -1,5 +1,4 @@
 (() => {
-  const TOKEN_KEY = "d2i_cloud_token";
   const PAGE_SIZE = 60;
 
   const state = {
@@ -18,75 +17,76 @@
 
   const $ = (id) => document.getElementById(id);
 
-  function token() {
-    return (localStorage.getItem(TOKEN_KEY) || "").trim();
+  function jsonHeaders() {
+    return { "Content-Type": "application/json", "Accept": "application/json" };
   }
 
-  function setToken(value) {
-    const next = String(value || "").trim();
-    if (next) localStorage.setItem(TOKEN_KEY, next);
-    else localStorage.removeItem(TOKEN_KEY);
-    return next;
-  }
-
-  function bootstrapTokenFromUrl() {
-    try {
-      const url = new URL(window.location.href);
-      const fromQuery =
-        url.searchParams.get("token") ||
-        url.searchParams.get("access_token") ||
-        url.searchParams.get("d2i_token") ||
-        "";
-      let fromHash = "";
-      if (url.hash && url.hash.length > 1) {
-        const hp = new URLSearchParams(url.hash.replace(/^#/, ""));
-        fromHash = hp.get("token") || hp.get("access_token") || hp.get("d2i_token") || "";
-      }
-      const boot = String(fromQuery || fromHash || "").trim();
-      if (!boot) return false;
-      setToken(boot);
-      url.searchParams.delete("token");
-      url.searchParams.delete("access_token");
-      url.searchParams.delete("d2i_token");
-      const cleanHash = new URLSearchParams(url.hash.replace(/^#/, ""));
-      cleanHash.delete("token");
-      cleanHash.delete("access_token");
-      cleanHash.delete("d2i_token");
-      const hashText = cleanHash.toString();
-      url.hash = hashText ? `#${hashText}` : "";
-      window.history.replaceState({}, document.title, url.pathname + url.search + url.hash);
+  function looksLikeAccessGate(text, contentType) {
+    const t = String(text || "");
+    const ct = String(contentType || "").toLowerCase();
+    if (ct.includes("text/html") && /cloudflare\s*access|cloudflareaccess\.com|Sign in/i.test(t)) {
       return true;
-    } catch {
-      return false;
     }
-  }
-
-  function authHeaders() {
-    const headers = { "Content-Type": "application/json" };
-    const t = token();
-    if (t) headers.Authorization = `Bearer ${t}`;
-    return headers;
+    if (/<title[^>]*>\s*Sign in\s*[·•]\s*Cloudflare Access/i.test(t)) return true;
+    if (/cloudflareaccess\.com/i.test(t) && /<html/i.test(t)) return true;
+    return false;
   }
 
   async function api(path, options = {}) {
-    const res = await fetch(path, {
-      ...options,
-      headers: { ...authHeaders(), ...(options.headers || {}) },
-    });
-    const text = await res.text();
-    let body = null;
+    const timeoutMs = Number(options.timeoutMs || 20000);
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+    const { timeoutMs: _t, headers: extraHeaders, ...fetchOpts } = options;
     try {
-      body = text ? JSON.parse(text) : null;
-    } catch {
-      body = { raw: text };
-    }
-    if (!res.ok) {
-      const detail = body?.detail || body?.error || res.statusText || "request failed";
-      const err = new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
-      err.status = res.status;
+      const res = await fetch(path, {
+        ...fetchOpts,
+        credentials: fetchOpts.credentials || "same-origin",
+        signal: ctrl.signal,
+        headers: { ...jsonHeaders(), ...(window.D2I ? D2I.authHeaders() : {}), ...(extraHeaders || {}) },
+      });
+      const text = await res.text();
+      const contentType = res.headers.get("content-type") || "";
+      if (looksLikeAccessGate(text, contentType)) {
+        const err = new Error("需要先完成 Cloudflare Access 登录（域名门禁）");
+        err.status = 401;
+        err.code = "cf_access";
+        err.loginUrl = window.location.origin + "/";
+        throw err;
+      }
+      let body = null;
+      try {
+        body = text ? JSON.parse(text) : null;
+      } catch {
+        const err = new Error(
+          contentType.includes("text/html")
+            ? "接口返回了网页而不是 JSON（可能未过域名门禁）"
+            : `接口返回非 JSON：${path}`
+        );
+        err.status = res.status || 0;
+        err.code = "non_json";
+        err.raw = text.slice(0, 200);
+        throw err;
+      }
+      if (res.status === 401 && window.D2I && !D2I.getToken()) {
+        if (D2I.promptToken()) return api(path, options);
+      }
+      if (!res.ok) {
+        const detail = body?.detail || body?.error || res.statusText || "request failed";
+        const err = new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
+        err.status = res.status;
+        throw err;
+      }
+      return body;
+    } catch (err) {
+      if (err && err.name === "AbortError") {
+        const e = new Error(`请求超时（${timeoutMs}ms）：${path}`);
+        e.status = 0;
+        throw e;
+      }
       throw err;
+    } finally {
+      clearTimeout(timer);
     }
-    return body;
   }
 
   function escapeHtml(value) {
@@ -126,7 +126,7 @@
   }
 
   async function fetchAuthorizedBlob(url) {
-    const res = await fetch(url, { headers: authHeaders() });
+    const res = await fetch(url, { headers: window.D2I ? D2I.authHeaders() : {} });
     if (!res.ok) {
       const text = await res.text();
       let detail = res.statusText;
@@ -434,8 +434,7 @@
       $("itemsHint").textContent = "读取失败";
       renderItemSide(null);
       renderStats();
-      setConn(false, err.status === 401 ? "需要 Token" : "连接失败");
-      if (err.status === 401) toast("需要 API Token");
+      setConn(false, "连接失败");
     } finally {
       state.loading = false;
       renderStats();
@@ -524,35 +523,28 @@
       if (event.key === "ArrowRight") shiftLightbox(1);
       if (event.key === "Escape") $("lightboxDialog").close();
     });
+  }
 
-    $("btnToken")?.addEventListener("click", () => {
-      $("tokenInput").value = token();
-      $("tokenMsg").textContent = "";
-      $("tokenDialog").showModal();
-    });
-    $("tokenDialog")?.addEventListener("close", () => {
-      if ($("tokenDialog").returnValue === "save") {
-        setToken($("tokenInput").value);
-        toast("Token 已保存");
-        loadLibrary({ keepSelection: true }).catch((err) => toast(err.message));
-      }
-    });
+  function formatConnError(err) {
+    if (!err) return "连接失败";
+    if (err.code === "cf_access") return "未过 Cloudflare Access，请先登录域名门禁";
+    return err.message || String(err);
   }
 
   async function boot() {
-    bootstrapTokenFromUrl();
     bindEvents();
     try {
-      await api("/api/v1/health");
+      const health = await api("/api/v1/health", { timeoutMs: 8000 });
+      if (!health || health.ok !== true) throw new Error("健康检查响应异常");
       setConn(true, "已连接");
-    } catch {
-      setConn(false, "服务不可达");
+    } catch (err) {
+      setConn(false, formatConnError(err));
     }
     await loadLibrary({ keepSelection: false, resetOffset: true });
   }
 
   boot().catch((err) => {
-    setConn(false, "启动失败");
+    setConn(false, formatConnError(err) || "启动失败");
     toast(err.message || String(err));
   });
 })();

@@ -1145,3 +1145,147 @@ dialog::backdrop { background: rgba(16, 24, 40, 0.28); }
 .log-box.sm { max-height: 220px; font-size: 0.75rem; }
 .detail-section { margin-top: 16px; }
 .detail-section h3 { margin: 0 0 8px; font-size: 0.92rem; }
+
+/* Vision jobs page */
+.vision-ops {
+  margin: 0 0 14px;
+  padding: 14px 16px;
+}
+.vision-ops-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(0, 0.85fr);
+  gap: 18px;
+}
+@media (max-width: 1100px) {
+  .vision-ops-grid { grid-template-columns: 1fr; }
+}
+.section-bar.tight {
+  margin-bottom: 10px;
+  align-items: flex-start;
+}
+.section-bar.tight h2 { margin: 0; font-size: 0.95rem; }
+.vision-ops-form .field-row {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 10px;
+}
+.vision-ops-form .field.grow { grid-column: span 1; }
+.vision-ops-checks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 18px;
+  margin: 4px 0 8px;
+}
+.kpi-grid.compact {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.kpi-grid.compact .kpi {
+  padding: 8px 10px;
+}
+.kpi-grid.compact .n { font-size: 1.05rem; }
+.vision-city-list {
+  max-height: 140px;
+  overflow: auto;
+  display: grid;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+.vision-city-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-muted);
+  font-size: 0.8rem;
+}
+.vision-city-row button {
+  border: 0;
+  background: transparent;
+  color: var(--primary);
+  padding: 0;
+  font-size: 0.78rem;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.vision-city-row .n {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.vision-plan-box {
+  max-height: 160px;
+  margin: 0;
+}
+.vision-result {
+  margin-top: 12px;
+  max-height: 220px;
+  overflow: auto;
+  font-size: 0.75rem;
+  background: var(--bg-muted);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.vision-item-table {
+  max-height: min(42vh, 420px);
+  overflow: auto;
+}
+.vision-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.82rem;
+}
+.vision-table th,
+.vision-table td {
+  border-bottom: 1px solid var(--border);
+  padding: 6px 8px;
+  text-align: left;
+  vertical-align: top;
+}
+.vision-table th {
+  position: sticky;
+  top: 0;
+  background: var(--bg-elevated);
+  color: var(--muted);
+  font-weight: 600;
+  font-size: 0.75rem;
+}
+.vision-table .path-cell {
+  max-width: 360px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-3);
+  font-family: var(--mono);
+  font-size: 0.72rem;
+}
+.vision-table tr.vision-row-failed td,
+.vision-table tr.vision-row-missing td {
+  background: #fff8f7;
+}
+.vision-table tr.vision-row-ok td:nth-child(4) {
+  color: var(--success);
+  font-weight: 600;
+}
+.vision-table tr.vision-row-skipped td {
+  opacity: 0.85;
+}
+.tag.queued { background: var(--info-bg); color: var(--info); border: 1px solid var(--info-bd); }
+.tag.running { background: var(--primary-soft); color: var(--primary); border: 1px solid #c7d7fe; }
+.tag.completed { background: var(--success-bg); color: var(--success); border: 1px solid var(--success-bd); }
+.tag.failed { background: var(--danger-bg); color: var(--danger); border: 1px solid var(--danger-bd); }
+.tag.cancelled { background: var(--bg-muted); color: var(--muted); border: 1px solid var(--border); }
+.muted-hint {
+  color: var(--muted);
+  font-size: 0.75rem;
+  line-height: 1.35;
+}

@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>D2I Cloud · 视觉任务</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand-block">
+        <div class="brand-mark">D2I</div>
+        <div>
+          <div class="brand-title">D2I Cloud</div>
+          <div class="brand-sub">采集控制台</div>
+        </div>
+      </div>
+
+      <nav class="side-nav">
+        <a class="nav-item" href="/">
+          <span class="nav-ico">▣</span>
+          队列运行中心
+        </a>
+        <a class="nav-item active" href="/vision">
+          <span class="nav-ico">◉</span>
+          视觉任务
+        </a>
+        <a class="nav-item" href="/coverage">
+          <span class="nav-ico">◈</span>
+          覆盖图谱
+        </a>
+        <a class="nav-item" href="/library">
+          <span class="nav-ico">▦</span>
+          结果库
+        </a>
+        <a class="nav-item disabled" title="后续版本">
+          <span class="nav-ico">◎</span>
+          模板经验
+        </a>
+        <a class="nav-item disabled" title="后续版本">
+          <span class="nav-ico">⚙</span>
+          设置与连接
+        </a>
+      </nav>
+
+      <div class="side-foot">
+        <div class="conn-row">
+          <span id="connDot" class="dot"></span>
+          <span id="connText">连接中…</span>
+        </div>
+        <div class="muted-hint" id="pumpHint">泵：—</div>
+      </div>
+    </aside>
+
+    <div class="main-column">
+      <header class="page-header">
+        <div>
+          <div class="eyebrow">Vision Jobs</div>
+          <h1>视觉任务</h1>
+          <p class="page-sub">
+            与「队列运行中心」的下载队列分开：这里只跑 Grok 识别，写 <code>visual_*</code>，不重新抓站。
+            批次按省/市拆分，默认串行排队（pump max_running=1）。
+          </p>
+        </div>
+        <div class="header-actions">
+          <button type="button" id="btnRefresh" class="btn">刷新</button>
+          <button type="button" id="btnInventory" class="btn">盘点</button>
+          <button type="button" id="btnPlan" class="btn">规划</button>
+          <button type="button" id="btnEnqueue" class="btn primary" title="按省/市拆批入 vision_jobs">入队</button>
+          <button type="button" id="btnPump" class="btn" title="后台串行排空 queued">启动泵</button>
+          <button type="button" id="btnPumpOne" class="btn" title="同步只跑 1 个 queued">跑 1 批</button>
+        </div>
+      </header>
+
+      <section class="overview-strip" id="overviewStrip">
+        <article class="stat-card">
+          <div class="stat-label">任务总数</div>
+          <div class="stat-value" id="statTotal">0</div>
+        </article>
+        <article class="stat-card">
+          <div class="stat-label">排队中</div>
+          <div class="stat-value accent" id="statQueued">0</div>
+        </article>
+        <article class="stat-card">
+          <div class="stat-label">运行中</div>
+          <div class="stat-value warn" id="statRunning">0</div>
+        </article>
+        <article class="stat-card">
+          <div class="stat-label">已完成 / 失败</div>
+          <div class="stat-value sm" id="statDone">—</div>
+        </article>
+      </section>
+
+      <section class="vision-ops card" id="visionOps">
+        <div class="vision-ops-grid">
+          <div class="vision-ops-form">
+            <div class="section-bar tight">
+              <h2>盘点 · 规划 · 入队</h2>
+              <span class="muted-hint">只对有图且 <code>visual_gender</code> 为空的人；按省/市拆批，不进下载队列。</span>
+            </div>
+            <div class="field-row">
+              <label class="field">
+                <span>省</span>
+                <input id="fltProvince" type="text" placeholder="例如 河北省" autocomplete="off" />
+              </label>
+              <label class="field">
+                <span>市</span>
+                <input id="fltCity" type="text" placeholder="例如 沧州市" autocomplete="off" />
+              </label>
+              <label class="field grow">
+                <span>单位包含</span>
+                <input id="fltUnit" type="text" placeholder="可选，单位名关键字" autocomplete="off" />
+              </label>
+            </div>
+            <div class="field-row">
+              <label class="field">
+                <span>每批人数</span>
+                <input id="fltBatchSize" type="number" min="5" max="200" value="40" />
+              </label>
+              <label class="field">
+                <span>最多批次</span>
+                <input id="fltMaxBatches" type="number" min="0" max="500" value="0" title="0 = 不限制" />
+              </label>
+              <label class="field">
+                <span>扫描上限</span>
+                <input id="fltLimit" type="number" min="100" max="20000" value="20000" />
+              </label>
+            </div>
+            <div class="vision-ops-checks">
+              <label class="check-row"><input id="fltWritePeople" type="checkbox" checked /> 写 people.visual_*</label>
+              <label class="check-row"><input id="fltForce" type="checkbox" /> 强制重跑（忽略已有 visual）</label>
+              <label class="check-row"><input id="fltStart" type="checkbox" checked /> 入队后启动泵</label>
+            </div>
+            <p class="form-msg" id="opsMsg"></p>
+          </div>
+          <div class="vision-ops-summary">
+            <div class="section-bar tight">
+              <h2>未视觉盘点</h2>
+              <button type="button" class="btn ghost sm" id="btnInventory2">刷新盘点</button>
+            </div>
+            <div class="kpi-grid compact" id="invKpis">
+              <div class="kpi"><div class="n" id="invTotal">—</div><div class="l">候选</div></div>
+              <div class="kpi"><div class="n" id="invResolvable">—</div><div class="l">可解析</div></div>
+              <div class="kpi"><div class="n" id="invMissing">—</div><div class="l">缺盘</div></div>
+              <div class="kpi"><div class="n" id="invBatches">—</div><div class="l">规划批</div></div>
+            </div>
+            <div class="vision-city-list" id="invByCity">
+              <div class="muted-hint">点「盘点」或「规划」后显示按市分布。</div>
+            </div>
+            <pre class="log-box sm vision-plan-box" id="planBox">（尚未规划）</pre>
+          </div>
+        </div>
+      </section>
+
+      <section class="workspace">
+        <div class="queue-column">
+          <div class="section-bar">
+            <h2>视觉批次</h2>
+            <div class="filter-pills" id="filterPills">
+              <button type="button" class="pill active" data-filter="all">全部</button>
+              <button type="button" class="pill" data-filter="queued">排队</button>
+              <button type="button" class="pill" data-filter="running">运行</button>
+              <button type="button" class="pill" data-filter="completed">完成</button>
+              <button type="button" class="pill" data-filter="failed">失败</button>
+            </div>
+          </div>
+          <div id="jobList" class="queue-list">
+            <div class="empty-state">正在加载视觉任务…</div>
+          </div>
+        </div>
+
+        <div class="detail-column">
+          <div id="detailEmpty" class="detail-empty">
+            <div class="empty-illustration">◉</div>
+            <h3>选择一个视觉批次</h3>
+            <p>查看省/市、进度、识别计数、错误与批次内人员清单。可取消排队中的任务，或对单批强制再跑。</p>
+          </div>
+
+          <div id="detailBody" class="detail-body" hidden>
+            <div class="detail-top">
+              <div>
+                <div class="detail-kicker" id="detailKicker">VISION</div>
+                <h2 id="detailTitle">—</h2>
+                <div class="detail-tags">
+                  <span id="detailStatus" class="tag">idle</span>
+                  <span id="detailBatch" class="tag soft">—</span>
+                </div>
+              </div>
+              <div class="detail-actions" id="detailActions">
+                <button type="button" data-action="run" class="btn primary">运行本批</button>
+                <button type="button" data-action="cancel" class="btn danger ghost">取消</button>
+              </div>
+            </div>
+
+            <div class="kpi-grid" id="kpiGrid"></div>
+
+            <div class="split-panels">
+              <div class="card">
+                <div class="card-head"><h3>任务信息</h3></div>
+                <dl class="meta-grid" id="metaGrid"></dl>
+              </div>
+              <div class="card">
+                <div class="card-head"><h3>进度</h3></div>
+                <p class="progress-text" id="progressText">—</p>
+                <div class="progress-track"><div class="progress-fill" id="progressFill"></div></div>
+                <div class="progress-legend" id="progressLegend"></div>
+                <pre class="log-tail vision-result" id="resultBox">（尚无结果）</pre>
+              </div>
+            </div>
+
+            <div class="card">
+              <div class="card-head">
+                <div>
+                  <h3>批次条目</h3>
+                  <span class="muted" id="itemsHint">person / path</span>
+                </div>
+              </div>
+              <div id="itemTable" class="vision-item-table"></div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <div id="toast" class="toast" hidden></div>
+  <script src="/static/common.js"></script>
+  <script src="/static/vision.js"></script>
+</body>
+</html>

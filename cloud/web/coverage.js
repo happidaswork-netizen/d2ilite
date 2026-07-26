@@ -1,5 +1,4 @@
 (() => {
-  const TOKEN_KEY = "d2i_cloud_token";
   const GEO_CHINA = "/static/geo/china_100000_full.json";
   const GEO_SD = "/static/geo/shandong_370000_full.json";
 
@@ -20,43 +19,76 @@
 
   const $ = (id) => document.getElementById(id);
 
-  function token() {
-    return (localStorage.getItem(TOKEN_KEY) || "").trim();
+  function jsonHeaders() {
+    return { "Content-Type": "application/json", "Accept": "application/json" };
   }
 
-  function setToken(value) {
-    const next = String(value || "").trim();
-    if (next) localStorage.setItem(TOKEN_KEY, next);
-    else localStorage.removeItem(TOKEN_KEY);
-    return next;
-  }
-
-  function authHeaders() {
-    const headers = { "Content-Type": "application/json" };
-    const t = token();
-    if (t) headers.Authorization = `Bearer ${t}`;
-    return headers;
+  function looksLikeAccessGate(text, contentType) {
+    const t = String(text || "");
+    const ct = String(contentType || "").toLowerCase();
+    if (ct.includes("text/html") && /cloudflare\s*access|cloudflareaccess\.com|Sign in/i.test(t)) {
+      return true;
+    }
+    if (/<title[^>]*>\s*Sign in\s*[·•]\s*Cloudflare Access/i.test(t)) return true;
+    if (/cloudflareaccess\.com/i.test(t) && /<html/i.test(t)) return true;
+    return false;
   }
 
   async function api(path, options = {}) {
-    const res = await fetch(path, {
-      ...options,
-      headers: { ...authHeaders(), ...(options.headers || {}) },
-    });
-    const text = await res.text();
-    let body = null;
+    const timeoutMs = Number(options.timeoutMs || 20000);
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+    const { timeoutMs: _t, headers: extraHeaders, ...fetchOpts } = options;
     try {
-      body = text ? JSON.parse(text) : null;
-    } catch {
-      body = { raw: text };
-    }
-    if (!res.ok) {
-      const detail = body?.detail || body?.error || res.statusText || "request failed";
-      const err = new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
-      err.status = res.status;
+      const res = await fetch(path, {
+        ...fetchOpts,
+        credentials: fetchOpts.credentials || "same-origin",
+        signal: ctrl.signal,
+        headers: { ...jsonHeaders(), ...(window.D2I ? D2I.authHeaders() : {}), ...(extraHeaders || {}) },
+      });
+      const text = await res.text();
+      const contentType = res.headers.get("content-type") || "";
+      if (looksLikeAccessGate(text, contentType)) {
+        const err = new Error("需要先完成 Cloudflare Access 登录（域名门禁）");
+        err.status = 401;
+        err.code = "cf_access";
+        err.loginUrl = window.location.origin + "/";
+        throw err;
+      }
+      let body = null;
+      try {
+        body = text ? JSON.parse(text) : null;
+      } catch {
+        const err = new Error(
+          contentType.includes("text/html")
+            ? "接口返回了网页而不是 JSON（可能未过域名门禁）"
+            : `接口返回非 JSON：${path}`
+        );
+        err.status = res.status || 0;
+        err.code = "non_json";
+        err.raw = text.slice(0, 200);
+        throw err;
+      }
+      if (res.status === 401 && window.D2I && !D2I.getToken()) {
+        if (D2I.promptToken()) return api(path, options);
+      }
+      if (!res.ok) {
+        const detail = body?.detail || body?.error || res.statusText || "request failed";
+        const err = new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
+        err.status = res.status;
+        throw err;
+      }
+      return body;
+    } catch (err) {
+      if (err && err.name === "AbortError") {
+        const e = new Error(`请求超时（${timeoutMs}ms）：${path}`);
+        e.status = 0;
+        throw e;
+      }
       throw err;
+    } finally {
+      clearTimeout(timer);
     }
-    return body;
   }
 
   function escapeHtml(value) {
@@ -146,6 +178,12 @@
     if (key === "people") return ["人多", "人少"];
     if (key === "rate") return ["完成度高", "完成度低"];
     return ["更厚", "更薄"];
+  }
+
+  function formatConnError(err) {
+    if (!err) return "连接失败";
+    if (err.code === "cf_access") return "未过 Cloudflare Access，请先登录域名门禁";
+    return err.message || String(err);
   }
 
   function setConn(ok, text) {
@@ -791,19 +829,13 @@
       if (state.view === "map") await renderMap();
       if (state.selectedId) selectNode(state.selectedId);
     } catch (err) {
-      setConn(false, err.status === 401 ? "需要 Token" : "连接失败");
-      toast(err.message || String(err), true);
+      setConn(false, formatConnError(err));
+      toast(formatConnError(err), true);
     }
   }
 
   function bind() {
     $("btnRefresh").addEventListener("click", refresh);
-    $("btnToken").addEventListener("click", () => {
-      const next = prompt("D2I_WEB_TOKEN（可留空）", token());
-      if (next === null) return;
-      setToken(next);
-      refresh();
-    });
     document.querySelectorAll("#viewTabs .pill").forEach((p) => {
       p.addEventListener("click", () => setView(p.getAttribute("data-view")));
     });
