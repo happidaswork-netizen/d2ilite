@@ -58,6 +58,30 @@ def _normalize_text(value: Optional[str]) -> str:
     return text
 
 
+_NAV_OR_ORG_NAME_RE = re.compile(
+    r"(?:"
+    r"\u4e2a\u4eba\u7b80\u5386|\u5e02\u653f\u5e9c\u9886\u5bfc|\u4eba\u6c11\u653f\u5e9c|"
+    r"\u9996\u9875|\u7f51\u7ad9\u5730\u56fe|\u5173\u4e8e\u672c\u7ad9|"
+    r"\u8981\u95fb\u52a8\u6001|\u653f\u6c11\u4e92\u52a8|\u9b45\u529b\u72ee\u57ce|\u653f\u52a1\u516c\u5f00|"
+    r"\u4fe1\u606f\u516c\u5f00|\u8fd4\u56de\u9876\u90e8|\u4e8c\u7ef4\u7801|\u65e0\u969c\u788d|"
+    r"\u65b0\u95fb|\u901a\u77e5\u516c\u544a|\u6587\u4ef6\u516c\u5f00|\u653f\u7b56\u89e3\u8bfb"
+    r")"
+)
+_ORG_FRAGMENT_NAME_RE = re.compile(
+    r"(?:"
+    r"\u5e02\u4eba$|\u653f\u5e9c$|\u9886\u5bfc$|\u7b80\u5386$|\u52a8\u6001$|\u4e92\u52a8$|"
+    r"\u516c\u5f00$|\u90e8\u95e8$|\u59d4\u5458\u4f1a$|\u529e\u516c\u5ba4$"
+    r")"
+)
+_BARE_TITLE_NAME_RE = re.compile(
+    r"^(?:"
+    r"\u4ee3\u7406\u5e02\u957f|\u5e38\u52a1\u526f\u5e02\u957f|\u526f\u5e02\u957f|\u5e02\u957f|"
+    r"\u4e66\u8bb0|\u526f\u4e66\u8bb0|\u4e3b\u4efb|\u526f\u4e3b\u4efb|\u5c40\u957f|\u526f\u5c40\u957f|"
+    r"\u59d4\u5458|\u4e3b\u5e2d|\u526f\u4e3b\u5e2d"
+    r")$"
+)
+
+
 def _is_usable_person_name(name: Any) -> bool:
     text = _normalize_text(str(name or ""))
     if not text:
@@ -65,52 +89,66 @@ def _is_usable_person_name(name: Any) -> bool:
     lowered = text.lower()
     if "<title" in lowered or "</title>" in lowered:
         return False
-    if re.search(r"\u4e2a\u4eba\u7b80\u5386|\u5e02\u653f\u5e9c\u9886\u5bfc|\u4eba\u6c11\u653f\u5e9c$|\u9996\u9875|\u7f51\u7ad9\u5730\u56fe|\u5173\u4e8e\u672c\u7ad9", text):
-        return False
     compact = re.sub(r"\s+", "", text)
+    if _NAV_OR_ORG_NAME_RE.search(compact) or _NAV_OR_ORG_NAME_RE.search(text):
+        return False
+    if _ORG_FRAGMENT_NAME_RE.search(compact):
+        return False
+    if _BARE_TITLE_NAME_RE.fullmatch(compact):
+        return False
     if re.fullmatch(r"[\u4e00-\u9fff]{2,4}", compact):
         return True
-    m = re.search(r"([\u4e00-\u9fff]{2,4})\s*$", text)
-    if m and not re.search(r"\u7b80\u5386|\u804c\u52a1|\u9886\u5bfc|\u804c\u8d23", m.group(1)):
-        return True
-    if 2 <= len(compact) <= 16 and re.search(r"[\u4e00-\u9fff]{2,}", compact):
-        if not re.search(r"\u7b80\u5386|\u804c\u52a1|\u7f51\u7ad9|\u9996\u9875|\u90e8\u95e8", compact):
-            return True
-    return False
+    # Title + name lines are usable only when a trailing person token can be extracted.
+    token = _extract_person_name_token(text)
+    if not token or not re.fullmatch(r"[\u4e00-\u9fff]{2,4}", token):
+        return False
+    if _BARE_TITLE_NAME_RE.fullmatch(token):
+        return False
+    return True
 
 
 def _extract_person_name_token(value: Any) -> str:
     text = _normalize_text(str(value or ""))
     if not text:
         return ""
+    compact = re.sub(r"\s+", "", text)
+    if _NAV_OR_ORG_NAME_RE.search(compact) or _ORG_FRAGMENT_NAME_RE.search(compact):
+        # Still allow "代理市长 刘勇" style titles that embed a person name.
+        pass
+    else:
+        if re.fullmatch(r"[\u4e00-\u9fff]{2,4}", compact):
+            return compact
     m = re.search(
-        r"(?:\u4ee3\u7406\u5e02\u957f|\u5e38\u52a1\u526f\u5e02\u957f|\u526f\u5e02\u957f|\u5e02\u957f|\u4e66\u8bb0|\u4e3b\u4efb|\u5c40\u957f|\u59d4\u5458)[\uff1a:\s]*"
+        r"(?:\u4ee3\u7406\u5e02\u957f|\u5e38\u52a1\u526f\u5e02\u957f|\u526f\u5e02\u957f|\u5e02\u957f|"
+        r"\u4e66\u8bb0|\u526f\u4e66\u8bb0|\u4e3b\u4efb|\u5c40\u957f|\u59d4\u5458|"
+        r"\u5e02\u59d4\u526f\u4e66\u8bb0)[\uff1a:\s\u3000]*"
         r"([\u4e00-\u9fff](?:\s*[\u4e00-\u9fff]){1,3})\s*$",
         text,
     )
     if m:
-        return re.sub(r"\s+", "", m.group(1))
-    compact = re.sub(r"\s+", "", text)
+        token = re.sub(r"\s+", "", m.group(1))
+        if token and not _NAV_OR_ORG_NAME_RE.search(token) and not _ORG_FRAGMENT_NAME_RE.search(token):
+            return token
+    # "市委副书记、代理市长 刘勇" — take last 2-4 han after punctuation/space
+    trailing = re.search(r"[\u3001\u3002,\s\u3000]+([\u4e00-\u9fff]{2,4})\s*$", text)
+    if trailing:
+        token = trailing.group(1)
+        if not _NAV_OR_ORG_NAME_RE.search(token) and not _ORG_FRAGMENT_NAME_RE.search(token):
+            return token
     if re.fullmatch(r"[\u4e00-\u9fff]{2,4}", compact):
-        return compact
-    if _is_usable_person_name(text):
-        trailing = re.search(r"([\u4e00-\u9fff]{2,4})\s*$", compact)
-        if trailing and not re.search(r"\u7b80\u5386|\u804c\u52a1|\u9886\u5bfc|\u804c\u8d23", trailing.group(1)):
-            return trailing.group(1)
-        return text
+        if not _NAV_OR_ORG_NAME_RE.search(compact) and not _ORG_FRAGMENT_NAME_RE.search(compact):
+            return compact
     return ""
 
 
 def _prefer_person_name(detail_name: Any, seed_name: Any) -> str:
-    detail = _normalize_text(str(detail_name or ""))
-    seed = _normalize_text(str(seed_name or ""))
-    detail_token = _extract_person_name_token(detail)
-    if detail_token:
+    detail_token = _extract_person_name_token(detail_name)
+    if detail_token and _is_usable_person_name(detail_token):
         return detail_token
-    seed_token = _extract_person_name_token(seed)
-    if seed_token:
+    seed_token = _extract_person_name_token(seed_name)
+    if seed_token and _is_usable_person_name(seed_token):
         return seed_token
-    return detail or seed
+    return ""
 
 
 _TRS_CSS_RULE_RE = re.compile(r"\.TRS_Editor\s+[A-Za-z0-9_-]+\s*\{[^{}]*\}", re.IGNORECASE)
@@ -390,10 +428,11 @@ class PublicProfileSpider(scrapy.Spider):
                 if field_value:
                     list_fields[field_key] = field_value
 
+            seed_name = _prefer_person_name(name, name) or _normalize_text(str(name or ""))
             list_record = {
                 "scraped_at": _utc_now_iso(),
                 "list_url": response.url,
-                "name": name,
+                "name": seed_name or _normalize_text(str(name or "")),
                 "detail_url": detail_url,
                 "fields": list_fields,
             }
@@ -411,6 +450,18 @@ class PublicProfileSpider(scrapy.Spider):
                 )
                 continue
 
+            if not _is_usable_person_name(seed_name):
+                self.metrics["missing_required_items"] += 1
+                self._append_jsonl(
+                    self.review_path,
+                    {
+                        "scraped_at": _utc_now_iso(),
+                        "reason": "unusable_list_person_name",
+                        "record": list_record,
+                    },
+                )
+                continue
+
             if detail_url in self._known_detail_urls:
                 self.metrics["detail_duplicates_skipped"] += 1
                 continue
@@ -422,7 +473,7 @@ class PublicProfileSpider(scrapy.Spider):
                 callback=self.parse_detail,
                 errback=self.errback_detail,
                 meta={
-                    "seed_name": name,
+                    "seed_name": seed_name,
                     "list_url": response.url,
                     "seed_fields": list_fields,
                 },
@@ -470,6 +521,20 @@ class PublicProfileSpider(scrapy.Spider):
         detail_name = self._extract_first(detail_source, self.selectors.get("detail_name"))
         seed_name = _normalize_text(str(response.meta.get("seed_name", "")))
         name = _prefer_person_name(detail_name, seed_name)
+        if not _is_usable_person_name(name):
+            self.metrics["missing_required_items"] += 1
+            self._append_jsonl(
+                self.review_path,
+                {
+                    "scraped_at": _utc_now_iso(),
+                    "reason": "unusable_person_name",
+                    "detail_name": detail_name,
+                    "seed_name": seed_name,
+                    "detail_url": response.url,
+                    "list_url": str(response.meta.get("list_url", "")),
+                },
+            )
+            return
         image_url_raw = self._extract_first(detail_source, self.selectors.get("detail_image"))
         image_url = response.urljoin(image_url_raw) if image_url_raw else ""
         image_urls: List[str] = []

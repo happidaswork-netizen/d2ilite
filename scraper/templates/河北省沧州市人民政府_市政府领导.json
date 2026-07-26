@@ -17,7 +17,7 @@
   },
   "output_root": "data/public_archive",
   "selectors": {
-    "list_item": "xpath://a[contains(@href,'.shtml') and (contains(normalize-space(.),'副市长') or contains(normalize-space(.),'市长') or contains(@href,'c1165') or contains(@href,'add1013'))]",
+    "list_item": "xpath://div[contains(@class,'jobPersons')]//a[contains(@href,'.shtml') and not(contains(@href,'listDisplaySelf'))]",
     "name": [
       "xpath:normalize-space(string(.))"
     ],
@@ -27,22 +27,22 @@
     "list_fields": {},
     "next_page": [],
     "detail_name": [
+      "xpath:normalize-space(//meta[@name='ArticleTitle']/@content)",
       "xpath:normalize-space(string(//div[contains(@class,'avatar')]//p[1]))",
-      "xpath:normalize-space(//div[contains(@class,'avatar')]//p[1]//text())",
-      "xpath:normalize-space(string(//div[contains(@class,'right')]//p[contains(@style,'text-indent')][1]))"
+      "xpath:normalize-space(//div[contains(@class,'avatar')]//p[1]//text())"
     ],
     "detail_image": [
-      "xpath://div[contains(@class,'avatar')]//img/@src",
-      "xpath://img[contains(@src,'/images/') and (contains(@src,'.jpg') or contains(@src,'.png') or contains(@src,'.jpeg'))]/@src"
+      "xpath://div[contains(@class,'avatar')]//img/@src"
     ],
     "detail_gender": [],
     "detail_summary": [
-      "xpath://div[contains(@class,'centerBox')]//p[string-length(normalize-space())>20][1]",
+      "xpath://div[contains(@class,'jobs') or contains(@class,'jobDetail')]//p[contains(@style,'text-indent') or string-length(normalize-space())>20][1]",
       "xpath://div[contains(@class,'right')]//p[contains(@style,'text-indent')][1]"
     ],
     "detail_full_text": [
-      "xpath://div[contains(@class,'right')]",
-      "xpath://div[contains(@class,'centerBox')]"
+      "xpath://div[contains(@class,'jobs') and contains(@class,'jobDetail')]",
+      "xpath://div[contains(@class,'jobDetail')]",
+      "xpath://div[contains(@class,'right')]"
     ],
     "detail_fields": {},
     "detail_field_labels": {}
@@ -87,7 +87,7 @@
     "browser_engine": "edge",
     "output_mode": "images_only_with_record",
     "keep_record_file": true,
-    "notes": "T0 WP-F Hebei Cangzhou; prefer scripts/t0_cangzhou_leadership_collect.py for registry writeback. Final land: /vol1/1001/角色肖像/政府/河北省/..."
+    "notes": "List only jobPersons sidebar person links; avatar image only (no site-wide /images/ fallback). Final land: /vol1/1001/角色肖像/政府/河北省/沧州市/市级/沧州市人民政府/{性别}/{姓名}.ext"
   },
   "crawl": {
     "speed_tier": "safe",
