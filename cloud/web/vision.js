@@ -13,104 +13,7 @@
   };
 
   const $ = (id) => document.getElementById(id);
-
-  function jsonHeaders() {
-    return { "Content-Type": "application/json", Accept: "application/json" };
-  }
-
-  function looksLikeAccessGate(text, contentType) {
-    const t = String(text || "");
-    const ct = String(contentType || "").toLowerCase();
-    if (ct.includes("text/html") && /cloudflare\s*access|cloudflareaccess\.com|Sign in/i.test(t)) {
-      return true;
-    }
-    if (/<title[^>]*>\s*Sign in\s*[·•]\s*Cloudflare Access/i.test(t)) return true;
-    if (/cloudflareaccess\.com/i.test(t) && /<html/i.test(t)) return true;
-    return false;
-  }
-
-  async function api(path, options = {}) {
-    const timeoutMs = Number(options.timeoutMs || 20000);
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
-    const { timeoutMs: _t, headers: extraHeaders, ...fetchOpts } = options;
-    try {
-      const res = await fetch(path, {
-        ...fetchOpts,
-        credentials: fetchOpts.credentials || "same-origin",
-        signal: ctrl.signal,
-        headers: { ...jsonHeaders(), ...(window.D2I ? D2I.authHeaders() : {}), ...(extraHeaders || {}) },
-      });
-      const text = await res.text();
-      const contentType = res.headers.get("content-type") || "";
-      if (looksLikeAccessGate(text, contentType)) {
-        const err = new Error("需要先完成 Cloudflare Access 登录（域名门禁）");
-        err.status = 401;
-        err.code = "cf_access";
-        err.loginUrl = window.location.origin + "/";
-        throw err;
-      }
-      let body = null;
-      try {
-        body = text ? JSON.parse(text) : null;
-      } catch {
-        const err = new Error(
-          contentType.includes("text/html")
-            ? "接口返回了网页而不是 JSON（可能未过域名门禁）"
-            : `接口返回非 JSON：${path}`
-        );
-        err.status = res.status || 0;
-        err.code = "non_json";
-        throw err;
-      }
-      if (res.status === 401 && window.D2I) {
-        const hadToken = Boolean(D2I.getToken());
-        if (hadToken) D2I.setToken(""); // stale/wrong token — drop before re-prompting
-        const t = D2I.promptToken(
-          hadToken ? "Token 无效或已过期：请重新输入 D2I_WEB_TOKEN（留空取消）" : undefined
-        );
-        if (t) return api(path, options);
-      }
-      if (!res.ok) {
-        const detail = body?.detail || body?.error || res.statusText || "request failed";
-        const err = new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
-        err.status = res.status;
-        throw err;
-      }
-      return body;
-    } catch (err) {
-      if (err && err.name === "AbortError") {
-        const e = new Error(`请求超时（${timeoutMs}ms）：${path}`);
-        e.status = 0;
-        throw e;
-      }
-      throw err;
-    } finally {
-      clearTimeout(timer);
-    }
-  }
-
-  function escapeHtml(value) {
-    return String(value ?? "")
-      .replaceAll("&", "&amp;")
-      .replaceAll("<", "&lt;")
-      .replaceAll(">", "&gt;")
-      .replaceAll('"', "&quot;");
-  }
-
-  function fmtTime(ts) {
-    if (ts == null || ts === "") return "—";
-    if (typeof ts === "string" && Number.isNaN(Number(ts))) return ts;
-    const n = Number(ts);
-    if (!Number.isFinite(n) || n <= 0) return String(ts);
-    // unix seconds vs ms
-    const ms = n > 1e12 ? n : n * 1000;
-    try {
-      return new Date(ms).toLocaleString();
-    } catch {
-      return String(ts);
-    }
-  }
+  const { api, escapeHtml, fmtTime, toast, looksLikeAccessGate } = window.D2I;
 
   function statusLabel(status) {
     const map = {
@@ -122,17 +25,6 @@
       cancelled: "已取消",
     };
     return map[status] || status || "未知";
-  }
-
-  function toast(message) {
-    const el = $("toast");
-    if (!el) return;
-    el.hidden = false;
-    el.textContent = message;
-    clearTimeout(toast._t);
-    toast._t = setTimeout(() => {
-      el.hidden = true;
-    }, 2800);
   }
 
   function setConn(ok, text) {
@@ -179,6 +71,7 @@
     const pumpRunning = Boolean(pump.running);
     if ($("btnPump")) $("btnPump").disabled = state.busy || pumpRunning;
     if ($("btnPumpOne")) $("btnPumpOne").disabled = state.busy || pumpRunning;
+  }
 
   function renderJobs() {
     const list = $("jobList");
