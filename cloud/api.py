@@ -122,8 +122,11 @@ def create_app() -> FastAPI:
         return {"count": len(items), "templates": items}
 
     @app.get("/api/v1/queues", dependencies=[Depends(require_auth)])
-    def list_queues(limit: int = Query(default=200, ge=1, le=1000)) -> Dict[str, Any]:
-        rows = queue_service.list_enriched_queues(limit=limit)
+    def list_queues(
+        limit: int = Query(default=200, ge=1, le=1000),
+        auto_finalize: bool = Query(default=True),
+    ) -> Dict[str, Any]:
+        rows = queue_service.list_enriched_queues(limit=limit, auto_finalize=bool(auto_finalize))
         return {"count": len(rows), "queues": rows}
 
     @app.post("/api/v1/queues", dependencies=[Depends(require_auth)])

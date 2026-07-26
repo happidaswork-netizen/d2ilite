@@ -199,6 +199,7 @@
     const running = state.queues.filter((q) => q.runtime?.session_running || q.runtime?.status === "running").length;
     const paused = state.queues.filter((q) => q.runtime?.status === "paused").length;
     $("statQueues").textContent = String(state.queues.length);
+    // Prefer live session/runtime status over stale desired_state counts.
     $("statRunning").textContent = String(status?.running ?? running);
     $("statPaused").textContent = String(status?.paused ?? paused);
     $("statService").textContent = status?.ok ? "正常" : "异常";
@@ -572,11 +573,16 @@
       pause: Boolean(rt.can_pause) || running,
       resume: Boolean(rt.can_continue) || paused,
       retry: Boolean(rt.can_retry) || Number(kpi.failures || 0) > 0,
+      finalize: Boolean(rt.can_finalize),
       cancel: running || paused,
     };
     $("detailActions").querySelectorAll("button[data-action]").forEach((btn) => {
       const key = btn.dataset.action;
       btn.disabled = actionState[key] === false;
+      if (key === "finalize") {
+        btn.textContent = rt.promoted ? "已写入终落点" : "写入终落点";
+        btn.title = rt.final_base ? `终落点：${rt.final_base}` : "写入 角色肖像 并回写 people";
+      }
     });
 
     const cards = [
@@ -596,13 +602,22 @@
       )
       .join("");
 
+    const lastPromote = (q.meta && q.meta.last_promote) || {};
+    const promoteLabel = rt.promoted
+      ? `已写入${lastPromote.auto ? "（自动）" : ""} · ${lastPromote.at || ""}`
+      : lastPromote.error
+        ? `失败：${lastPromote.error}`
+        : "未写入";
     const meta = [
       ["ID", q.id],
       ["PID", rt.pid || "—"],
+      ["期望状态", q.desired_state || "—"],
       ["模板", q.template_id || q.template_path || "—"],
       ["URL", q.start_url || "—"],
       ["输出目录", q.output_root || "—"],
       ["落盘", rt.output_path || "—"],
+      ["终落点", rt.final_base || promoteLabel],
+      ["写入状态", promoteLabel],
       ["日志", rt.log_path || "—"],
       ["档位理由", q.speed_tier_reason || "—"],
       ["创建时间", fmtTime(q.created_at)],
@@ -681,17 +696,36 @@
     if (!state.selectedId) return;
     const btn = document.querySelector(`#detailActions [data-action="${action}"]`);
     if (btn) btn.disabled = true;
+    const labels = {
+      start: "启动",
+      pause: "暂停",
+      resume: "继续",
+      retry: "重试",
+      cancel: "取消",
+      finalize: "写入终落点",
+    };
     try {
-      await api(`/api/v1/queues/${encodeURIComponent(state.selectedId)}/${action}`, {
-        method: "POST",
-        body: JSON.stringify({ options: {} }),
-      });
-      toast(`${action} 成功`);
+      if (action === "finalize") {
+        const data = await api(`/api/v1/queues/${encodeURIComponent(state.selectedId)}/finalize`, {
+          method: "POST",
+          body: JSON.stringify({ dry_run: false, write_people: true }),
+        });
+        const counts = data?.promote?.counts || {};
+        toast(
+          `写入终落点完成：promoted ${counts.promoted ?? 0} · people ${counts.people_update ?? counts.people_updated ?? 0}`
+        );
+      } else {
+        await api(`/api/v1/queues/${encodeURIComponent(state.selectedId)}/${action}`, {
+          method: "POST",
+          body: JSON.stringify({ options: {} }),
+        });
+        toast(`${labels[action] || action} 成功`);
+      }
       await loadStatus();
       await loadQueues();
       await showDetail(state.selectedId);
     } catch (err) {
-      toast(`${action} 失败：${err.message}`);
+      toast(`${labels[action] || action} 失败：${err.message}`);
     } finally {
       if (btn) btn.disabled = false;
     }

@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import subprocess
+import threading
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -30,6 +31,9 @@ from services.task_service import (
     set_public_scraper_manual_pause_flag,
     summarize_public_task,
 )
+
+_AUTO_FINALIZE_LOCK = threading.Lock()
+_AUTO_FINALIZING: set[str] = set()
 
 
 def _templates_search_roots() -> List[Path]:
@@ -285,7 +289,132 @@ def _iter_queue_item_rows(queue_id: str, *, progress_limit: int = 500) -> Tuple[
     return record, root or "", items
 
 
-def enrich_queue(record: Dict[str, Any], *, base_root: str = "") -> Dict[str, Any]:
+def _last_promote_meta(record: Dict[str, Any]) -> Dict[str, Any]:
+    meta = record.get("meta") if isinstance(record.get("meta"), dict) else {}
+    last = meta.get("last_promote")
+    return last if isinstance(last, dict) else {}
+
+
+def _promote_already_done(record: Dict[str, Any], live: Dict[str, Any]) -> bool:
+    last = _last_promote_meta(record)
+    if not last or last.get("dry_run") or not last.get("ok"):
+        return False
+    counts = last.get("counts") if isinstance(last.get("counts"), dict) else {}
+    prev = max(int(counts.get("candidates") or 0), int(counts.get("promoted") or 0))
+    now_imgs = max(int(live.get("images") or 0), int(live.get("downloaded") or 0))
+    # Allow redo only when workspace gained more images than last promote saw.
+    if prev > 0 and now_imgs > prev:
+        return False
+    return True
+
+
+def _should_auto_finalize(record: Dict[str, Any], live: Dict[str, Any]) -> bool:
+    meta = record.get("meta") if isinstance(record.get("meta"), dict) else {}
+    if meta.get("auto_finalize") is False or meta.get("skip_auto_finalize"):
+        return False
+    if bool(live.get("session_running")):
+        return False
+    if str(live.get("status") or "") != "completed":
+        return False
+    if int(live.get("images") or 0) <= 0 and int(live.get("profiles") or 0) <= 0:
+        return False
+    if _promote_already_done(record, live):
+        return False
+    return True
+
+
+def _reconcile_desired_state(record: Dict[str, Any], live: Dict[str, Any]) -> Dict[str, Any]:
+    """Align jobs.desired_state with live runtime so completed queues stop looking 'running'."""
+    queue_id = str(record.get("id") or "").strip()
+    if not queue_id:
+        return record
+    desired = str(record.get("desired_state") or "").strip()
+    status = str(live.get("status") or "").strip()
+    running = bool(live.get("session_running"))
+    paused = bool(live.get("manual_paused"))
+    target = ""
+    if running:
+        target = "paused" if paused else "running"
+    elif status == "completed":
+        target = "completed"
+    elif status == "paused":
+        target = "paused"
+    elif status == "cancelled":
+        target = "cancelled"
+    elif status == "error":
+        target = "error"
+    elif desired == "running" and status in {"stopped", "idle", "created"} and not running:
+        target = status if status in {"stopped", "idle", "created"} else "stopped"
+    if not target or target == desired:
+        return record
+    try:
+        jobs_db.update_queue(queue_id, desired_state=target)
+        refreshed = jobs_db.get_queue(queue_id)
+        return refreshed or record
+    except Exception:
+        return record
+
+
+def _maybe_auto_finalize(record: Dict[str, Any], live: Dict[str, Any]) -> Dict[str, Any]:
+    queue_id = str(record.get("id") or "").strip()
+    if not queue_id or not _should_auto_finalize(record, live):
+        return record
+    with _AUTO_FINALIZE_LOCK:
+        if queue_id in _AUTO_FINALIZING:
+            return record
+        _AUTO_FINALIZING.add(queue_id)
+    try:
+        from cloud import promote_service
+
+        report = promote_service.promote_queue_record(
+            record,
+            dry_run=False,
+            limit=0,
+            write_people=True,
+        )
+        meta_patch = {
+            "last_promote": {
+                "at": report.get("promoted_at"),
+                "dry_run": False,
+                "auto": True,
+                "counts": report.get("counts") or {},
+                "final_base": report.get("final_base") or "",
+                "ok": bool(report.get("ok")),
+            }
+        }
+        patch: Dict[str, Any] = {"last_error": "", "meta": meta_patch}
+        if bool(report.get("ok")) and str(live.get("status") or "") == "completed":
+            patch["desired_state"] = "completed"
+        jobs_db.update_queue(queue_id, **patch)
+        return jobs_db.get_queue(queue_id) or record
+    except Exception as exc:
+        try:
+            jobs_db.update_queue(
+                queue_id,
+                meta={
+                    "last_promote": {
+                        "at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                        "dry_run": False,
+                        "auto": True,
+                        "ok": False,
+                        "error": str(exc)[:500],
+                    }
+                },
+            )
+            return jobs_db.get_queue(queue_id) or record
+        except Exception:
+            return record
+    finally:
+        with _AUTO_FINALIZE_LOCK:
+            _AUTO_FINALIZING.discard(queue_id)
+
+
+def enrich_queue(
+    record: Dict[str, Any],
+    *,
+    base_root: str = "",
+    auto_finalize: bool = True,
+) -> Dict[str, Any]:
     root = normalize_public_task_root(record.get("output_root"))
     base = normalize_public_task_root(base_root) or default_tasks_base_root()
     live = {
@@ -326,7 +455,7 @@ def enrich_queue(record: Dict[str, Any], *, base_root: str = "") -> Dict[str, An
                     {
                         "session_running": bool(detail.get("session_running")),
                         "manual_paused": bool(detail.get("manual_paused")),
-                        "pid": int(detail.get("pid") or 0),
+                        "pid": int(detail.get("pid") or 0) if bool(detail.get("session_running")) else 0,
                         "profiles": int(detail.get("profile_rows") or 0),
                         "images": int(detail.get("image_rows") or 0),
                         "metadata_ok": int(detail.get("metadata_rows") or 0),
@@ -356,7 +485,7 @@ def enrich_queue(record: Dict[str, Any], *, base_root: str = "") -> Dict[str, An
                     {
                         "session_running": bool(selected.get("session_running")),
                         "manual_paused": bool(selected.get("manual_paused")),
-                        "pid": int(selected.get("pid") or 0),
+                        "pid": int(selected.get("pid") or 0) if bool(selected.get("session_running")) else 0,
                         "profiles": int(selected.get("profiles") or 0),
                         "images": int(selected.get("images") or 0),
                         "metadata_ok": int(selected.get("metadata_ok") or 0),
@@ -377,6 +506,22 @@ def enrich_queue(record: Dict[str, Any], *, base_root: str = "") -> Dict[str, An
             live["progress_text"] = f"live status failed: {exc}"
     elif record.get("desired_state") == "created":
         live["status"] = "created"
+
+    # If process is dead but disk status still "运行中", force stopped instead of fake running.
+    if not live["session_running"] and live["status"] == "running":
+        live["status"] = "stopped"
+        live["pid"] = 0
+
+    record = _reconcile_desired_state(record, live)
+    if auto_finalize:
+        record = _maybe_auto_finalize(record, live)
+
+    last_promote = _last_promote_meta(record)
+    can_finalize = (not live["session_running"]) and (
+        live["status"] == "completed"
+        or int(live["images"] or 0) > 0
+        or int(live["profiles"] or 0) > 0
+    )
 
     return {
         "id": record.get("id"),
@@ -416,21 +561,42 @@ def enrich_queue(record: Dict[str, Any], *, base_root: str = "") -> Dict[str, An
             "can_pause": live["can_pause"],
             "can_continue": live["can_continue"],
             "can_retry": live["can_retry"],
+            "can_finalize": can_finalize,
+            "promoted": bool(last_promote.get("ok")) and not bool(last_promote.get("dry_run")),
+            "final_base": str(last_promote.get("final_base") or ""),
             "updated_at_disk": live["updated_at_disk"],
         },
     }
 
 
-def list_enriched_queues(*, limit: int = 200, base_root: str = "") -> List[Dict[str, Any]]:
+def list_enriched_queues(*, limit: int = 200, base_root: str = "", auto_finalize: bool = False) -> List[Dict[str, Any]]:
+    # Reconcile desired_state for all rows; promote at most one eligible queue per list call
+    # so polling can drain backlog without multi-minute hangs.
     rows = jobs_db.list_queues(limit=limit)
-    return [enrich_queue(row, base_root=base_root) for row in rows]
+    out: List[Dict[str, Any]] = []
+    promoted_one = False
+    for row in rows:
+        do_finalize = bool(auto_finalize) and not promoted_one
+        before = _last_promote_meta(row)
+        enriched = enrich_queue(row, base_root=base_root, auto_finalize=do_finalize)
+        if do_finalize:
+            after = ((enriched.get("meta") or {}).get("last_promote") or {}) if isinstance(enriched.get("meta"), dict) else {}
+            if isinstance(after, dict) and after.get("auto") and after != before:
+                promoted_one = True
+        out.append(enriched)
+    return out
 
 
-def get_enriched_queue(queue_id: str, *, base_root: str = "") -> Optional[Dict[str, Any]]:
+def get_enriched_queue(
+    queue_id: str,
+    *,
+    base_root: str = "",
+    auto_finalize: bool = True,
+) -> Optional[Dict[str, Any]]:
     row = jobs_db.get_queue(queue_id)
     if not row:
         return None
-    return enrich_queue(row, base_root=base_root)
+    return enrich_queue(row, base_root=base_root, auto_finalize=auto_finalize)
 
 
 def create_queue(
@@ -617,14 +783,25 @@ def finalize_queue(
         "last_promote": {
             "at": report.get("promoted_at"),
             "dry_run": bool(dry_run),
+            "auto": False,
             "counts": report.get("counts") or {},
             "final_base": report.get("final_base") or "",
             "ok": bool(report.get("ok")),
         }
     }
     if not dry_run:
-        jobs_db.update_queue(queue_id, last_error="", meta=meta_patch)
-    enriched = get_enriched_queue(queue_id) or {}
+        # Manual finalize also marks desired_state completed when process is done.
+        patch_kwargs: Dict[str, Any] = {"last_error": "", "meta": meta_patch}
+        live_status = ""
+        try:
+            enriched_before = get_enriched_queue(queue_id, auto_finalize=False) or {}
+            live_status = str((enriched_before.get("runtime") or {}).get("status") or "")
+            if live_status == "completed":
+                patch_kwargs["desired_state"] = "completed"
+        except Exception:
+            pass
+        jobs_db.update_queue(queue_id, **patch_kwargs)
+    enriched = get_enriched_queue(queue_id, auto_finalize=False) or {}
     return {"queue": enriched, "promote": report}
 
 
@@ -872,16 +1049,28 @@ def library_list(
 
 
 def status_payload() -> Dict[str, Any]:
-    queues = list_enriched_queues(limit=500)
-    running = sum(1 for q in queues if q.get("runtime", {}).get("session_running"))
+    # Keep status snappy: reconcile desired_state, but do not block on promote I/O.
+    queues = list_enriched_queues(limit=500, auto_finalize=False)
+    running = sum(
+        1
+        for q in queues
+        if q.get("runtime", {}).get("session_running")
+        or str(q.get("runtime", {}).get("status") or "") == "running"
+    )
     paused = sum(1 for q in queues if q.get("runtime", {}).get("status") == "paused")
+    completed = sum(1 for q in queues if q.get("runtime", {}).get("status") == "completed")
+    promoted = sum(1 for q in queues if q.get("runtime", {}).get("promoted"))
+    desired_running = sum(1 for q in queues if str(q.get("desired_state") or "") == "running")
     return {
         "ok": True,
         "product": "d2i-cloud",
-        "version": "0.1.0",
+        "version": "0.1.1",
         "tasks_root": default_tasks_base_root(),
         "queue_count": len(queues),
         "running": running,
         "paused": paused,
+        "completed": completed,
+        "promoted": promoted,
+        "desired_running": desired_running,
         "scraper_script_exists": SCRAPER_SCRIPT.is_file(),
     }
