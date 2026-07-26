@@ -7,6 +7,9 @@ services:
     network_mode: host
     user: "1000:1001"
     working_dir: /opt/d2ilite
+    # Independent D2I Grok secret (values may be copied from Hermes; do not mount Hermes profile).
+    env_file:
+      - ${D2I_VISION_ENV_FILE:-/vol1/1001/hermes/secrets/d2i-grok.env}
     environment:
       PYTHONUNBUFFERED: "1"
       PYTHONDONTWRITEBYTECODE: "1"
@@ -19,7 +22,10 @@ services:
       D2I_PORTRAIT_HOST_ROOT: /vol1/1001/角色肖像
       D2I_PEOPLE_DB: /runtime/people/people.sqlite
       TMPDIR: /runtime/d2i-cloud-data/tmp
-      D2I_WEB_TOKEN: ${D2I_WEB_TOKEN:-}
+      D2I_VISION_ENABLED: ${D2I_VISION_ENABLED:-1}
+      D2I_VISION_API_KEY_FILE: /run/secrets/d2i_vision_api_key
+      D2I_VISION_CONCURRENCY: ${D2I_VISION_CONCURRENCY:-3}
+      D2I_VISION_TIMEOUT_SECONDS: ${D2I_VISION_TIMEOUT_SECONDS:-90}
       HTTP_PROXY: ${D2I_HTTP_PROXY:-}
       HTTPS_PROXY: ${D2I_HTTPS_PROXY:-}
       NO_PROXY: 127.0.0.1,localhost,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,.local,.lan
@@ -32,6 +38,7 @@ services:
       - ${D2I_CLOUD_VENV_HOST:-/vol4/1001/hermes-runtime/d2i-cloud-venv}:/opt/cloud-venv
       - ${D2I_PORTRAIT_HOST:-/vol1/1001/角色肖像}:/runtime/portrait
       - ${D2I_PEOPLE_DB_HOST:-/vol4/1001/hermes-runtime/db}:/runtime/people
+      - ${D2I_VISION_API_KEY_HOST_FILE:-/vol1/1001/hermes/secrets/d2i_vision_api_key}:/run/secrets/d2i_vision_api_key:ro
     command:
       - /bin/bash
       - -lc
@@ -42,7 +49,9 @@ services:
         if [[ ! -x /opt/cloud-venv/bin/python ]]; then
           python -m venv --system-site-packages /opt/cloud-venv
           /opt/cloud-venv/bin/pip install -U pip
-          /opt/cloud-venv/bin/pip install fastapi 'uvicorn[standard]' pydantic httpx
+          /opt/cloud-venv/bin/pip install fastapi 'uvicorn[standard]' pydantic httpx pillow requests
         fi
+        /opt/cloud-venv/bin/python -c "import PIL, requests" 2>/dev/null || \
+          /opt/cloud-venv/bin/pip install -q pillow requests
         export PYTHONPATH="/opt/d2ilite"
         exec /opt/cloud-venv/bin/python -m uvicorn cloud.api:app --host 0.0.0.0 --port 8787

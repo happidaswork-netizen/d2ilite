@@ -14,19 +14,11 @@ SKILL = PROFILE / "skills" / "d2i-cloud"
 BACKUPS = Path("/vol1/1001/hermes/backups")
 CODE = Path(os.environ.get("D2I_CLOUD_CODE_HOST", "/vol1/1001/d2i-cloud/current"))
 API = os.environ.get("D2I_CLOUD_API", "http://127.0.0.1:8787")
-TOKEN_FILE = os.environ.get(
-    "D2I_WEB_TOKEN_FILE",
-    "/runtime/d2i-cloud-data/web_token.txt",
-)
 
 CLI_SH = f"""#!/usr/bin/env bash
 set -euo pipefail
 export D2I_CLOUD_API="${{D2I_CLOUD_API:-{API}}}"
 export D2I_CLOUD_CODE="${{D2I_CLOUD_CODE:-{CODE}}}"
-export D2I_WEB_TOKEN_FILE="${{D2I_WEB_TOKEN_FILE:-{TOKEN_FILE}}}"
-if [[ -z "${{D2I_WEB_TOKEN:-}}" && -f "$D2I_WEB_TOKEN_FILE" ]]; then
-  D2I_WEB_TOKEN="$(tr -d '\\r\\n' < "$D2I_WEB_TOKEN_FILE")"
-  export D2I_WEB_TOKEN
 fi
 if command -v python3 >/dev/null 2>&1; then
   PY=python3
@@ -61,7 +53,6 @@ description: Manage D2I Cloud scrape queues via HTTP CLI (list/create/start/paus
 - Tunnel bridge: `http://192.168.5.36:18888/` -> `8787` (`d2i-proxy-18888`)
 - API (assistant default): `{API}/api/v1`
 - CLI: `/data/profile/bin/d2i` (host: `{BIN / "d2i"}`)
-- Token file (auto-loaded): `{TOKEN_FILE}`
 
 ## Commands
 
@@ -82,7 +73,7 @@ d2i queues logs <queue_id>
 2. Do not mount Hermes secrets into D2I.
 3. Do not write final image library on `/vol3`; Cloud tasks stay under `/runtime/d2i-cloud-tasks`.
 4. Web is the primary console; Telegram/Hermes is assistant only.
-5. Public path: Cloudflare Access first, then Bearer `D2I_WEB_TOKEN`.
+5. API is open on LAN/host network (no app token).
 6. Do not dual-start the same job on legacy `d2i-lite-worker` and D2I Cloud.
 """
 
@@ -129,8 +120,7 @@ def main() -> None:
     print(f"http_cli={http_cli_dst if http_cli_dst.exists() else 'missing'}")
     print(f"skill={SKILL}")
     print(f"api={API}")
-    print(f"token_file={TOKEN_FILE}")
-
+    
 
 if __name__ == "__main__":
     main()
