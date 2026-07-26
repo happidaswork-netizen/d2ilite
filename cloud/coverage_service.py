@@ -165,6 +165,7 @@ def _load_units_from_people(db_path: Path) -> List[Dict[str, Any]]:
         units.append(
             {
                 "node_id": _node_id(domain, prov or "未知", city or "未知", unit or "(空单位)"),
+                "kind": "unit",
                 "domain": domain,
                 "province": prov or "未知",
                 "city": city or "未知",
@@ -595,6 +596,9 @@ def _ui_glossary() -> Dict[str, str]:
 
 def _enrich_node_for_ui(node: Dict[str, Any]) -> Dict[str, Any]:
     out = dict(node)
+    # F7: unit dicts from legacy snapshots may predate the "kind" field;
+    # tree nodes (domain/province/city) always carry their own kind
+    out.setdefault("kind", "unit")
     with_path = int(out.get("with_path_n") or 0)
     no_path = int(out.get("no_path_n") or 0)
     people = int(out.get("people_n") or 0)

@@ -34,6 +34,8 @@ IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp"}
 GENDER_DIRS = {"男", "女", "未知"}
 
 _ADMIN_LEVELS = ("国家级", "省级", "市级", "区县级", "乡镇级", "县级", "区级")
+# M12: county-level markers → task root is five-segment .../省/市/区县/级/单位
+_COUNTY_LEVELS = ("区县级", "县级", "区级")
 
 
 def _utc_stamp() -> str:
@@ -155,11 +157,14 @@ def resolve_admin_context(output_root: str, runtime_config: Optional[Dict[str, A
         if maybe_level in _ADMIN_LEVELS or maybe_level.endswith("级"):
             admin_level = admin_level or maybe_level
             unit = unit or maybe_unit
-            # city/province before level
-            if len(parts) >= 5:
-                city = city or parts[-3]
-                province = province or parts[-4]
-            elif len(parts) >= 4:
+            if maybe_level in _COUNTY_LEVELS and len(parts) >= 5:
+                # M12 five-segment .../省/市/区县/级/单位: county gets its own slot,
+                # no longer shifted into city/province
+                county = county or parts[-3]
+                city = city or parts[-4]
+                province = province or parts[-5]
+            else:
+                # four-segment .../省/市/级/单位 — city/province before level (unchanged)
                 city = city or parts[-3]
                 province = province or parts[-4]
         else:
@@ -221,6 +226,11 @@ def _index_profiles(output_root: str) -> Dict[str, Dict[str, Any]]:
         if detail:
             by_key[f"url:{detail}"] = payload
         if name:
+            # M5 exact (name, detail_url) key: same name + different detail_url are
+            # two distinct people and must both survive indexing
+            by_key[f"person:{name}|{detail}"] = payload
+            # name-only fallback kept for download rows lacking detail_url
+            # (exact-name lookup; ambiguous when duplicated, last one wins as before)
             by_key[f"name:{name}"] = payload
     return by_key
 
@@ -496,6 +506,9 @@ def collect_promote_candidates(output_root: str) -> List[Dict[str, Any]]:
     downloads = _index_downloads(root)
     items: List[Dict[str, Any]] = []
     seen: set[str] = set()
+    # M5 exact dedup bookkeeping for the no_photo pass below
+    seen_names: set[str] = set()  # every name emitted from downloads
+    seen_names_no_detail: set[str] = set()  # download rows that had no detail_url
 
     for row in downloads:
         name = str(row.get("name") or "").strip()
@@ -510,6 +523,9 @@ def collect_promote_candidates(output_root: str) -> List[Dict[str, Any]]:
         if key in seen:
             continue
         seen.add(key)
+        seen_names.add(name)
+        if not detail:
+            seen_names_no_detail.add(name)
         gender = str(prof.get("gender") or "").strip()
         items.append(
             {
@@ -526,16 +542,27 @@ def collect_promote_candidates(output_root: str) -> List[Dict[str, Any]]:
         )
 
     # profiles without download rows → no_photo candidates
+    # M5: dedup by exact (name, detail_url); when detail_url is missing on either
+    # side, degrade to exact name equality (NOT substring — 李小明/小明 are distinct)
     for key, prof in profiles.items():
-        if not key.startswith("name:"):
+        if not key.startswith("person:"):
             continue
         name = str(prof.get("name") or "").strip()
         if not name:
             continue
         detail = str(prof.get("detail_url") or "")
         marker = f"{name}|{detail}"
-        if any(f"{name}|" in s for s in seen):
+        if marker in seen:
             continue
+        if detail:
+            # downloads carrying a detail_url are matched above via the exact marker;
+            # a same-name download without detail_url degrades to name equality
+            if name in seen_names_no_detail:
+                continue
+        else:
+            # profile itself has no detail_url → name equality is all we have
+            if name in seen_names:
+                continue
         seen.add(marker)
         items.append(
             {
