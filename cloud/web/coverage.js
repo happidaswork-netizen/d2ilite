@@ -15,6 +15,7 @@
     chinaGeo: null,
     sdGeo: null,
     pendingAction: "",
+    expandedIds: new Set(),
   };
 
   const $ = (id) => document.getElementById(id);
@@ -69,8 +70,13 @@
         err.raw = text.slice(0, 200);
         throw err;
       }
-      if (res.status === 401 && window.D2I && !D2I.getToken()) {
-        if (D2I.promptToken()) return api(path, options);
+      if (res.status === 401 && window.D2I) {
+        const hadToken = Boolean(D2I.getToken());
+        if (hadToken) D2I.setToken(""); // stale/wrong token — drop before re-prompting
+        const t = D2I.promptToken(
+          hadToken ? "Token 无效或已过期：请重新输入 D2I_WEB_TOKEN（留空取消）" : undefined
+        );
+        if (t) return api(path, options);
       }
       if (!res.ok) {
         const detail = body?.detail || body?.error || res.statusText || "request failed";
@@ -195,7 +201,10 @@
     const kids = node.children || [];
     const hasKids = kids.length > 0;
     const id = node.node_id || "";
-    const open = depth < 1 || (state.selectedId && id && state.selectedId.startsWith(id.slice(0, 4)));
+    // Expansion is tracked explicitly per node; roots are seeded open in renderTree().
+    // (The old `selectedId.startsWith(id.slice(0,4))` compared unrelated hash ids and
+    //  collapsed the whole tree on every select.)
+    const open = id ? state.expandedIds.has(id) : depth < 1;
     return `
       <div class="ctree-node" data-id="${escapeHtml(id)}" style="--d:${depth}">
         <div class="ctree-row ${state.selectedId === id ? "selected" : ""}" data-select="${escapeHtml(id)}">
@@ -227,6 +236,12 @@
       panel.innerHTML = `<div class="empty-state">无覆盖数据。请设置 D2I_PEOPLE_DB 或放入 data/coverage 快照。</div>`;
       return;
     }
+    // First render seeds the top level open; user toggles are remembered thereafter.
+    if (state.expandedIds.size === 0) {
+      roots.forEach((n) => {
+        if (n.node_id) state.expandedIds.add(n.node_id);
+      });
+    }
     panel.innerHTML = `<div class="ctree">${roots.map((n) => renderTreeNode(n)).join("")}</div>`;
     panel.querySelectorAll("[data-select]").forEach((el) => {
       el.addEventListener("click", (e) => {
@@ -241,11 +256,25 @@
         const box = panel.querySelector(`[data-children-of="${CSS.escape(id)}"]`);
         if (!box) return;
         const open = box.hasAttribute("hidden");
-        if (open) box.removeAttribute("hidden");
-        else box.setAttribute("hidden", "");
+        if (open) {
+          box.removeAttribute("hidden");
+          if (id) state.expandedIds.add(id);
+        } else {
+          box.setAttribute("hidden", "");
+          if (id) state.expandedIds.delete(id);
+        }
         btn.textContent = open ? "▾" : "▸";
       });
     });
+  }
+
+  function highlightTreeSelection(id) {
+    const panel = $("treePanel");
+    if (!panel) return;
+    panel.querySelectorAll(".ctree-row.selected").forEach((el) => el.classList.remove("selected"));
+    if (!id) return;
+    const row = panel.querySelector(`[data-select="${CSS.escape(id)}"]`);
+    if (row) row.classList.add("selected");
   }
 
   function findProvinceNode(province) {
@@ -730,7 +759,7 @@
       });
       $("nodeJson").textContent = JSON.stringify(n, null, 2);
       $("proposalBox").textContent = "尚未侦察";
-      if (state.view === "tree") renderTree();
+      if (state.view === "tree") highlightTreeSelection(nodeId);
     } catch (err) {
       toast(err.message || String(err), true);
     }
@@ -760,7 +789,13 @@
       toast("未选择节点或动作", true);
       return;
     }
-    if (!window.confirm(`确认对节点执行「${act}」？\n不会跳过人确认；默认不自动 start。`)) {
+    const label = actionLabel(act);
+    const willStart = Boolean($("enqStart").checked);
+    const nodeName = state.selectedNode?.node?.name || state.selectedNode?.node?.unit_name || nodeId;
+    const startNote = willStart
+      ? "确认后会创建任务并立即启动（start=on）。"
+      : "确认后只创建任务，不会自动启动（需手动 start）。";
+    if (!window.confirm(`确认对「${nodeName}」执行「${label}」？\n\n不会跳过人确认；${startNote}`)) {
       return;
     }
     const body = {

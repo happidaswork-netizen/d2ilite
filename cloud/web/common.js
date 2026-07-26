@@ -37,16 +37,32 @@
     return token ? { Authorization: `Bearer ${token}` } : {};
   }
 
-  let asked = false;
+  let asking = false;
+  let lastPromptAt = 0;
   function promptToken(message) {
-    if (asked) return "";
-    asked = true;
-    const t = window.prompt(message || "接口返回 401：请输入 D2I_WEB_TOKEN（留空取消）", "");
-    if (t && t.trim()) {
-      setToken(t.trim());
-      return t.trim();
+    // A burst of parallel 401s must not stack prompts; but unlike the old
+    // permanent one-shot, we DO re-prompt later so an expired/wrong token
+    // can be corrected instead of dead-locking the whole console.
+    let now = 0;
+    try {
+      now = Date.now();
+    } catch {
+      now = 0;
     }
-    return "";
+    if (asking) return "";
+    if (now && now - lastPromptAt < 1500) return "";
+    asking = true;
+    try {
+      const t = window.prompt(message || "接口返回 401：请输入 D2I_WEB_TOKEN（留空取消）", getToken());
+      lastPromptAt = now || lastPromptAt;
+      if (t && t.trim()) {
+        setToken(t.trim());
+        return t.trim();
+      }
+      return "";
+    } finally {
+      asking = false;
+    }
   }
 
   window.D2I = { getToken, setToken, authHeaders, promptToken };

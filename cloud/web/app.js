@@ -13,6 +13,7 @@
     lastAutoUrl: "",
     detailLoadedFor: "",
     polling: false,
+    sideSeq: 0,
   };
 
   const $ = (id) => document.getElementById(id);
@@ -67,8 +68,13 @@
         err.raw = text.slice(0, 200);
         throw err;
       }
-      if (res.status === 401 && window.D2I && !D2I.getToken()) {
-        if (D2I.promptToken()) return api(path, options);
+      if (res.status === 401 && window.D2I) {
+        const hadToken = Boolean(D2I.getToken());
+        if (hadToken) D2I.setToken(""); // stale/wrong token — drop before re-prompting
+        const t = D2I.promptToken(
+          hadToken ? "Token 无效或已过期：请重新输入 D2I_WEB_TOKEN（留空取消）" : undefined
+        );
+        if (t) return api(path, options);
       }
       if (!res.ok) {
         const detail = body?.detail || body?.error || res.statusText || "request failed";
@@ -95,6 +101,13 @@
       .replaceAll("<", "&lt;")
       .replaceAll(">", "&gt;")
       .replaceAll('"', "&quot;");
+  }
+
+  // Only allow http(s) source links; a scraped detail_url could otherwise be
+  // javascript:/data: and would run in the user's session on click.
+  function safeHttpUrl(url) {
+    const s = String(url || "").trim();
+    return /^https?:\/\//i.test(s) ? s : "";
   }
 
   function fmtTime(ts) {
@@ -212,7 +225,10 @@
     // Prefer live session/runtime status over stale desired_state counts.
     $("statRunning").textContent = String(status?.running ?? running);
     $("statPaused").textContent = String(status?.paused ?? paused);
-    $("statService").textContent = status?.ok ? "正常" : "异常";
+    // Only reflect service health when we actually have a /status payload.
+    // loadQueues() calls this with no arg every 5s poll; without this guard
+    // "服务状态" flips to 异常 on every tick even on a healthy server.
+    if (status) $("statService").textContent = status.ok ? "正常" : "异常";
   }
 
   async function loadStatus() {
@@ -336,7 +352,7 @@
     return res.blob();
   }
 
-  async function loadPreviewInto(imgEl, previewUrl, fallbackEl) {
+  async function loadPreviewInto(imgEl, previewUrl, fallbackEl, stillValid) {
     if (!imgEl || !previewUrl) {
       if (imgEl) {
         imgEl.hidden = true;
@@ -347,6 +363,7 @@
     }
     try {
       const blob = await fetchAuthorizedBlob(previewUrl);
+      if (typeof stillValid === "function" && !stillValid()) return null; // selection moved on
       const objectUrl = URL.createObjectURL(blob);
       state.objectUrls.push(objectUrl);
       imgEl.src = objectUrl;
@@ -354,6 +371,7 @@
       if (fallbackEl) fallbackEl.hidden = true;
       return objectUrl;
     } catch (err) {
+      if (typeof stillValid === "function" && !stillValid()) return null;
       imgEl.hidden = true;
       imgEl.removeAttribute("src");
       if (fallbackEl) {
@@ -404,9 +422,10 @@
       .join("");
 
     const source = $("itemSideSource");
-    if (item.detail_url) {
+    const safeUrl = safeHttpUrl(item.detail_url);
+    if (safeUrl) {
       source.hidden = false;
-      source.href = item.detail_url;
+      source.href = safeUrl;
     } else {
       source.hidden = true;
       source.removeAttribute("href");
@@ -420,7 +439,11 @@
     img.hidden = true;
     img.removeAttribute("src");
     if (item.has_preview && item.preview_url) {
-      loadPreviewInto(img, item.preview_url, fallback);
+      // Guard against a stale async blob overwriting a newer selection.
+      const seq = ++state.sideSeq;
+      loadPreviewInto(img, item.preview_url, fallback, () => seq === state.sideSeq);
+    } else {
+      state.sideSeq += 1;
     }
   }
 
@@ -501,6 +524,7 @@
       const payload = await api(
         `/api/v1/queues/${encodeURIComponent(queueId)}/items?${statusParam}limit=60&offset=0`
       );
+      if (state.selectedId !== queueId) return; // user switched queues mid-flight
       state.items = payload.items || [];
       state.itemsMeta = {
         total: payload.total,
@@ -516,6 +540,7 @@
       renderItemGrid();
       renderItemSide(selectedItem());
     } catch (err) {
+      if (state.selectedId !== queueId) return;
       state.items = [];
       state.itemsMeta = null;
       $("itemGrid").innerHTML = `<div class="empty-state" style="grid-column:1/-1">条目读取失败：${escapeHtml(
@@ -654,13 +679,16 @@
     renderQueues();
 
     const data = await api(`/api/v1/queues/${encodeURIComponent(id)}`);
+    if (state.selectedId !== id) return; // another queue was selected while awaiting
     renderDetailData(data.queue || {});
     state.detailLoadedFor = id;
 
     try {
       const logs = await api(`/api/v1/queues/${encodeURIComponent(id)}/logs?lines=100`);
+      if (state.selectedId !== id) return;
       $("logTail").textContent = logs.tail || "（暂无日志）";
     } catch (err) {
+      if (state.selectedId !== id) return;
       $("logTail").textContent = `日志读取失败：${err.message}`;
     }
     await loadItems(id, { keepSelection: false });
@@ -681,6 +709,8 @@
     const msg = $("createMsg");
     msg.textContent = "创建中…";
     msg.className = "form-msg";
+    const submitBtn = $("btnSubmitCreate");
+    if (submitBtn) submitBtn.disabled = true;
     const opt = $("templateId").selectedOptions[0];
     const payload = {
       template_id: $("templateId").value,
@@ -707,11 +737,24 @@
     } catch (err) {
       msg.textContent = err.message;
       msg.className = "form-msg err";
+    } finally {
+      if (submitBtn) submitBtn.disabled = false;
     }
   }
 
   async function control(action) {
     if (!state.selectedId) return;
+    const queue = state.queues.find((q) => q.id === state.selectedId) || {};
+    const queueName = queue.name || queue.id || state.selectedId;
+    if (action === "finalize") {
+      const ok = window.confirm(
+        `确认对「${queueName}」写入终落点？\n\n将把已完成的结果搬入 角色肖像 并回写 people 档案，操作不可撤销。`
+      );
+      if (!ok) return;
+    } else if (action === "cancel") {
+      const ok = window.confirm(`确认取消「${queueName}」？\n\n正在运行的抓取会被终止。`);
+      if (!ok) return;
+    }
     const btn = document.querySelector(`#detailActions [data-action="${action}"]`);
     if (btn) btn.disabled = true;
     const labels = {

@@ -228,7 +228,62 @@
   </div>
 
   <div id="toast" class="toast" hidden></div>
+  <script>
+    /* Inline gate probe: runs even if /static/*.js is replaced by Access HTML */
+    (function () {
+      function setConn(ok, text) {
+        var dot = document.getElementById("connDot");
+        var label = document.getElementById("connText");
+        if (dot) dot.className = "dot " + (ok ? "ok" : "bad");
+        if (label) label.textContent = text;
+      }
+      function looksAccess(text, ct) {
+        text = String(text || "");
+        ct = String(ct || "").toLowerCase();
+        return (ct.indexOf("text/html") >= 0 || /<html/i.test(text)) &&
+          /cloudflare\s*access|cloudflareaccess\.com|Sign in/i.test(text);
+      }
+      var ctrl = typeof AbortController !== "undefined" ? new AbortController() : null;
+      var timer = setTimeout(function () {
+        if (ctrl) ctrl.abort();
+        var cur = (document.getElementById("connText") || {}).textContent || "";
+        if (cur.indexOf("连接中") >= 0) setConn(false, "连接超时：请检查网络或 Access 登录");
+      }, 10000);
+      fetch("/api/v1/health", {
+        credentials: "same-origin",
+        headers: { "Accept": "application/json" },
+        signal: ctrl ? ctrl.signal : undefined
+      }).then(function (res) {
+        return res.text().then(function (text) {
+          return { res: res, text: text };
+        });
+      }).then(function (pack) {
+        clearTimeout(timer);
+        var ct = pack.res.headers.get("content-type") || "";
+        if (looksAccess(pack.text, ct)) {
+          setConn(false, "未过 Cloudflare Access，请先登录域名门禁");
+          return;
+        }
+        try {
+          var body = JSON.parse(pack.text);
+          if (body && body.ok === true) {
+            var cur = (document.getElementById("connText") || {}).textContent || "";
+            if (cur.indexOf("连接中") >= 0) setConn(true, "已连接");
+            return;
+          }
+        } catch (e) {}
+        var cur2 = (document.getElementById("connText") || {}).textContent || "";
+        if (cur2.indexOf("连接中") >= 0) setConn(false, "接口异常：未返回健康 JSON");
+      }).catch(function (err) {
+        clearTimeout(timer);
+        var cur = (document.getElementById("connText") || {}).textContent || "";
+        if (cur.indexOf("连接中") < 0) return;
+        if (err && err.name === "AbortError") setConn(false, "连接超时");
+        else setConn(false, "连接失败：" + (err && err.message ? err.message : "network"));
+      });
+    })();
+  </script>
   <script src="/static/common.js"></script>
-  <script src="/static/vision.js"></script>
+  <script src="/static/vision.js" onerror="(function(){var l=document.getElementById('connText');var d=document.getElementById('connDot');if(d)d.className='dot bad';if(l)l.textContent='脚本加载失败（域名门禁或网络）；可改用内网 http://192.168.5.36:8787/';})()"></script>
 </body>
 </html>

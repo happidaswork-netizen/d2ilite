@@ -13,6 +13,7 @@
     selectedId: "",
     objectUrls: [],
     loading: false,
+    sideSeq: 0,
   };
 
   const $ = (id) => document.getElementById(id);
@@ -67,8 +68,13 @@
         err.raw = text.slice(0, 200);
         throw err;
       }
-      if (res.status === 401 && window.D2I && !D2I.getToken()) {
-        if (D2I.promptToken()) return api(path, options);
+      if (res.status === 401 && window.D2I) {
+        const hadToken = Boolean(D2I.getToken());
+        if (hadToken) D2I.setToken(""); // stale/wrong token — drop before re-prompting
+        const t = D2I.promptToken(
+          hadToken ? "Token 无效或已过期：请重新输入 D2I_WEB_TOKEN（留空取消）" : undefined
+        );
+        if (t) return api(path, options);
       }
       if (!res.ok) {
         const detail = body?.detail || body?.error || res.statusText || "request failed";
@@ -95,6 +101,12 @@
       .replaceAll("<", "&lt;")
       .replaceAll(">", "&gt;")
       .replaceAll('"', "&quot;");
+  }
+
+  function safeHttpUrl(value) {
+    // Only http(s) is safe as an href target; anything else (javascript:, data:, file:) is dropped.
+    const s = String(value || "").trim();
+    return /^https?:\/\//i.test(s) ? s : "";
   }
 
   function toast(message) {
@@ -142,7 +154,7 @@
     return res.blob();
   }
 
-  async function loadPreviewInto(imgEl, previewUrl, fallbackEl) {
+  async function loadPreviewInto(imgEl, previewUrl, fallbackEl, stillValid) {
     if (!imgEl || !previewUrl) {
       if (imgEl) {
         imgEl.hidden = true;
@@ -153,6 +165,7 @@
     }
     try {
       const blob = await fetchAuthorizedBlob(previewUrl);
+      if (typeof stillValid === "function" && !stillValid()) return null;
       const objectUrl = URL.createObjectURL(blob);
       state.objectUrls.push(objectUrl);
       imgEl.src = objectUrl;
@@ -160,6 +173,7 @@
       if (fallbackEl) fallbackEl.hidden = true;
       return objectUrl;
     } catch (err) {
+      if (typeof stillValid === "function" && !stillValid()) return null;
       imgEl.hidden = true;
       imgEl.removeAttribute("src");
       if (fallbackEl) {
@@ -223,6 +237,7 @@
   }
 
   function renderItemSide(item) {
+    const seq = ++state.sideSeq; // invalidate any preview still loading for a prior selection
     const empty = $("itemSideEmpty");
     const body = $("itemSideBody");
     if (!item) {
@@ -256,9 +271,10 @@
       .join("");
 
     const source = $("itemSideSource");
-    if (item.detail_url) {
+    const safeDetail = safeHttpUrl(item.detail_url);
+    if (safeDetail) {
       source.hidden = false;
-      source.href = item.detail_url;
+      source.href = safeDetail;
     } else {
       source.hidden = true;
       source.removeAttribute("href");
@@ -282,7 +298,7 @@
     img.hidden = true;
     img.removeAttribute("src");
     if (item.has_preview && item.preview_url) {
-      loadPreviewInto(img, item.preview_url, fallback);
+      loadPreviewInto(img, item.preview_url, fallback, () => seq === state.sideSeq);
     }
   }
 

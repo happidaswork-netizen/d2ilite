@@ -63,8 +63,13 @@
         err.code = "non_json";
         throw err;
       }
-      if (res.status === 401 && window.D2I && !D2I.getToken()) {
-        if (D2I.promptToken()) return api(path, options);
+      if (res.status === 401 && window.D2I) {
+        const hadToken = Boolean(D2I.getToken());
+        if (hadToken) D2I.setToken(""); // stale/wrong token — drop before re-prompting
+        const t = D2I.promptToken(
+          hadToken ? "Token 无效或已过期：请重新输入 D2I_WEB_TOKEN（留空取消）" : undefined
+        );
+        if (t) return api(path, options);
       }
       if (!res.ok) {
         const detail = body?.detail || body?.error || res.statusText || "request failed";
@@ -170,7 +175,10 @@
         ? `泵空闲 · 上次结束 ${pump.finished_at} · 共跑 ${pump.ran_count || 0}`
         : `泵空闲 · 模型 ${model}${avail ? "" : "（不可用）"}`;
     if ($("pumpHint")) $("pumpHint").textContent = pumpText;
-  }
+    // Reflect actual pump state on the trigger buttons so a running drain isn't re-launched.
+    const pumpRunning = Boolean(pump.running);
+    if ($("btnPump")) $("btnPump").disabled = state.busy || pumpRunning;
+    if ($("btnPumpOne")) $("btnPumpOne").disabled = state.busy || pumpRunning;
 
   function renderJobs() {
     const list = $("jobList");
@@ -298,6 +306,7 @@
       const data = await api(`/api/v1/ai/vision/jobs/${encodeURIComponent(id)}`, {
         timeoutMs: soft ? 12000 : 20000,
       });
+      if (state.selectedId !== id) return; // selection changed while awaiting
       const j = data.job || {};
       $("detailEmpty").hidden = true;
       $("detailBody").hidden = false;
@@ -308,7 +317,9 @@
       $("detailBatch").textContent = [j.province, j.city].filter(Boolean).join(" · ") || j.batch_key || "—";
 
       const st = String(j.status || "");
-      const canRun = st === "queued" || st === "failed" || st === "cancelled";
+      // Backend run_vision_job only accepts a queued job (or one already running);
+      // failed/cancelled must go through 重跑 (requeue), not Run — so gate accordingly.
+      const canRun = st === "queued";
       const canCancel = st === "queued" || st === "running";
       const canRequeue =
         (Number(j.failed_count || 0) > 0 || Number(j.missing_count || 0) > 0) &&
@@ -466,6 +477,15 @@
 
   async function runJob(id) {
     if (!id || state.busy) return;
+    const job = state.jobs.find((j) => j.id === id) || {};
+    const name = job.name || id;
+    const n = job.total ?? job.item_count ?? "";
+    if (
+      !window.confirm(
+        `确认运行「${name}」？\n\n将调用 Grok 视觉模型识别${n ? ` ${n} 张` : ""}图片，产生真实计费。`
+      )
+    )
+      return;
     state.busy = true;
     try {
       toast("本批运行中…");
@@ -740,8 +760,24 @@
 
   function bind() {
     $("btnRefresh")?.addEventListener("click", () => refreshAll({ showToast: true }));
-    $("btnPump")?.addEventListener("click", () => startPump({ maxClaim: 0, background: true }));
-    $("btnPumpOne")?.addEventListener("click", () => startPump({ maxClaim: 1, background: false }));
+    $("btnPump")?.addEventListener("click", () => {
+      if (
+        window.confirm(
+          "启动后台泵？\n\n将依次跑完所有排队中的视觉批次，逐批调用 Grok，产生真实计费。"
+        )
+      ) {
+        startPump({ maxClaim: 0, background: true });
+      }
+    });
+    $("btnPumpOne")?.addEventListener("click", () => {
+      if (
+        window.confirm(
+          "前台跑一个批次？\n\n将调用 Grok 识别一批图片，产生真实计费；期间请勿关闭页面。"
+        )
+      ) {
+        startPump({ maxClaim: 1, background: false });
+      }
+    });
     $("btnInventory")?.addEventListener("click", () => runInventory());
     $("btnInventory2")?.addEventListener("click", () => runInventory());
     $("btnPlan")?.addEventListener("click", () => runPlan());
@@ -779,7 +815,15 @@
       if (!btn || !state.selectedId) return;
       if (btn.dataset.action === "run") runJob(state.selectedId);
       if (btn.dataset.action === "cancel") cancelJob(state.selectedId);
-      if (btn.dataset.action === "requeue") requeueFailed(state.selectedId);
+      if (btn.dataset.action === "requeue") {
+        if (
+          window.confirm(
+            "把本批失败/缺图条目重新入队并启动泵？\n\n将调用 Grok 产生真实计费；已识别的人会自动跳过。"
+          )
+        ) {
+          requeueFailed(state.selectedId);
+        }
+      }
     });
   }
 
