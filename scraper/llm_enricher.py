@@ -7,10 +7,11 @@ from typing import Any, Dict, List, Optional
 
 from llm_client import OpenAICompatibleClient, normalize_api_base
 
-
-def _normalize_text(value: Any) -> str:
-    text = str(value or "").replace("\r", " ").replace("\n", " ").strip()
-    return re.sub(r"\s+", " ", text)
+# Text normalization shared with the scraper entrances (single source of truth).
+try:  # flat sibling import — scraper/ dir on sys.path (script runtime)
+    from name_sanitizer import _normalize_text
+except ImportError:  # repo-root import context (cloud / tests)
+    from scraper.name_sanitizer import _normalize_text  # type: ignore
 
 
 def _clean_token(value: Any, max_len: int = 24) -> str:

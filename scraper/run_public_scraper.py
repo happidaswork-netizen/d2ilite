@@ -29,6 +29,25 @@ except Exception:
 
 from public_profile_spider import PublicProfileSpider, default_output_from_url
 
+# Person-name sanitization lives in the shared module (single source of truth,
+# same strict gate as the requests_jsl spider — no raw-text fallback).
+try:  # flat sibling import — scraper/ dir on sys.path (script runtime)
+    from name_sanitizer import (
+        _extract_person_name_token,
+        _is_usable_person_name,
+        _normalize_text,
+        _prefer_person_name,
+        _strip_html_markup,
+    )
+except ImportError:  # repo-root import context (cloud / tests)
+    from scraper.name_sanitizer import (  # type: ignore
+        _extract_person_name_token,
+        _is_usable_person_name,
+        _normalize_text,
+        _prefer_person_name,
+        _strip_html_markup,
+    )
+
 # Ensure parent project modules (e.g. metadata_writer.py) are importable
 SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = SCRIPT_DIR.parent
@@ -89,6 +108,14 @@ def load_json(path: Path, default: Any) -> Any:
 def save_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def save_json_atomic(path: Path, payload: Any) -> None:
+    """Write JSON via temp file + os.replace so readers never see a partial file."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_name(path.name + ".tmp")
+    tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(tmp_path, path)
 
 
 def _compact_url_for_log(value: Any, *, max_len: int = 96) -> str:
@@ -324,63 +351,10 @@ def _display_person_name(name: Any, detail_url: str = "") -> str:
     return "未命名人物"
 
 
-def _is_usable_person_name(name: Any) -> bool:
-    """Reject page titles / chrome text that would overwrite a good list-card name."""
-    text = _normalize_text(name)
-    if not text:
-        return False
-    lowered = text.lower()
-    if "<title" in lowered or "</title>" in lowered:
-        return False
-    if re.search(r"个人简历|市政府领导|人民政府$|首页|网站地图|关于本站", text):
-        return False
-    compact = re.sub(r"\s+", "", text)
-    if re.fullmatch(r"[一-鿿]{2,4}", compact):
-        return True
-    # e.g. "副市长 姜桂海"
-    m = re.search(r"([一-鿿]{2,4})\s*$", text)
-    if m and not re.search(r"简历|职务|领导|职责", m.group(1)):
-        return True
-    if 2 <= len(compact) <= 16 and re.search(r"[一-鿿]{2,}", compact):
-        if not re.search(r"简历|职务|网站|首页|部门", compact):
-            return True
-    return False
-
-
-def _extract_person_name_token(value: Any) -> str:
-    """Pull a short person name out of role captions / list labels."""
-    text = _normalize_text(value)
-    if not text:
-        return ""
-    # "市委副书记、代理市长 刘 勇" / "副市长 姜桂海"
-    m = re.search(
-        r"(?:代理市长|常务副市长|副市长|市长|书记|主任|局长|委员)[：:\s]*"
-        r"([一-鿿](?:\s*[一-鿿]){1,3})\s*$",
-        text,
-    )
-    if m:
-        return re.sub(r"\s+", "", m.group(1))
-    compact = re.sub(r"\s+", "", text)
-    if re.fullmatch(r"[一-鿿]{2,4}", compact):
-        return compact
-    if _is_usable_person_name(text):
-        trailing = re.search(r"([一-鿿]{2,4})\s*$", compact)
-        if trailing and not re.search(r"简历|职务|领导|职责", trailing.group(1)):
-            return trailing.group(1)
-        return text
-    return ""
-
-
-def _prefer_person_name(detail_name: Any, seed_name: Any) -> str:
-    detail = _normalize_text(detail_name)
-    seed = _normalize_text(seed_name)
-    detail_token = _extract_person_name_token(detail)
-    if detail_token:
-        return detail_token
-    seed_token = _extract_person_name_token(seed)
-    if seed_token:
-        return seed_token
-    return detail or seed
+# NOTE: _is_usable_person_name / _extract_person_name_token / _prefer_person_name
+# used to have a looser browser-mode copy here (bare titles like "市长" and nav
+# chrome like "魅力狮城" slipped through, with a raw-text fallback). They are now
+# imported from name_sanitizer (see top of file) — strict spider semantics.
 
 
 def runtime_log(level: str, message: str, **fields: Any) -> None:
@@ -2160,42 +2134,7 @@ def _guess_extension(url: str, content_type: str) -> str:
     return ".bin"
 
 
-def _strip_html_markup(value: Any) -> str:
-    text = str(value or "")
-    if not text:
-        return ""
-    if "<" in text and ">" in text:
-        text = re.sub(r"(?is)<script[^>]*>.*?</script>", " ", text)
-        text = re.sub(r"(?is)<style[^>]*>.*?</style>", " ", text)
-        text = re.sub(r"<[^>]+>", " ", text)
-        text = (
-            text.replace("&nbsp;", " ")
-            .replace("&#160;", " ")
-            .replace("&amp;", "&")
-            .replace("&lt;", "<")
-            .replace("&gt;", ">")
-            .replace("&quot;", '"')
-            .replace("&#39;", "'")
-        )
-    return text
-
-
-def _normalize_text(value: Any) -> str:
-    text = " ".join(_strip_html_markup(value).split()).strip()
-    if not text:
-        return ""
-    if re.search(r"[\u4e00-\u9fff]", text):
-        return text
-    latin1_like = sum(1 for ch in text if 0x80 <= ord(ch) <= 0xFF)
-    if latin1_like < 2:
-        return text
-    try:
-        repaired = text.encode("latin1").decode("utf-8")
-    except Exception:
-        return text
-    if re.search(r"[\u4e00-\u9fff]", repaired):
-        return repaired
-    return text
+# _strip_html_markup / _normalize_text moved to name_sanitizer (imported at top).
 
 
 _TRS_CSS_RULE_RE = re.compile(r"\.TRS_Editor\s+[A-Za-z0-9_-]+\s*\{[^{}]*\}", re.IGNORECASE)
@@ -6366,6 +6305,8 @@ def main() -> int:
             "used": bool(fallback_events),
             "events": fallback_events,
         }
+        # M2: 磁盘 reconcile_report.json 补齐 run_state 等收尾字段,与 stdout 日志保持一致
+        save_json_atomic(output_root / "reports" / "reconcile_report.json", report)
     final_counts = _counts_snapshot()
     _log_counts("counts on disk after run", previous=run_counts_start)
     _log(
