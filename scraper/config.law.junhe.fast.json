@@ -1,0 +1,151 @@
+{
+  "site_name": "junhe_professionals",
+  "start_urls": [
+    "https://www.junhe.com/professionals"
+  ],
+  "allowed_domains": [
+    "www.junhe.com",
+    "junhe.com"
+  ],
+  "user_agent": "D2ILiteArchiveBot/1.0 (+local archival use)",
+  "default_headers": {
+    "Referer": "https://www.junhe.com/professionals",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+  },
+  "image_headers": {
+    "Referer": "https://www.junhe.com/professionals"
+  },
+  "output_root": "D:/bugemini/d2ilite/data/public_archive",
+  "selectors": {
+    "list_item": "ul.result-list-wrap li.item a.li-content-wrap[href^='/professionals/']",
+    "name": [
+      ".name::text",
+      "xpath:normalize-space(string(.//div[contains(@class,'name')]))"
+    ],
+    "detail_link": "::attr(href)",
+    "list_fields": {
+      "office_text": "xpath:normalize-space(string(.//ul[contains(@class,'office')]))",
+      "expertise_text": "xpath:normalize-space(string(.//ul[contains(@class,'expertise')]))"
+    },
+    "next_page": [
+      "a[href*='?page=']::attr(href)"
+    ],
+    "detail_name": [
+      ".professional-name .name::text",
+      "xpath:normalize-space(string(//div[contains(@class,'professional-name')]//h2[contains(@class,'name')]))"
+    ],
+    "detail_image": [
+      ".professionals-name-card img.avatar[src*='/upload/professionals/']::attr(src)",
+      "img[src*='/upload/professionals/']::attr(src)"
+    ],
+    "detail_gender": [],
+    "detail_summary": [
+      ".professionals-details .details.experience .content *::text",
+      ".professionals-details .details.experience .content::text"
+    ],
+    "detail_full_text": [
+      ".professionals-details *::text",
+      ".professionals-name-card .contact-way *::text"
+    ],
+    "detail_fields": {
+      "title": "xpath:normalize-space(string(//div[contains(@class,'professional-name')]//span[contains(@class,'identity')]))",
+      "email_text": "xpath:normalize-space(string(//ul[contains(@class,'contact-way')]//a[contains(@href,'mailto:')][1]))",
+      "phone_text": "xpath:normalize-space(string((//ul[contains(@class,'contact-way')]//li[contains(normalize-space(),'电话')])[1]))",
+      "fax_text": "xpath:normalize-space(string((//ul[contains(@class,'contact-way')]//li[contains(normalize-space(),'传真')])[1]))",
+      "office_text": "xpath:normalize-space(string((//div[contains(@class,'top-breadcrumb')]//a)[last()]))",
+      "expertise_text": "xpath:normalize-space(string(//div[contains(@class,'details') and contains(@class,'practice-area')]//ul[contains(@class,'practices')]))",
+      "resume_cn": "xpath://a[contains(normalize-space(),'下载简历')]/@href",
+      "vcard": "xpath://a[contains(normalize-space(),'VCard')]/@href"
+    },
+    "detail_field_labels": {
+      "title": "职位",
+      "email_text": "邮箱",
+      "phone_text": "电话",
+      "fax_text": "传真",
+      "office_text": "办公室",
+      "expertise_text": "专业领域",
+      "resume_cn": "中文简历",
+      "vcard": "VCard"
+    }
+  },
+  "rules": {
+    "obey_robots_txt": true,
+    "snapshot_html": true,
+    "extract_images": true,
+    "write_metadata": true,
+    "write_metadata_inline_per_item": false,
+    "metadata_embed_full_content": true,
+    "named_images_dir": "",
+    "image_referer_from_detail_url": true,
+    "required_fields": [
+      "name",
+      "detail_url",
+      "image_url"
+    ],
+    "default_gender": "",
+    "gender_map": {},
+    "infer_gender_from_text": true,
+    "field_map": {
+      "person": [
+        "name"
+      ],
+      "position": [
+        "field.title"
+      ],
+      "email": [
+        "field.email_text"
+      ],
+      "city": [
+        "field.office_text"
+      ],
+      "summary": [
+        "summary"
+      ],
+      "full_content": [
+        "full_content"
+      ]
+    },
+    "auto_unit_subdir": true,
+    "unit_name": "君合律师事务所",
+    "output_subdir_pattern": "{unit}_专业人员",
+    "year_hint": "",
+    "detail_field_labels": {
+      "title": "职位",
+      "email_text": "邮箱",
+      "phone_text": "电话",
+      "fax_text": "传真",
+      "office_text": "办公室",
+      "expertise_text": "专业领域",
+      "resume_cn": "中文简历",
+      "vcard": "VCard"
+    },
+    "image_download_mode": "requests_jsl",
+    "auto_fallback_to_browser": true,
+    "browser_engine": "chrome",
+    "output_mode": "images_only_with_record",
+    "keep_record_file": true,
+    "retry_failed_first": true,
+    "metadata_audit_required_fields": [
+      "gender"
+    ]
+  },
+  "crawl": {
+    "concurrent_requests": 4,
+    "download_delay": 0,
+    "autothrottle_start_delay": 0,
+    "autothrottle_max_delay": 1,
+    "retry_times": 3,
+    "timeout_seconds": 25,
+    "blocked_statuses": [
+      403,
+      429,
+      521
+    ],
+    "blocked_backoff_hours": 2,
+    "suspect_block_consecutive_failures": 3,
+    "interval_min_seconds": 0,
+    "interval_max_seconds": 0,
+    "image_interval_min_seconds": 0,
+    "image_interval_max_seconds": 0
+  }
+}

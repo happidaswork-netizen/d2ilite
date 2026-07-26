@@ -1,0 +1,89 @@
+{
+  "site_name": "dongying_gov_leadership",
+  "start_urls": [
+    "http://www.dongying.gov.cn/col/col38804/index.html"
+  ],
+  "allowed_domains": [
+    "dongying.gov.cn"
+  ],
+  "user_agent": "D2ILiteArchiveBot/1.0 (+local archival use)",
+  "default_headers": {
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Referer": "http://www.dongying.gov.cn/"
+  },
+  "image_headers": {
+    "Referer": "http://www.dongying.gov.cn/"
+  },
+  "output_root": "data/public_archive/山东公开官员",
+  "selectors": {
+    "list_item": "css:li:has(span.ldzch_name)",
+    "name": [
+      "css:span.ldzch_name"
+    ],
+    "detail_link": [
+      "xpath:.//div[contains(@class,'ldzch_pic')]/a/@href",
+      "xpath:.//a[2]/@href"
+    ],
+    "image_url": [
+      "xpath:.//div[contains(@class,'ldzch_pic')]/a/img/@src"
+    ],
+    "list_fields": {},
+    "next_page": [],
+    "detail_name": [
+      "xpath://title"
+    ],
+    "detail_image": [],
+    "detail_gender": [],
+    "detail_summary": [
+      "xpath://div[contains(@class,'article-content')]//p[1]",
+      "xpath://body//p[string-length(normalize-space())>30][1]"
+    ],
+    "detail_full_text": [
+      "xpath://div[contains(@class,'article-content')]"
+    ],
+    "detail_fields": {},
+    "detail_field_labels": {}
+  },
+  "rules": {
+    "obey_robots_txt": false,
+    "snapshot_html": false,
+    "extract_images": true,
+    "write_metadata": true,
+    "direct_write_images": true,
+    "named_images_dir": "",
+    "image_referer_from_detail_url": true,
+    "required_fields": [
+      "name",
+      "detail_url",
+      "image_url"
+    ],
+    "default_gender": "",
+    "gender_map": {
+      "男": "男",
+      "女": "女"
+    },
+    "field_map": {
+      "person": ["name"],
+      "image_url": ["field.image_url"],
+      "summary": ["field.detail_summary", "field.detail_full_text"],
+      "full_content": ["field.detail_full_text", "field.detail_summary"]
+    },
+    "detail_field_labels": {},
+    "auto_unit_subdir": true,
+    "unit_name": "东营市人民政府",
+    "output_region": "山东省",
+    "output_subdir": "东营市/市级/{unit}",
+    "output_subdir_pattern": "{region}/{output_subdir}/{gender}",
+    "year_hint": "2026",
+    "admin": {
+      "province": "山东省",
+      "city": "东营市"
+    },
+    "image_naming": "name",
+    "same_name_dedup": true,
+    "delay_min": 2.0,
+    "delay_max": 4.0,
+    "slow_delay_min": 15,
+    "slow_delay_max": 35
+  }
+}

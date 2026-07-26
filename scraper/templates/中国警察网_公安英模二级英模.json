@@ -1,0 +1,173 @@
+{
+  "site_name": "cpd_gaym_erji_yingmo",
+  "start_urls": [
+    "https://gaym.cpd.com.cn/qggaxtejyxmf_25573/index.html",
+    "https://gaym.cpd.com.cn/qggaxtejyxmf_25573/index_1.html",
+    "https://gaym.cpd.com.cn/qggaxtejyxmf_25573/index_2.html",
+    "https://gaym.cpd.com.cn/qggaxtejyxmf_25573/index_3.html",
+    "https://gaym.cpd.com.cn/qggaxtejyxmf_25573/index_4.html",
+    "https://gaym.cpd.com.cn/qggaxtejyxmf_25573/index_5.html",
+    "https://gaym.cpd.com.cn/qggaxtejyxmf_25573/index_6.html",
+    "https://gaym.cpd.com.cn/qggaxtejyxmf_25573/index_7.html",
+    "https://gaym.cpd.com.cn/qggaxtejyxmf_25573/index_8.html",
+    "https://gaym.cpd.com.cn/qggaxtejyxmf_25573/index_9.html"
+  ],
+  "allowed_domains": [
+    "gaym.cpd.com.cn",
+    "cpd.com.cn",
+    "cpdasset.cpd.com.cn"
+  ],
+  "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 Edg/122.0.0.0",
+  "default_headers": {
+    "Referer": "https://gaym.cpd.com.cn/",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+    "Upgrade-Insecure-Requests": "1"
+  },
+  "image_headers": {
+    "Referer": "https://gaym.cpd.com.cn/",
+    "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 Edg/122.0.0.0"
+  },
+  "output_root": "data/public_archive",
+  "selectors": {
+    "list_item": "#nav04 .left ul a[href*='t_'][href$='.html']",
+    "name": [
+      ".title::text",
+      "xpath:normalize-space(string(.//div[contains(@class,'title')][1]))",
+      "::text"
+    ],
+    "detail_link": "::attr(href)",
+    "list_fields": {
+      "list_summary": "xpath:normalize-space(string(.//p[1]))",
+      "list_image": ".images img::attr(src)",
+      "category": "xpath:'全国公安系统二级英雄模范'"
+    },
+    "next_page": [],
+    "detail_name": [
+      "xpath:normalize-space(substring-before(string(//h1[1]),'：'))",
+      "xpath:normalize-space(substring-before(string(//title),'：'))"
+    ],
+    "detail_image": [
+      "#nav04 .TRS_Editor img[src*='W020']::attr(src)",
+      ".TRS_Editor img[src*='W020']::attr(src)",
+      "#nav04 img[src*='W020']::attr(src)",
+      "meta[property='og:image']::attr(content)"
+    ],
+    "detail_images": [
+      "#nav04 .TRS_Editor img[src*='W020']::attr(src)",
+      ".TRS_Editor img[src*='W020']::attr(src)",
+      "#nav04 img[src*='W020']::attr(src)"
+    ],
+    "detail_gender": [],
+    "detail_summary": [
+      "xpath:normalize-space(string((//div[contains(@class,'TRS_Editor')]//p)[1]))",
+      ".TRS_Editor p::text",
+      ".TRS_Editor p *::text"
+    ],
+    "detail_full_text": [
+      "xpath://div[contains(@class,'TRS_Editor')]//*[not(self::style) and not(ancestor::style) and not(self::script) and not(ancestor::script)]/text()[normalize-space()]",
+      "xpath://div[@id='nav04']//*[not(self::style) and not(ancestor::style) and not(self::script) and not(ancestor::script)]/text()[normalize-space()]"
+    ],
+    "detail_fields": {
+      "category": "xpath:'全国公安系统二级英雄模范'",
+      "page_title": "title::text",
+      "meta_description": "xpath:string(//meta[@name='description']/@content)",
+      "source_site": "xpath:'中国警察网'"
+    },
+    "detail_field_labels": {
+      "category": "栏目",
+      "list_summary": "列表摘要",
+      "list_image": "列表图片",
+      "page_title": "页面标题",
+      "meta_description": "页面简介",
+      "source_site": "来源站点"
+    }
+  },
+  "rules": {
+    "obey_robots_txt": false,
+    "snapshot_html": true,
+    "extract_images": true,
+    "write_metadata": true,
+    "write_metadata_inline_per_item": true,
+    "direct_write_images": true,
+    "named_images_dir": "",
+    "image_referer_from_detail_url": true,
+    "required_fields": [
+      "name",
+      "detail_url",
+      "image_url"
+    ],
+    "default_gender": "",
+    "infer_gender_from_text": false,
+    "download_all_detail_images": true,
+    "metadata_embed_full_content": true,
+    "gender_map": {},
+    "field_map": {
+      "person": [
+        "name"
+      ],
+      "image_url": [
+        "image_url",
+        "field.list_image"
+      ],
+      "unit": [
+        "field.category",
+        "field.source_site"
+      ],
+      "summary": [
+        "summary",
+        "field.list_summary"
+      ],
+      "full_content": [
+        "full_content",
+        "summary",
+        "field.list_summary"
+      ],
+      "source_profile_url": [
+        "detail_url"
+      ]
+    },
+    "auto_unit_subdir": true,
+    "unit_name": "中国警察网公安英模_二级英模",
+    "output_subdir_pattern": "{unit}",
+    "year_hint": "",
+    "detail_field_labels": {
+      "category": "栏目",
+      "list_summary": "列表摘要",
+      "list_image": "列表图片",
+      "page_title": "页面标题",
+      "meta_description": "页面简介",
+      "source_site": "来源站点"
+    },
+    "image_download_mode": "requests_jsl",
+    "auto_fallback_to_browser": true,
+    "browser_engine": "chrome",
+    "disable_page_images_during_crawl": true,
+    "download_images_during_crawl": false,
+    "output_mode": "images_only_with_record",
+    "keep_record_file": true,
+    "jsl_clearance_enabled": false,
+    "jsl_max_retries": 3
+  },
+  "crawl": {
+    "concurrent_requests": 1,
+    "download_delay": 5,
+    "autothrottle_start_delay": 5,
+    "autothrottle_max_delay": 8,
+    "retry_times": 3,
+    "timeout_seconds": 30,
+    "blocked_statuses": [
+      403,
+      429,
+      521
+    ],
+    "blocked_backoff_hours": 6,
+    "suspect_block_consecutive_failures": 3,
+    "interval_min_seconds": 5,
+    "interval_max_seconds": 8,
+    "image_interval_min_seconds": 5,
+    "image_interval_max_seconds": 8
+  }
+}

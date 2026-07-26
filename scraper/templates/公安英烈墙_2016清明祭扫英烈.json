@@ -1,0 +1,194 @@
+{
+  "site_name": "mps_qingming_2016",
+  "start_urls": [
+    "https://www.mps.gov.cn/n2255079/n5590589/n5661377/n5661379/n5661381/index.html",
+    "https://www.mps.gov.cn/n2255079/n5590589/n5661377/n5661379/n5661383/index.html",
+    "https://www.mps.gov.cn/n2255079/n5590589/n5661377/n5661379/n5661385/index.html",
+    "https://www.mps.gov.cn/n2255079/n5590589/n5661377/n5661379/n5661387/index.html",
+    "https://www.mps.gov.cn/n2255079/n5590589/n5661377/n5661379/n5661389/index.html",
+    "https://www.mps.gov.cn/n2255079/n5590589/n5661377/n5661379/n5661391/index.html",
+    "https://www.mps.gov.cn/n2255079/n5590589/n5661377/n5661379/n5661393/index.html",
+    "https://www.mps.gov.cn/n2255079/n5590589/n5661377/n5661379/n5661395/index.html",
+    "https://www.mps.gov.cn/n2255079/n5590589/n5661377/n5661379/n5661397/index.html",
+    "https://www.mps.gov.cn/n2255079/n5590589/n5661377/n5661379/n5661399/index.html",
+    "https://www.mps.gov.cn/n2255079/n5590589/n5661377/n5661379/n5661401/index.html",
+    "https://www.mps.gov.cn/n2255079/n5590589/n5661377/n5661379/n5661403/index.html",
+    "https://www.mps.gov.cn/n2255079/n5590589/n5661377/n5661379/n5661405/index.html",
+    "https://www.mps.gov.cn/n2255079/n5590589/n5661377/n5661379/n5661407/index.html",
+    "https://www.mps.gov.cn/n2255079/n5590589/n5661377/n5661379/n5661409/index.html",
+    "https://www.mps.gov.cn/n2255079/n5590589/n5661377/n5661379/n5661411/index.html",
+    "https://www.mps.gov.cn/n2255079/n5590589/n5661377/n5661379/n5661413/index.html",
+    "https://www.mps.gov.cn/n2255079/n5590589/n5661377/n5661379/n5661415/index.html",
+    "https://www.mps.gov.cn/n2255079/n5590589/n5661377/n5661379/n5661417/index.html",
+    "https://www.mps.gov.cn/n2255079/n5590589/n5661377/n5661379/n5661419/index.html",
+    "https://www.mps.gov.cn/n2255079/n5590589/n5661377/n5661379/n5661421/index.html",
+    "https://www.mps.gov.cn/n2255079/n5590589/n5661377/n5661379/n5661423/index.html",
+    "https://www.mps.gov.cn/n2255079/n5590589/n5661377/n5661379/n5661425/index.html",
+    "https://www.mps.gov.cn/n2255079/n5590589/n5661377/n5661379/n5661427/index.html",
+    "https://www.mps.gov.cn/n2255079/n5590589/n5661377/n5661379/n5661429/index.html",
+    "https://www.mps.gov.cn/n2255079/n5590589/n5661377/n5661379/n5661431/index.html",
+    "https://www.mps.gov.cn/n2255079/n5590589/n5661377/n5661379/n5661433/index.html",
+    "https://www.mps.gov.cn/n2255079/n5590589/n5661377/n5661379/n5661435/index.html",
+    "https://www.mps.gov.cn/n2255079/n5590589/n5661377/n5661379/n5661437/index.html",
+    "https://www.mps.gov.cn/n2255079/n5590589/n5661377/n5661379/n5661439/index.html",
+    "https://www.mps.gov.cn/n2255079/n5590589/n5661377/n5661379/n5661441/index.html",
+    "https://www.mps.gov.cn/n2255079/n5590589/n5661377/n5661379/n5661443/index.html",
+    "https://www.mps.gov.cn/n2255079/n5590589/n5661377/n5661379/n5661445/index.html",
+    "https://www.mps.gov.cn/n2255079/n5590589/n5661377/n5661379/n5661447/index.html",
+    "https://www.mps.gov.cn/n2255079/n5590589/n5661377/n5661379/n5661449/index.html",
+    "https://www.mps.gov.cn/n2255079/n5590589/n5661377/n5661379/n5661451/index.html",
+    "https://www.mps.gov.cn/n2255079/n5590589/n5661377/n5661379/n5661453/index.html",
+    "https://www.mps.gov.cn/n2255079/n5590589/n5661377/n5661379/n5661455/index.html",
+    "https://www.mps.gov.cn/n2255079/n5590589/n5661377/n5661379/n5661457/index.html",
+    "https://www.mps.gov.cn/n2255079/n5590589/n5661377/n5661379/n5661459/index.html",
+    "https://www.mps.gov.cn/n2255079/n5590589/n5661377/n5661379/n5661461/index.html"
+  ],
+  "allowed_domains": [
+    "www.mps.gov.cn",
+    "mps.gov.cn"
+  ],
+  "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 Edg/122.0.0.0",
+  "default_headers": {
+    "Referer": "https://www.mps.gov.cn/",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+    "Upgrade-Insecure-Requests": "1"
+  },
+  "image_headers": {
+    "Referer": "https://www.mps.gov.cn/",
+    "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 Edg/122.0.0.0"
+  },
+  "output_root": "D:/bugemini/d2ilite/data/public_archive",
+  "selectors": {
+    "list_item": "xpath://a[contains(@href,'/content.html') and normalize-space(string(.))]",
+    "name": [
+      "xpath:normalize-space(string(.))",
+      "::text"
+    ],
+    "detail_link": "::attr(href)",
+    "list_fields": {
+      "list_region": "xpath:normalize-space(string(//title[1]))"
+    },
+    "next_page": [],
+    "detail_name": [
+      "meta[name='ArticleTitle']::attr(content)",
+      "xpath:normalize-space(string(//td[@height='80']//b[1]))",
+      "xpath:normalize-space(substring-before(string(//title),'-'))",
+      "title::text"
+    ],
+    "detail_image": [
+      "img.ylimg::attr(src)",
+      "img[src*='/pic_']::attr(src)"
+    ],
+    "detail_gender": [],
+    "detail_summary": [
+      "xpath://td[contains(@style,'padding-top')]//p//text()",
+      "xpath://td[contains(@style,'padding-top')]//p//*[text()]//text()"
+    ],
+    "detail_full_text": [
+      "xpath://td[contains(@style,'padding-top')]//text()"
+    ],
+    "detail_fields": {
+      "region": "meta[name='ColumnName']::attr(content)",
+      "publish_date": "xpath:normalize-space(string(//*[contains(text(),'发布时间')][1]))",
+      "page_title": "title::text",
+      "meta_keywords": "xpath:string(//meta[@name='keywords']/@content)",
+      "meta_description": "xpath:string(//meta[@name='description']/@content)"
+    },
+    "detail_field_labels": {
+      "region": "地区",
+      "list_region": "列表分组",
+      "publish_date": "发布时间",
+      "page_title": "页面标题",
+      "meta_keywords": "页面关键词",
+      "meta_description": "页面简介"
+    }
+  },
+  "rules": {
+    "obey_robots_txt": false,
+    "snapshot_html": true,
+    "extract_images": true,
+    "write_metadata": true,
+    "write_metadata_inline_per_item": true,
+    "metadata_embed_full_content": true,
+    "named_images_dir": "",
+    "image_referer_from_detail_url": true,
+    "required_fields": [
+      "name",
+      "detail_url",
+      "image_url"
+    ],
+    "default_gender": "",
+    "gender_map": {},
+    "field_map": {
+      "person": [
+        "name"
+      ],
+      "image_url": [
+        "image_url"
+      ],
+      "unit": [
+        "field.region",
+        "field.list_region"
+      ],
+      "summary": [
+        "summary"
+      ],
+      "full_content": [
+        "full_content",
+        "summary"
+      ],
+      "source_profile_url": [
+        "detail_url"
+      ]
+    },
+    "auto_unit_subdir": true,
+    "unit_name": "公安部英烈",
+    "output_subdir_pattern": "{unit}_{year}",
+    "year_hint": "2016",
+    "detail_field_labels": {
+      "region": "地区",
+      "list_region": "列表分组",
+      "publish_date": "发布时间",
+      "page_title": "页面标题",
+      "meta_keywords": "页面关键词",
+      "meta_description": "页面简介"
+    },
+    "image_download_mode": "browser",
+    "auto_fallback_to_browser": true,
+    "browser_engine": "chrome",
+    "disable_page_images_during_crawl": true,
+    "download_images_during_crawl": true,
+    "output_mode": "images_only_with_record",
+    "keep_record_file": true,
+    "jsl_clearance_enabled": true,
+    "jsl_max_retries": 6
+  },
+  "crawl": {
+    "concurrent_requests": 1,
+    "download_delay": 5,
+    "autothrottle_start_delay": 5,
+    "autothrottle_max_delay": 15,
+    "retry_times": 3,
+    "timeout_seconds": 45,
+    "blocked_statuses": [
+      403,
+      429,
+      521
+    ],
+    "soft_image_block_statuses": [
+      521
+    ],
+    "image_failures_do_not_backoff": true,
+    "prefer_existing_list_records": true,
+    "blocked_backoff_hours": 6,
+    "suspect_block_consecutive_failures": 3,
+    "interval_min_seconds": 5,
+    "interval_max_seconds": 15,
+    "image_interval_min_seconds": 5,
+    "image_interval_max_seconds": 15,
+    "browser_settle_seconds": 2
+  }
+}
