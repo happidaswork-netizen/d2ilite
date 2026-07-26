@@ -83,12 +83,12 @@ def main() -> int:
         # write release marker inside tar
         marker = OUT_DIR / f"RELEASE-{stamp}.txt"
         marker.write_text(
-            f"product=d2i-cloud\nbuilt={stamp}\nroot={ROOT}\nfiles≈{count}\n",
+            f"product=d2i-cloud\nbuilt={stamp}\nroot={ROOT}\nfiles~{count}\n",
             encoding="utf-8",
         )
         tar.add(marker, arcname="RELEASE.txt")
     print(out)
-    print(f"files≈{count}")
+    print(f"files~{count}")
     return 0
 
 

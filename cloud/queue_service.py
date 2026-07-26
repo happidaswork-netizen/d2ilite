@@ -355,10 +355,21 @@ def _promote_already_done(record: Dict[str, Any], live: Dict[str, Any]) -> bool:
     if not last or last.get("dry_run") or not last.get("ok"):
         return False
     counts = last.get("counts") if isinstance(last.get("counts"), dict) else {}
-    prev = max(int(counts.get("candidates") or 0), int(counts.get("promoted") or 0))
+    # An empty promote (0 candidates / no people writes) must NOT lock the queue:
+    # e.g. scrape finished with 0 profiles, or cleanup wiped raw before promote.
+    prev = max(
+        int(counts.get("candidates") or 0),
+        int(counts.get("promoted") or 0),
+        int(counts.get("exists") or 0),
+        int(counts.get("people_insert") or 0),
+        int(counts.get("people_update") or 0),
+        int(counts.get("no_photo") or 0),
+    )
+    if prev <= 0:
+        return False
     now_imgs = max(int(live.get("images") or 0), int(live.get("downloaded") or 0))
     # Allow redo only when workspace gained more images than last promote saw.
-    if prev > 0 and now_imgs > prev:
+    if now_imgs > prev:
         return False
     return True
 

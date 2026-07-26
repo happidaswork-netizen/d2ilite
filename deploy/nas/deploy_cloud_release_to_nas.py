@@ -100,7 +100,11 @@ def build_package() -> Path:
 
 
 def http_json(url: str, token: str = "", timeout: int = 30) -> tuple[int, object]:
-    req = urllib.request.Request(url)
+    headers = {}
+    tok = str(token or "").strip()
+    if tok:
+        headers["Authorization"] = f"Bearer {tok}"
+    req = urllib.request.Request(url, headers=headers)
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             raw = resp.read().decode("utf-8", "replace")
@@ -114,6 +118,37 @@ def http_json(url: str, token: str = "", timeout: int = 30) -> tuple[int, object
         return e.code, body
     except Exception as e:  # noqa: BLE001
         return 0, str(e)
+
+
+def load_web_token() -> str:
+    """Local cache first, then credentials-adjacent env files — never print the value."""
+    candidates = [
+        DIST / ".nas_web_token",
+        Path(os.environ.get("D2I_WEB_TOKEN_FILE", "") or ""),
+        Path(r"C:\Users\rpy\OneDrive\个人知识库\AI备份\02_服务器部署与网络配置_重要勿删")
+        / "30_服务部署记录"
+        / "feiniu-nas"
+        / ".d2i_web_token",
+    ]
+    env_tok = str(os.environ.get("D2I_WEB_TOKEN", "") or "").strip()
+    if env_tok:
+        return env_tok
+    for path in candidates:
+        if not path or not path.is_file():
+            continue
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace").strip()
+        except OSError:
+            continue
+        # allow either raw token or KEY=value
+        if "D2I_WEB_TOKEN=" in text:
+            for line in text.splitlines():
+                s = line.strip()
+                if s.startswith("D2I_WEB_TOKEN="):
+                    return s.split("=", 1)[1].strip().strip("`\"'")
+        if text:
+            return text.splitlines()[0].strip()
+    return ""
 
 
 def preflight_import_smoke() -> None:
@@ -296,25 +331,62 @@ PY
             return 4
         print("local health ok")
 
-        # remote smoke (open API, no app token). Critical block exits 9 on failure.
+        # remote smoke. Critical block exits 9 on failure.
+        # Token is loaded on the NAS from web_token.txt / project .env — never echoed.
         smoke_remote = r"""
 python3 - <<'PY'
-import json, sys, urllib.request
+import json, sys, urllib.request, urllib.error
 from pathlib import Path
-def get(path):
-    req = urllib.request.Request('http://127.0.0.1:8787'+path)
+
+def load_token():
+    for p in (
+        Path('/vol4/1001/hermes-runtime/d2i-cloud-data/web_token.txt'),
+        Path('/vol1/1001/d2i-cloud/.env'),
+    ):
+        if not p.is_file():
+            continue
+        text = p.read_text(encoding='utf-8', errors='replace')
+        if p.name == '.env' or 'D2I_WEB_TOKEN=' in text:
+            for line in text.splitlines():
+                s = line.strip()
+                if s.startswith('D2I_WEB_TOKEN='):
+                    return s.split('=', 1)[1].strip().strip('"\'')
+        else:
+            tok = text.splitlines()[0].strip() if text.strip() else ''
+            if tok:
+                return tok
+    return ''
+
+TOKEN = load_token()
+print('smoke_token_present', bool(TOKEN), 'len', len(TOKEN))
+
+def get(path, auth=True):
+    headers = {}
+    if auth and TOKEN:
+        headers['Authorization'] = f'Bearer {TOKEN}'
+    req = urllib.request.Request('http://127.0.0.1:8787'+path, headers=headers)
     with urllib.request.urlopen(req, timeout=60) as r:
         return r.status, json.loads(r.read().decode() or '{}')
-# --- critical gate: these must all return healthy JSON or the deploy is bad ---
+
+# --- critical gate ---
 try:
+    st, body = get('/health', auth=False)
+    assert st == 200 and body.get('ok') is True, ('health_open', st, body)
     st, body = get('/api/v1/health')
     assert st == 200 and body.get('ok') is True, ('health', st, body)
     st, body = get('/api/v1/status')
     assert st == 200 and body.get('ok') is True, ('status', st)
+    assert body.get('auth_enabled') is True, ('auth_enabled_expected_true', body.get('auth_enabled'))
     st, body = get('/api/v1/queues?limit=1')
     assert st == 200 and isinstance(body.get('queues'), list), ('queues', st)
     st, body = get('/api/v1/ai/vision/status')
     assert st == 200 and isinstance(body.get('jobs'), dict), ('vision_status', st)
+    # unauth must 401 when token is on
+    try:
+        get('/api/v1/status', auth=False)
+        raise AssertionError('unauth status must 401')
+    except urllib.error.HTTPError as e:
+        assert e.code == 401, ('unauth_status', e.code)
     print('critical_gate_ok')
 except Exception as exc:
     print('critical_gate_FAILED', repr(exc))
@@ -322,7 +394,7 @@ except Exception as exc:
 # --- informational smoke below (never fails the deploy) ---
 for path in ['/health','/library','/coverage','/api/v1/library?limit=3','/api/v1/coverage/tree','/api/v1/ai/vision/status','/api/v1/status']:
     try:
-        if path in ('/library','/coverage'):
+        if path in ('/library','/coverage','/health'):
             req = urllib.request.Request('http://127.0.0.1:8787'+path)
             with urllib.request.urlopen(req, timeout=30) as r:
                 body = r.read(200)
@@ -330,38 +402,36 @@ for path in ['/health','/library','/coverage','/api/v1/library?limit=3','/api/v1
         else:
             st, body = get(path)
             if path.startswith('/api/v1/library'):
-                print(path, st, 'total', body.get('total'), 'previewable', body.get('previewable'), 'queues', body.get('queue_count'))
+                print(path, st, 'total', body.get('total'), 'previewable', body.get('previewable'), 'queues', body.get('queue_count'), 'source', body.get('source'))
             elif path.startswith('/api/v1/coverage'):
                 print(path, st, 'keys', sorted(body.keys())[:8] if isinstance(body, dict) else type(body))
             elif path.endswith('/ai/vision/status') or path == '/api/v1/status':
                 vision = body.get('vision') if path == '/api/v1/status' else body
-                print(path, st, 'vision_available', (vision or {}).get('available'), 'model', (vision or {}).get('model'), 'enabled', (vision or {}).get('enabled'))
+                print(path, st, 'auth_enabled', body.get('auth_enabled'), 'vision_available', (vision or {}).get('available'), 'model', (vision or {}).get('model'), 'enabled', (vision or {}).get('enabled'))
             else:
                 print(path, st, body)
     except Exception as e:
         print(path, 'ERR', e)
-# vision report routes exist (404 without prior run is fine; 401/5xx is not)
-import urllib.error as _ue
 for path in [
     '/api/v1/queues/q_d95f75fd1e61/ai/vision/report',
     '/api/v1/queues/q_d95f75fd1e61/ai/vision/recrawl-plan',
 ]:
     try:
-        req = urllib.request.Request('http://127.0.0.1:8787'+path, headers={})
-        with urllib.request.urlopen(req, timeout=30) as r:
-            body = json.loads(r.read().decode() or '{}')
-            print(path, r.status, 'keys', sorted(body.keys())[:8] if isinstance(body, dict) else type(body))
-    except _ue.HTTPError as e:
+        st, body = get(path)
+        print(path, st, 'keys', sorted(body.keys())[:8] if isinstance(body, dict) else type(body))
+    except urllib.error.HTTPError as e:
         raw = e.read().decode('utf-8', 'replace')
         print(path, e.code, raw[:160])
     except Exception as e:
         print(path, 'ERR', e)
-# finalize dry-run on known Cangzhou queue
 try:
+    headers = {'Content-Type':'application/json'}
+    if TOKEN:
+        headers['Authorization'] = f'Bearer {TOKEN}'
     req = urllib.request.Request(
         'http://127.0.0.1:8787/api/v1/queues/q_4bc2b7985e1a/finalize',
         data=json.dumps({'dry_run': True, 'write_people': True}).encode('utf-8'),
-        headers={'Content-Type':'application/json'},
+        headers=headers,
         method='POST',
     )
     with urllib.request.urlopen(req, timeout=120) as r:
@@ -370,10 +440,9 @@ try:
         print('finalize_dry', r.status, 'ok', body.get('ok'), 'counts', promo.get('counts'), 'final_base', promo.get('final_base'))
 except Exception as e:
     print('finalize_dry ERR', e)
-# desired_state reconcile + auto-finalize fields on list
 try:
     st, body = get('/api/v1/status')
-    print('status', st, 'running', body.get('running'), 'completed', body.get('completed'), 'desired_running', body.get('desired_running'), 'promoted', body.get('promoted'))
+    print('status', st, 'running', body.get('running'), 'completed', body.get('completed'), 'desired_running', body.get('desired_running'), 'promoted', body.get('promoted'), 'auth_enabled', body.get('auth_enabled'))
     st, body = get('/api/v1/queues?limit=20&auto_finalize=true')
     rows = body.get('queues') or []
     stuck = [q for q in rows if str(q.get('desired_state') or '') == 'running' and not (q.get('runtime') or {}).get('session_running') and str((q.get('runtime') or {}).get('status') or '') == 'completed']
@@ -385,9 +454,8 @@ try:
 except Exception as e:
     print('auto_finalize_smoke ERR', e)
 print('current_release', Path('/vol1/1001/d2i-cloud/current').resolve())
-# mount sanity from host view of compose
 comp = Path('/vol1/1001/d2i-cloud/docker-compose.d2i-cloud.yml').read_text(encoding='utf-8', errors='replace')
-print('compose_has_portrait', 'D2I_PORTRAIT_ROOT' in comp, 'people_vol', '/runtime/people' in comp)
+print('compose_has_portrait', 'D2I_PORTRAIT_ROOT' in comp, 'people_vol', '/runtime/people' in comp, 'compose_has_web_token', 'D2I_WEB_TOKEN' in comp)
 PY
 """
         code, out, err = run(c, smoke_remote, timeout=120)
@@ -402,9 +470,11 @@ PY
 
         # LAN smoke from this machine
         print("lan smoke")
+        web_token = load_web_token()
+        print("lan_token_present", bool(web_token), "len", len(web_token))
         st, body = http_json(f"http://{HOST}:8787/health")
         print("lan /health", st, body)
-        st, body = http_json(f"http://{HOST}:8787/api/v1/library?limit=2", timeout=90)
+        st, body = http_json(f"http://{HOST}:8787/api/v1/library?limit=2", token=web_token, timeout=90)
         if isinstance(body, dict):
             print(
                 "lan /api/v1/library",
@@ -415,11 +485,18 @@ PY
                 body.get("previewable"),
                 "queue_count",
                 body.get("queue_count"),
+                "source",
+                body.get("source"),
             )
         else:
             print("lan /api/v1/library", st, body)
-        st, body = http_json(f"http://{HOST}:8787/api/v1/coverage/tree", timeout=90)
+        st, body = http_json(f"http://{HOST}:8787/api/v1/coverage/tree", token=web_token, timeout=90)
         print("lan /api/v1/coverage/tree", st, type(body).__name__, list(body)[:6] if isinstance(body, dict) else body)
+        st, body = http_json(f"http://{HOST}:8787/api/v1/status", token=web_token, timeout=30)
+        if isinstance(body, dict):
+            print("lan /api/v1/status", st, "auth_enabled", body.get("auth_enabled"), "promoted", body.get("promoted"))
+        else:
+            print("lan /api/v1/status", st, body)
         # page routes
         for path in ("/library", "/coverage"):
             try:
@@ -453,4 +530,10 @@ PY
 
 
 if __name__ == "__main__":
+    # Windows consoles often default to GBK; keep deploy logs printable.
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
     raise SystemExit(main())
