@@ -59,6 +59,9 @@
       "name",
       "detail_url"
     ],
+    "metadata_audit_required_fields": [
+      "gender"
+    ],
     "default_gender": "",
     "gender_map": {
       "男": "男",

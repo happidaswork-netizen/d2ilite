@@ -79,8 +79,7 @@
     "image_referer_from_detail_url": true,
     "required_fields": [
       "name",
-      "detail_url",
-      "image_url"
+      "detail_url"
     ],
     "default_gender": "",
     "gender_map": {},
@@ -130,6 +129,7 @@
     ]
   },
   "crawl": {
+    "speed_tier": "safe",
     "concurrent_requests": 4,
     "download_delay": 0,
     "autothrottle_start_delay": 0,

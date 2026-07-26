@@ -89,8 +89,7 @@
     "image_referer_from_detail_url": true,
     "required_fields": [
       "name",
-      "detail_url",
-      "image_url"
+      "detail_url"
     ],
     "default_gender": "",
     "gender_map": {},
@@ -116,6 +115,10 @@
     },
     "auto_unit_subdir": true,
     "unit_name": "嘉祥县人民医院",
+    "admin": {
+      "province": "山东省",
+      "city": "济宁市"
+    },
     "output_subdir_pattern": "{unit}_专家介绍",
     "year_hint": "",
     "detail_field_labels": {
@@ -139,6 +142,7 @@
     "keep_record_file": true
   },
   "crawl": {
+    "speed_tier": "safe",
     "concurrent_requests": 1,
     "download_delay": 5,
     "autothrottle_start_delay": 5,

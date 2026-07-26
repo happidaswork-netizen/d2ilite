@@ -76,8 +76,10 @@
     "image_referer_from_detail_url": true,
     "required_fields": [
       "name",
-      "detail_url",
-      "image_url"
+      "detail_url"
+    ],
+    "metadata_audit_required_fields": [
+      "gender"
     ],
     "default_gender": "",
     "gender_map": {},
@@ -124,6 +126,7 @@
     "jsl_max_retries": 6
   },
   "crawl": {
+    "speed_tier": "safe",
     "concurrent_requests": 1,
     "download_delay": 3,
     "autothrottle_start_delay": 3,

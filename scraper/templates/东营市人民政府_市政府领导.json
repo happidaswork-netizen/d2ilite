@@ -54,8 +54,10 @@
     "image_referer_from_detail_url": true,
     "required_fields": [
       "name",
-      "detail_url",
-      "image_url"
+      "detail_url"
+    ],
+    "metadata_audit_required_fields": [
+      "gender"
     ],
     "default_gender": "",
     "gender_map": {
@@ -85,5 +87,8 @@
     "delay_max": 4.0,
     "slow_delay_min": 15,
     "slow_delay_max": 35
+  },
+  "crawl": {
+    "speed_tier": "safe"
   }
 }
