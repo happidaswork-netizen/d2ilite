@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import threading
 import time
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
@@ -69,6 +70,51 @@ class _PidProcProxy:
 
     def poll(self) -> Optional[int]:
         return None if _is_pid_running(self.pid) else 1
+
+
+# H3 zombie reaper: Popen children must be wait()ed or they stay <defunct> on Linux,
+# and os.kill(pid, 0) keeps saying "alive" for zombies. Watcher threads reap each
+# child and record its exit here; liveness checks consult this registry first.
+_REAPED_PROCS_LOCK = threading.Lock()
+_REAPED_PROCS: Dict[int, Dict[str, Any]] = {}
+_REAPED_PROCS_MAX = 512
+
+
+def register_process_watcher(proc: Any) -> None:
+    """Reap a Popen child in a daemon thread; record pid -> {exit_code, finished_at}."""
+    pid = max(0, int(getattr(proc, "pid", 0) or 0))
+    if pid <= 0:
+        return
+    with _REAPED_PROCS_LOCK:
+        # OS may recycle pids: a fresh start with a previously-reaped pid must not look dead.
+        _REAPED_PROCS.pop(pid, None)
+
+    def _watch() -> None:
+        try:
+            exit_code: Optional[int] = proc.wait()
+        except Exception:
+            exit_code = None
+        with _REAPED_PROCS_LOCK:
+            _REAPED_PROCS[pid] = {"exit_code": exit_code, "finished_at": time.time()}
+            if len(_REAPED_PROCS) > _REAPED_PROCS_MAX:
+                oldest = sorted(
+                    _REAPED_PROCS,
+                    key=lambda key: float(_REAPED_PROCS[key].get("finished_at") or 0.0),
+                )[: len(_REAPED_PROCS) - _REAPED_PROCS_MAX]
+                for stale in oldest:
+                    _REAPED_PROCS.pop(stale, None)
+
+    threading.Thread(target=_watch, name=f"d2i-scraper-reaper-{pid}", daemon=True).start()
+
+
+def reaped_process_info(pid: int) -> Optional[Dict[str, Any]]:
+    """Exit record for a watcher-reaped pid, or None when unknown/still running."""
+    target = max(0, int(pid or 0))
+    if target <= 0:
+        return None
+    with _REAPED_PROCS_LOCK:
+        info = _REAPED_PROCS.get(target)
+        return dict(info) if isinstance(info, dict) else None
 
 
 def _safe_int(value: Any, default: int = 0) -> int:
@@ -194,6 +240,10 @@ def _save_runtime_registry(registry: Dict[str, Any]) -> None:
 def _is_pid_running(pid: int) -> bool:
     target = max(0, int(pid or 0))
     if target <= 0:
+        return False
+    # Reaped by our watcher thread => definitely dead. os.kill(pid, 0) below would
+    # still "succeed" for Linux zombies, so the registry must win.
+    if reaped_process_info(target) is not None:
         return False
     try:
         os.kill(target, 0)
@@ -503,6 +553,8 @@ def _start_existing_task(
             env=env,
             creationflags=creationflags,
         )
+    # H3: reap the child on exit so it never lingers as <defunct> on Linux.
+    register_process_watcher(proc)
 
     active_template_path_abs = resolve_active_template_path("", rules)
     entry = {

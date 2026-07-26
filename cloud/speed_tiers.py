@@ -80,11 +80,13 @@ def apply_speed_tier_to_crawl(
     speed_tier: Any,
     *,
     reason: str = "",
-    overwrite_existing: bool = True,
+    overwrite_existing: bool = False,
 ) -> Dict[str, Any]:
-    tier = normalize_speed_tier(speed_tier)
-    defaults = dict(SPEED_TIER_CRAWL[tier])
     data = dict(crawl) if isinstance(crawl, dict) else {}
+    requested = str(speed_tier or "").strip()
+    # Empty tier = inherit the template's own crawl.speed_tier; final default stays safe.
+    tier = normalize_speed_tier(requested or data.get("speed_tier"), default=SPEED_TIER_SAFE)
+    defaults = dict(SPEED_TIER_CRAWL[tier])
     for key, value in defaults.items():
         if overwrite_existing or key not in data:
             data[key] = value

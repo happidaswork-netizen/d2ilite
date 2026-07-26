@@ -18,6 +18,7 @@ from cloud.speed_tiers import apply_speed_tier_to_crawl, normalize_speed_tier
 from services.desktop_scraper_backend_service import (
     build_scraper_workspace_payload,
     execute_scraper_control_action,
+    register_process_watcher,
 )
 from services.public_scraper_config_service import build_public_scraper_runtime_config
 from services.runtime_service import build_utf8_subprocess_env, resolve_python_cli_executable
@@ -27,6 +28,7 @@ from services.task_orchestration_service import (
     resolve_named_images_dir,
 )
 from services.task_service import (
+    count_jsonl_rows,
     normalize_public_task_root,
     set_public_scraper_manual_pause_flag,
     summarize_public_task,
@@ -34,6 +36,10 @@ from services.task_service import (
 
 _AUTO_FINALIZE_LOCK = threading.Lock()
 _AUTO_FINALIZING: set[str] = set()
+# H2: live status "completed" requires metadata ok on every profile, so queues with
+# no-photo people never reach it. A stopped queue with images that stayed quiet for
+# this long is treated as finished and allowed one auto-promote.
+AUTO_FINALIZE_QUIET_MINUTES = 10.0
 _RECONCILE_LOCK = threading.Lock()
 _RECONCILE_STATE: Dict[str, Any] = {
     "running": False,
@@ -357,19 +363,55 @@ def _promote_already_done(record: Dict[str, Any], live: Dict[str, Any]) -> bool:
     return True
 
 
+def _auto_finalize_quiet_minutes() -> float:
+    raw = str(os.environ.get("D2I_AUTO_FINALIZE_QUIET_MINUTES", "") or "").strip()
+    if raw:
+        try:
+            return max(1.0, float(raw))
+        except ValueError:
+            pass
+    return AUTO_FINALIZE_QUIET_MINUTES
+
+
+def _live_quiet_seconds(live: Dict[str, Any]) -> float:
+    """Seconds since the workspace last changed on disk; -1 when unknown."""
+    stamp = str(live.get("updated_at_disk") or "").strip()
+    if stamp and stamp != "-":
+        try:
+            parsed = time.mktime(time.strptime(stamp, "%Y-%m-%d %H:%M:%S"))
+            return max(0.0, time.time() - parsed)
+        except Exception:
+            pass
+    log_path = str(live.get("log_path") or "").strip()
+    if log_path and os.path.isfile(log_path):
+        try:
+            return max(0.0, time.time() - os.path.getmtime(log_path))
+        except Exception:
+            pass
+    return -1.0
+
+
 def _should_auto_finalize(record: Dict[str, Any], live: Dict[str, Any]) -> bool:
     meta = record.get("meta") if isinstance(record.get("meta"), dict) else {}
     if meta.get("auto_finalize") is False or meta.get("skip_auto_finalize"):
         return False
     if bool(live.get("session_running")):
         return False
-    if str(live.get("status") or "") != "completed":
-        return False
-    if int(live.get("images") or 0) <= 0 and int(live.get("profiles") or 0) <= 0:
-        return False
     if _promote_already_done(record, live):
         return False
-    return True
+    status = str(live.get("status") or "")
+    if status == "completed":
+        return int(live.get("images") or 0) > 0 or int(live.get("profiles") or 0) > 0
+    # H2 relaxed trigger: process dead + images landed + workspace quiet long enough.
+    # paused/cooldown/error/cancelled stay hands-off (operator or backoff owns them).
+    if status in {"paused", "cooldown", "error", "cancelled", "created"}:
+        return False
+    if int(live.get("images") or 0) <= 0:
+        return False
+    quiet = _live_quiet_seconds(live)
+    if quiet < 0:
+        return False
+    return quiet >= _auto_finalize_quiet_minutes() * 60.0
 
 
 def _reconcile_desired_state(record: Dict[str, Any], live: Dict[str, Any]) -> Dict[str, Any]:
@@ -655,7 +697,8 @@ def create_queue(
     template_path: str = "",
     name: str = "",
     output_root: str = "",
-    speed_tier: str = "safe",
+    # Empty string = inherit template crawl.speed_tier; explicit value overrides it.
+    speed_tier: str = "",
     speed_tier_reason: str = "",
     notes: str = "",
     start: bool = False,
@@ -691,11 +734,15 @@ def create_queue(
         tier = normalize_speed_tier(crawl.get("speed_tier"), default="safe")
         if not str(speed_tier_reason or "").strip():
             speed_tier_reason = str(crawl.get("speed_tier_reason") or "")
+    # 铁则: turbo (inherited or explicit) still needs an explicit user confirm.
+    if tier == "turbo" and not allow_turbo:
+        raise ValueError("turbo speed_tier requires allow_turbo=true (user confirm)")
+    # overwrite_existing=False: keep template-tuned crawl numbers, only fill gaps.
     runtime_config["crawl"] = apply_speed_tier_to_crawl(
         crawl,
         tier,
         reason=speed_tier_reason,
-        overwrite_existing=True,
+        overwrite_existing=False,
     )
     resolved_root = normalize_public_task_root(runtime_config.get("output_root")) or normalize_public_task_root(base_root)
     runtime_config["output_root"] = resolved_root
@@ -761,6 +808,10 @@ def _start_process_for_root(output_root: str) -> Dict[str, Any]:
             env=env,
             creationflags=creationflags,
         )
+
+    # H3: daemon watcher wait()s the child (reaps Linux zombies) and records the exit
+    # code, so session_running checks stop treating <defunct> pids as alive.
+    register_process_watcher(proc)
 
     # Mirror into desktop registry so pause/continue/workspace stay consistent
     try:
@@ -991,6 +1042,20 @@ def resolve_queue_item_preview_path(queue_id: str, item_id: str, *, progress_lim
     raise KeyError(f"item not found: {item_key}")
 
 
+def _queue_total_items(output_root: str) -> int:
+    """Cheap real entry count for one queue (jsonl line counts, no item loading)."""
+    root = normalize_public_task_root(output_root)
+    if not root:
+        return 0
+    try:
+        return max(
+            count_jsonl_rows(os.path.join(root, "raw", "list_records.jsonl")),
+            count_jsonl_rows(os.path.join(root, "raw", "profiles.jsonl")),
+        )
+    except Exception:
+        return 0
+
+
 def library_list(
     *,
     limit: int = 60,
@@ -1005,10 +1070,13 @@ def library_list(
     status_filter = str(status or "").strip().lower()
     query = str(q or "").strip().lower()
     only_queue = str(queue_id or "").strip()
+    per_limit = max(1, min(int(per_queue_limit or 200), 2000))
+    progress_cap = max(200, per_limit)
+    queue_cap = max(1, min(int(queue_limit or 40), 200))
 
-    records = jobs_db.list_queues(limit=max(1, min(int(queue_limit or 40), 200)))
-    if only_queue:
-        records = [row for row in records if str(row.get("id") or "") == only_queue]
+    records = jobs_db.list_queues(limit=queue_cap)
+    # F5: surface truncation instead of silently hiding rows beyond the caps.
+    truncated = len(records) >= queue_cap
 
     aggregated: List[Dict[str, Any]] = []
     queue_summaries: List[Dict[str, Any]] = []
@@ -1022,10 +1090,10 @@ def library_list(
         try:
             payload = queue_items(
                 qid,
-                limit=max(1, min(int(per_queue_limit or 200), 2000)),
+                limit=per_limit,
                 offset=0,
                 status=status_filter if status_filter not in {"", "all"} else "",
-                progress_limit=max(200, int(per_queue_limit or 200)),
+                progress_limit=progress_cap,
             )
         except Exception as exc:
             errors.append({"queue_id": qid, "error": str(exc)})
@@ -1033,16 +1101,34 @@ def library_list(
 
         rows = list(payload.get("items") or [])
         previewable = sum(1 for row in rows if row.get("has_preview"))
+        # Real per-queue total: jsonl line counts, with the loaded/filtered counts as
+        # free lower bounds (covers queues whose raw jsonl is missing, e.g. archives).
+        total_items = max(
+            _queue_total_items(str(payload.get("output_root") or record.get("output_root") or "")),
+            int(payload.get("total") or 0),
+            len(rows),
+        )
+        queue_truncated = bool(
+            int(payload.get("total") or 0) > len(rows) or total_items > progress_cap
+        )
         queue_summaries.append(
             {
                 "id": qid,
                 "name": qname,
                 "output_root": payload.get("output_root") or record.get("output_root") or "",
                 "item_count": len(rows),
+                "total_items": total_items,
+                "truncated": queue_truncated,
                 "previewable": previewable,
                 "updated_at": record.get("updated_at"),
             }
         )
+        # F6: only_queue narrows items only; summaries above always stay full so the
+        # queue dropdown keeps every option after filtering.
+        if only_queue and qid != only_queue:
+            continue
+        if queue_truncated:
+            truncated = True
         for row in rows:
             item = dict(row)
             item_id = str(item.get("id") or "").strip()
@@ -1088,6 +1174,8 @@ def library_list(
         "queue_count": len(queue_summaries),
         "queues": queue_summaries,
         "items": page,
+        "truncated": truncated,
+        "per_queue_limit": per_limit,
         "filters": {
             "status": status_filter or "all",
             "q": str(q or "").strip(),

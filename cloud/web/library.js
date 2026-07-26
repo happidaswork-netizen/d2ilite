@@ -436,9 +436,13 @@
       renderItemSide(selectedItem());
       renderStats();
       const errCount = (payload.errors || []).length;
-      $("filterHint").textContent = errCount
-        ? `已加载；${errCount} 个队列读取异常已跳过。`
-        : "默认优先展示有图结果。";
+      const hints = [
+        errCount ? `已加载；${errCount} 个队列读取异常已跳过。` : "默认优先展示有图结果。",
+      ];
+      if (payload.truncated) {
+        hints.push(`仅统计每队列前 ${payload.per_queue_limit || 200} 条，超出部分未纳入。`);
+      }
+      $("filterHint").textContent = hints.join(" ");
       setConn(true, "已连接");
     } catch (err) {
       state.items = [];

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import hmac
 import os
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -34,7 +35,8 @@ def require_auth(authorization: Optional[str] = Header(default=None)) -> None:
     raw = str(authorization or "").strip()
     if raw.lower().startswith("bearer "):
         raw = raw[7:].strip()
-    if raw != token:
+    # Constant-time compare: plain == leaks match length via timing.
+    if not hmac.compare_digest(raw.encode("utf-8"), token.encode("utf-8")):
         raise HTTPException(status_code=401, detail="unauthorized")
 
 
@@ -44,7 +46,8 @@ class CreateQueueBody(BaseModel):
     template_path: str = ""
     name: str = ""
     output_root: str = ""
-    speed_tier: str = "safe"
+    # Empty = inherit the template's crawl.speed_tier (final default stays safe).
+    speed_tier: str = ""
     speed_tier_reason: str = ""
     notes: str = ""
     start: bool = False
@@ -137,7 +140,16 @@ def create_app() -> FastAPI:
     app = FastAPI(title="D2I Cloud", version="0.1.0", description="NAS queue API for d2ilite")
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
+        # Converged origins: public console + local dev shells; wildcard with
+        # credentials was an open door for any site to ride the Bearer token.
+        allow_origins=[
+            "https://d2i.517411.xyz",
+            "http://127.0.0.1:8787",
+            "http://localhost:8787",
+            "http://127.0.0.1:8791",
+            "http://localhost:8791",
+            "http://192.168.5.36:8787",
+        ],
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
@@ -374,6 +386,8 @@ def create_app() -> FastAPI:
         q: str = Query(default=""),
         queue_id: str = Query(default=""),
         queue_limit: int = Query(default=40, ge=1, le=200),
+        # F5: caller-tunable per-queue cap; hard ceiling 1000 to keep NAS I/O sane.
+        per_queue_limit: int = Query(default=200, ge=1, le=1000),
     ) -> Dict[str, Any]:
         return queue_service.library_list(
             limit=limit,
@@ -382,7 +396,7 @@ def create_app() -> FastAPI:
             q=q,
             queue_id=queue_id,
             queue_limit=queue_limit,
-            per_queue_limit=200,
+            per_queue_limit=per_queue_limit,
         )
 
     # --- Vision / AI (Grok 4.5 OpenAI-compatible) ---
