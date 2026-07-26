@@ -12,6 +12,16 @@ description: Operate D2I Cloud queues, templates, result library, coverage graph
 - Do **not** invent private scrape pipelines. Prefer template-bound queues, then review items, then finalize.
 - Final image root is only `角色肖像` (`/vol1/1001/角色肖像` host, `/runtime/portrait` in container). Never write `山东公开官员` or `__hdd_prebind`. Protect `选角/`.
 
+## Template extract contract (read first when writing/fixing templates)
+
+Canonical field contract: `docs/d2i_cloud_template_extract_contract.md`
+
+**Must per person:** usable `name` (real 2–4 han person token, not nav/org/title-only) + `detail_url`.  
+**Should:** avatar `image_url`, `gender`, `summary`/`full_content` (for bio + 现任 position).  
+**Rules (not xpath luck):** `unit_name`, `admin.province`/`city`, output subdir / 级.  
+**Final path:** `角色肖像/政府/{省}/{市}/{级}/{单位}/{性别}/{姓名}.ext`.  
+**Fail the template** if list_item matches chrome or names look like `个人简历` / `要闻动态` / bare `市长`.
+
 ## Auth and base URL
 
 - Default API: `http://127.0.0.1:8787` (Hermes host network) or `http://192.168.5.36:8787` (LAN).

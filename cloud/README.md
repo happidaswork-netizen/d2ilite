@@ -49,11 +49,13 @@ python scripts/cloud_api_smoke.py
 ## Scope now
 
 - Job DB (`jobs.sqlite`)
-- Queues create/list/show/start/pause/resume/retry/cancel
+- Queues create/list/show/start/pause/resume/retry/cancel/finalize
 - Templates list
 - Speed tier mapping (`safe` / `standard` / `turbo`)
 - Web 队列运行中心（TITI 浅色工作台风格：侧栏 + KPI + 队列卡 + 详情）
 - **覆盖图谱 C0–C2：** 树 + ECharts 省/市热力（本地 `vendor/echarts.min.js` + 离线 GeoJSON）+ 列表备援；节点详情；AI 侦察 stub；确认后 enqueue（intent / 队列 / ban 覆盖）
 - Reuses desktop scraper control + `run_public_scraper.py`
+- **模版抽取合同：** [`docs/d2i_cloud_template_extract_contract.md`](../docs/d2i_cloud_template_extract_contract.md)（Cloud finalize 前必须满足的 name/url/unit 形状）
+- Hermes 操作 skill：`cloud/skills/d2i-cloud/SKILL.md`
 
 Not yet: Hermes 真侦察（C3）、vision/AI routes、flock worker service。
