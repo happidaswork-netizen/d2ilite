@@ -246,10 +246,18 @@ def discover_public_task_roots(base_root: Any) -> List[str]:
     if (not base) or (not os.path.isdir(base)):
         return []
     roots: List[str] = []
+    base_abs = os.path.abspath(base)
     for root, dirs, _files in os.walk(base):
         runtime_cfg = os.path.join(root, "state", "runtime_config.json")
+        root_abs = os.path.abspath(root)
         if os.path.exists(runtime_cfg):
-            roots.append(os.path.abspath(root))
+            # tasks_root itself may keep a leftover state/runtime_config.json
+            # (smoke / workspace bookkeeping). Never treat the base root as a
+            # queue task, and keep walking children so real jobs are visible.
+            if root_abs == base_abs:
+                dirs[:] = [d for d in dirs if d not in {"raw", "downloads", "reports", "state", "__pycache__"}]
+                continue
+            roots.append(root_abs)
             dirs[:] = []
             continue
         dirs[:] = [d for d in dirs if d not in {"raw", "downloads", "reports", "state", "__pycache__"}]

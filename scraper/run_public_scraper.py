@@ -324,6 +324,65 @@ def _display_person_name(name: Any, detail_url: str = "") -> str:
     return "未命名人物"
 
 
+def _is_usable_person_name(name: Any) -> bool:
+    """Reject page titles / chrome text that would overwrite a good list-card name."""
+    text = _normalize_text(name)
+    if not text:
+        return False
+    lowered = text.lower()
+    if "<title" in lowered or "</title>" in lowered:
+        return False
+    if re.search(r"个人简历|市政府领导|人民政府$|首页|网站地图|关于本站", text):
+        return False
+    compact = re.sub(r"\s+", "", text)
+    if re.fullmatch(r"[一-鿿]{2,4}", compact):
+        return True
+    # e.g. "副市长 姜桂海"
+    m = re.search(r"([一-鿿]{2,4})\s*$", text)
+    if m and not re.search(r"简历|职务|领导|职责", m.group(1)):
+        return True
+    if 2 <= len(compact) <= 16 and re.search(r"[一-鿿]{2,}", compact):
+        if not re.search(r"简历|职务|网站|首页|部门", compact):
+            return True
+    return False
+
+
+def _extract_person_name_token(value: Any) -> str:
+    """Pull a short person name out of role captions / list labels."""
+    text = _normalize_text(value)
+    if not text:
+        return ""
+    # "市委副书记、代理市长 刘 勇" / "副市长 姜桂海"
+    m = re.search(
+        r"(?:代理市长|常务副市长|副市长|市长|书记|主任|局长|委员)[：:\s]*"
+        r"([一-鿿](?:\s*[一-鿿]){1,3})\s*$",
+        text,
+    )
+    if m:
+        return re.sub(r"\s+", "", m.group(1))
+    compact = re.sub(r"\s+", "", text)
+    if re.fullmatch(r"[一-鿿]{2,4}", compact):
+        return compact
+    if _is_usable_person_name(text):
+        trailing = re.search(r"([一-鿿]{2,4})\s*$", compact)
+        if trailing and not re.search(r"简历|职务|领导|职责", trailing.group(1)):
+            return trailing.group(1)
+        return text
+    return ""
+
+
+def _prefer_person_name(detail_name: Any, seed_name: Any) -> str:
+    detail = _normalize_text(detail_name)
+    seed = _normalize_text(seed_name)
+    detail_token = _extract_person_name_token(detail)
+    if detail_token:
+        return detail_token
+    seed_token = _extract_person_name_token(seed)
+    if seed_token:
+        return seed_token
+    return detail or seed
+
+
 def runtime_log(level: str, message: str, **fields: Any) -> None:
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     suffix_parts: List[str] = []
@@ -335,10 +394,13 @@ def runtime_log(level: str, message: str, **fields: Any) -> None:
             continue
         suffix_parts.append(f"{_localize_runtime_field(key)}: {text}")
     suffix = (" | " + " | ".join(suffix_parts)) if suffix_parts else ""
-    print(
-        f"{ts} [{_localize_runtime_level(level)}] {_localize_runtime_message(message)}{suffix}",
-        flush=True,
-    )
+    line = f"{ts} [{_localize_runtime_level(level)}] {_localize_runtime_message(message)}{suffix}"
+    try:
+        print(line, flush=True)
+    except UnicodeEncodeError:
+        encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+        safe_line = line.encode(encoding, errors="replace").decode(encoding, errors="replace")
+        print(safe_line, flush=True)
 
 
 def append_llm_report(report_path: Path, phase: str, stats: Dict[str, Any]) -> None:
@@ -931,20 +993,72 @@ def collect_detail_field_labels(config: Dict[str, Any], rules: Dict[str, Any]) -
 
 
 def build_metadata_queue_row_from_profile(profile: Dict[str, Any], image_sha: str, local_path: str) -> Dict[str, Any]:
+    detail_url = str(profile.get("detail_url", "") or "").strip()
+    image_url = str(profile.get("image_url", "") or "").strip()
+    metadata_key = _metadata_key_for_row(profile)
     return {
         "created_at": utc_now_iso(),
+        "metadata_key": metadata_key,
         "name": profile.get("name", ""),
+        "download_display_name": profile.get("download_display_name", ""),
         "gender": normalize_gender(profile.get("gender", "")),
         "summary": _normalize_multiline_text(profile.get("summary", "")),
         "full_content": _normalize_multiline_text(profile.get("full_content", "") or profile.get("summary", "")),
         "fields": profile.get("fields", {}),
         "mapped": profile.get("mapped", {}),
-        "detail_url": profile.get("detail_url", ""),
+        "detail_url": detail_url,
         "source_url": profile.get("list_url", ""),
-        "image_url": profile.get("image_url", ""),
+        "image_url": image_url,
+        "image_urls": profile.get("image_urls", []),
+        "image_index": profile.get("image_index", 0),
+        "image_total": profile.get("image_total", 1),
+        "image_role": profile.get("image_role", ""),
+        "metadata_embed_full_content": profile.get("metadata_embed_full_content", True),
         "image_sha256": image_sha,
         "local_image_path": local_path,
     }
+
+
+def _compact_metadata_profile_fields(raw: Any, *, max_value_length: int = 1200) -> Dict[str, str]:
+    if not isinstance(raw, dict):
+        return {}
+    skip_keys = {"description", "summary", "full_content"}
+    compacted: Dict[str, str] = {}
+    for raw_key, raw_value in raw.items():
+        key = str(raw_key or "").strip()
+        if not key or key.lower() in skip_keys:
+            continue
+        if isinstance(raw_value, (dict, list)):
+            value = json.dumps(raw_value, ensure_ascii=False, separators=(",", ":"))
+        else:
+            value = str(raw_value or "")
+        value = _normalize_multiline_text(value)
+        if not value:
+            continue
+        if len(value) > max_value_length:
+            value = value[:max_value_length].rstrip() + "...[truncated; see crawl_record]"
+        compacted[key] = value
+    return compacted
+
+
+def _summary_is_distinct_enough(summary: str, full_content: str) -> bool:
+    summary_text = _normalize_multiline_text(summary)
+    full_text = _normalize_multiline_text(full_content)
+    if not summary_text:
+        return False
+    if not full_text:
+        return True
+    summary_compact = re.sub(r"\s+", "", summary_text)
+    full_compact = re.sub(r"\s+", "", full_text)
+    if not summary_compact:
+        return False
+    if summary_compact == full_compact:
+        return False
+    if full_compact and full_compact in summary_compact:
+        return False
+    if len(summary_compact) > max(800, int(len(full_compact) * 0.85)):
+        return False
+    return True
 
 
 def _path_exists(path_value: str) -> bool:
@@ -996,6 +1110,81 @@ def _load_download_manifest_lookups(manifest_path: Path) -> Tuple[Dict[str, Dict
     return by_detail, by_image
 
 
+def _metadata_row_has_multiple_images(row: Dict[str, Any]) -> bool:
+    metadata_key = str(row.get("metadata_key", "") or "").strip()
+    if "#image=" in metadata_key:
+        return True
+    image_multi = str(row.get("image_multi", "") or "").strip().lower()
+    if image_multi in {"1", "true", "yes", "y", "on"}:
+        return True
+    image_urls = row.get("image_urls", [])
+    if isinstance(image_urls, list) and len([x for x in image_urls if str(x or "").strip()]) > 1:
+        return True
+    try:
+        if int(str(row.get("image_total", "") or "0")) > 1:
+            return True
+    except Exception:
+        pass
+    if str(row.get("image_role", "") or "").strip():
+        return True
+    return False
+
+
+def _metadata_key_for_row(row: Dict[str, Any]) -> str:
+    explicit = str(row.get("metadata_key", "") or "").strip()
+    if explicit:
+        return explicit
+    detail_url = str(row.get("detail_url", "") or "").strip()
+    image_url = str(row.get("image_url", "") or "").strip()
+    if detail_url and image_url and _metadata_row_has_multiple_images(row):
+        return f"{detail_url}#image={image_url}"
+    if detail_url:
+        return detail_url
+    if image_url:
+        return f"#image={image_url}"
+    return ""
+
+
+def _iter_profile_download_rows(profile: Dict[str, Any], rules: Dict[str, Any]) -> Iterable[Dict[str, Any]]:
+    multi_enabled = _parse_bool_rule(rules.get("download_all_detail_images", False), default=False)
+    if not multi_enabled:
+        yield profile
+        return
+
+    image_urls: List[str] = []
+    for raw in _ensure_list(profile.get("image_urls", [])):
+        value = str(raw or "").strip()
+        if value and value not in image_urls:
+            image_urls.append(value)
+    fallback = str(profile.get("image_url", "") or "").strip()
+    if fallback and fallback not in image_urls:
+        image_urls.insert(0, fallback)
+
+    if not image_urls:
+        yield profile
+        return
+
+    base_name = normalize_optional_field(profile.get("name", "")) or _display_person_name(
+        profile.get("name", ""),
+        str(profile.get("detail_url", "")),
+    )
+    for index, image_url in enumerate(image_urls):
+        row = dict(profile)
+        row["image_url"] = image_url
+        row["image_urls"] = image_urls
+        row["image_index"] = index
+        row["image_total"] = len(image_urls)
+        row["image_multi"] = True
+        row["metadata_key"] = f"{str(profile.get('detail_url', '')).strip()}#image={image_url}"
+        if index == 0:
+            row["download_display_name"] = base_name
+            row["image_role"] = "main"
+        else:
+            row["download_display_name"] = f"{base_name}-资料图-{index}"
+            row["image_role"] = "reference"
+        yield row
+
+
 def _resolve_metadata_source_path(
     *,
     detail_url: str,
@@ -1028,13 +1217,13 @@ def _resolve_metadata_source_path(
 
     candidates: List[str] = []
     for candidate in (
+        manifest_image_path,
+        manifest_detail_path,
         row_local,
         norm_abs_path(str(sha_index.get(sha_resolved, ""))) if sha_resolved else "",
         norm_abs_path(str(sha_index.get(url_sha, ""))) if url_sha else "",
         norm_abs_path(str(sha_index.get(manifest_detail_sha, ""))) if manifest_detail_sha else "",
         norm_abs_path(str(sha_index.get(manifest_image_sha, ""))) if manifest_image_sha else "",
-        manifest_detail_path,
-        manifest_image_path,
     ):
         if candidate and (candidate not in candidates):
             candidates.append(candidate)
@@ -1057,6 +1246,7 @@ def write_metadata_for_queue_row(
     review_path: Path,
     results_path: Path,
     detail_to_final_path: Optional[Dict[str, str]] = None,
+    image_to_final_path: Optional[Dict[str, str]] = None,
     sha_runtime_path: Optional[Dict[str, str]] = None,
     llm_enricher: Optional[Any] = None,
     record_failure: bool = True,
@@ -1098,6 +1288,9 @@ def write_metadata_for_queue_row(
     mapped_description = _normalize_multiline_text(mapped_fields.get("description", ""))
     source_list_url = normalize_optional_field(mapped_fields.get("source_url") or row.get("source_url", ""))
     image_url = normalize_optional_field(mapped_fields.get("image_url") or row.get("image_url", ""))
+    metadata_key = _metadata_key_for_row({**row, "image_url": image_url})
+    if metadata_key:
+        row["metadata_key"] = metadata_key
     inferred_position = extract_field_by_aliases(
         fields,
         [
@@ -1312,9 +1505,14 @@ def write_metadata_for_queue_row(
                 return
         desc_sections.append(candidate)
 
-    _add_desc_section(summary)
-    _add_desc_section(mapped_description)
-    if not desc_sections:
+    embed_full_content = _parse_bool_rule(row.get("metadata_embed_full_content", True), default=True)
+    if embed_full_content:
+        _add_desc_section(full_content)
+        _add_desc_section(mapped_description)
+    else:
+        _add_desc_section(summary)
+        _add_desc_section(mapped_description)
+    if (not embed_full_content) and (not desc_sections):
         _add_desc_section(full_content)
     append_bio_to_desc = bool(getattr(llm_enricher, "append_biography_to_description", True))
     if llm_biography_short and append_bio_to_desc:
@@ -1350,7 +1548,13 @@ def write_metadata_for_queue_row(
     copied_to_named_folder = False
 
     # File naming must be person-centric for monitor/open-row consistency.
-    display_name_for_file = normalize_optional_field(row.get("name", "")) or person_name or title or "unnamed"
+    display_name_for_file = (
+        normalize_optional_field(row.get("download_display_name", ""))
+        or normalize_optional_field(row.get("name", ""))
+        or person_name
+        or title
+        or "unnamed"
+    )
     desired_base = sanitize_filename(display_name_for_file, fallback="unnamed")
     keep_existing_named_file = False
     if existing_local_path and existing_local_path.exists() and existing_local_path.parent.resolve() == named_dir:
@@ -1375,15 +1579,28 @@ def write_metadata_for_queue_row(
         "location": city_value,
         "source_detail_url": detail_url,
         "source_list_url": source_list_url,
+        "metadata_key": metadata_key,
+        "full_content": full_content,
     }
-    if extra_fields:
-        d2i_profile_payload["extra_fields"] = extra_fields
-        for key, value in extra_fields.items():
+    image_role = normalize_optional_field(row.get("image_role", ""))
+    if image_role:
+        d2i_profile_payload["image_role"] = image_role
+    image_index_raw = row.get("image_index", "")
+    image_total_raw = row.get("image_total", "")
+    if image_index_raw != "":
+        d2i_profile_payload["image_index"] = image_index_raw
+    if image_total_raw != "":
+        d2i_profile_payload["image_total"] = image_total_raw
+    compact_extra_fields = _compact_metadata_profile_fields(extra_fields)
+    if compact_extra_fields:
+        d2i_profile_payload["extra_fields"] = compact_extra_fields
+        for key, value in compact_extra_fields.items():
             if key not in d2i_profile_payload:
                 d2i_profile_payload[key] = value
-    if mapped_fields:
-        d2i_profile_payload["mapped_fields"] = mapped_fields
-        for key, value in mapped_fields.items():
+    compact_mapped_fields = _compact_metadata_profile_fields(mapped_fields)
+    if compact_mapped_fields:
+        d2i_profile_payload["mapped_fields"] = compact_mapped_fields
+        for key, value in compact_mapped_fields.items():
             if key not in d2i_profile_payload:
                 d2i_profile_payload[key] = value
     if gender:
@@ -1403,7 +1620,7 @@ def write_metadata_for_queue_row(
         d2i_profile_payload["biography_short"] = llm_biography_short
     if llm_result:
         d2i_profile_payload["llm_enriched"] = True
-    if summary:
+    if _summary_is_distinct_enough(summary, full_content):
         d2i_profile_payload["summary"] = summary
     if full_content:
         d2i_profile_payload["full_content"] = full_content
@@ -1443,8 +1660,10 @@ def write_metadata_for_queue_row(
         row["local_image_path"] = saved_path_norm or str(final_path)
         row["file_name"] = Path(row["local_image_path"]).name
         row["file_dir"] = str(Path(row["local_image_path"]).parent.resolve())
-        if detail_url and isinstance(detail_to_final_path, dict):
+        if detail_url and isinstance(detail_to_final_path, dict) and not _metadata_row_has_multiple_images(row):
             detail_to_final_path[detail_url] = row["local_image_path"]
+        if image_url and isinstance(image_to_final_path, dict):
+            image_to_final_path[image_url] = row["local_image_path"]
         if image_sha and isinstance(sha_runtime_path, dict):
             sha_runtime_path[image_sha] = row["local_image_path"]
 
@@ -1452,7 +1671,12 @@ def write_metadata_for_queue_row(
             results_path,
             {
                 "written_at": utc_now_iso(),
+                "metadata_key": metadata_key,
                 "detail_url": detail_url,
+                "image_url": image_url,
+                "image_role": normalize_optional_field(row.get("image_role", "")),
+                "image_index": row.get("image_index", ""),
+                "image_total": row.get("image_total", ""),
                 "input_path": str(source_resolved),
                 "output_path": row["local_image_path"],
                 "status": "ok",
@@ -1468,7 +1692,12 @@ def write_metadata_for_queue_row(
                 {
                     "scraped_at": utc_now_iso(),
                     "reason": "metadata_write_failed",
+                    "metadata_key": metadata_key,
                     "detail_url": detail_url,
+                    "image_url": image_url,
+                    "image_role": normalize_optional_field(row.get("image_role", "")),
+                    "image_index": row.get("image_index", ""),
+                    "image_total": row.get("image_total", ""),
                     "local_image_path": str(final_path),
                     "error": str(exc),
                 },
@@ -1477,7 +1706,12 @@ def write_metadata_for_queue_row(
                 results_path,
                 {
                     "written_at": utc_now_iso(),
+                    "metadata_key": metadata_key,
                     "detail_url": detail_url,
+                    "image_url": image_url,
+                    "image_role": normalize_optional_field(row.get("image_role", "")),
+                    "image_index": row.get("image_index", ""),
+                    "image_total": row.get("image_total", ""),
                     "input_path": str(source_resolved),
                     "output_path": str(final_path),
                     "status": "failed",
@@ -1538,10 +1772,10 @@ def resolve_metadata_retry_settings(rules: Dict[str, Any]) -> Dict[str, Any]:
 def _load_latest_metadata_status(results_path: Path) -> Dict[str, str]:
     latest_status: Dict[str, str] = {}
     for row in iter_jsonl(results_path):
-        detail_url = str(row.get("detail_url", "")).strip()
-        if not detail_url:
+        metadata_key = _metadata_key_for_row(row)
+        if not metadata_key:
             continue
-        latest_status[detail_url] = str(row.get("status", "")).strip().lower()
+        latest_status[metadata_key] = str(row.get("status", "")).strip().lower()
     return latest_status
 
 
@@ -1557,8 +1791,8 @@ def _order_metadata_rows_by_retry_priority(
     pending_rows: List[Dict[str, Any]] = []
     ok_rows: List[Dict[str, Any]] = []
     for row in rows:
-        detail_url = str(row.get("detail_url", "")).strip()
-        status = str(latest_status.get(detail_url, "")).strip().lower() if detail_url else ""
+        metadata_key = _metadata_key_for_row(row)
+        status = str(latest_status.get(metadata_key, "")).strip().lower() if metadata_key else ""
         if status == "ok":
             ok_rows.append(row)
         elif status:
@@ -1584,6 +1818,7 @@ def write_metadata_for_queue_row_with_retries(
     review_path: Path,
     results_path: Path,
     detail_to_final_path: Optional[Dict[str, str]] = None,
+    image_to_final_path: Optional[Dict[str, str]] = None,
     sha_runtime_path: Optional[Dict[str, str]] = None,
     llm_enricher: Optional[Any] = None,
     max_attempts: int = 1,
@@ -1616,6 +1851,7 @@ def write_metadata_for_queue_row_with_retries(
             review_path=review_path,
             results_path=results_path,
             detail_to_final_path=detail_to_final_path,
+            image_to_final_path=image_to_final_path,
             sha_runtime_path=sha_runtime_path,
             llm_enricher=llm_enricher,
             record_failure=(attempt_idx >= attempts),
@@ -1924,8 +2160,28 @@ def _guess_extension(url: str, content_type: str) -> str:
     return ".bin"
 
 
+def _strip_html_markup(value: Any) -> str:
+    text = str(value or "")
+    if not text:
+        return ""
+    if "<" in text and ">" in text:
+        text = re.sub(r"(?is)<script[^>]*>.*?</script>", " ", text)
+        text = re.sub(r"(?is)<style[^>]*>.*?</style>", " ", text)
+        text = re.sub(r"<[^>]+>", " ", text)
+        text = (
+            text.replace("&nbsp;", " ")
+            .replace("&#160;", " ")
+            .replace("&amp;", "&")
+            .replace("&lt;", "<")
+            .replace("&gt;", ">")
+            .replace("&quot;", '"')
+            .replace("&#39;", "'")
+        )
+    return text
+
+
 def _normalize_text(value: Any) -> str:
-    text = " ".join(str(value or "").split()).strip()
+    text = " ".join(_strip_html_markup(value).split()).strip()
     if not text:
         return ""
     if re.search(r"[\u4e00-\u9fff]", text):
@@ -1942,8 +2198,39 @@ def _normalize_text(value: Any) -> str:
     return text
 
 
+_TRS_CSS_RULE_RE = re.compile(r"\.TRS_Editor\s+[A-Za-z0-9_-]+\s*\{[^{}]*\}", re.IGNORECASE)
+
+
+def _strip_embedded_style_text(value: Any) -> str:
+    text = str(value or "")
+    if not text:
+        return ""
+    text = _TRS_CSS_RULE_RE.sub("", text)
+    cleaned_lines: List[str] = []
+    for raw_line in text.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        line = str(raw_line or "").strip()
+        lowered = line.lower()
+        if (
+            ("font-family:" in lowered or "line-height:" in lowered or "font-size:" in lowered)
+            and "{" in line
+            and "}" in line
+        ):
+            continue
+        cleaned_lines.append(raw_line)
+    return "\n".join(cleaned_lines)
+
+
+def _strip_invalid_xml_chars(value: Any) -> str:
+    out: List[str] = []
+    for ch in str(value or ""):
+        code = ord(ch)
+        if code in {0x9, 0xA, 0xD} or 0x20 <= code <= 0xD7FF or 0xE000 <= code <= 0xFFFD or 0x10000 <= code <= 0x10FFFF:
+            out.append(ch)
+    return "".join(out)
+
+
 def _normalize_multiline_text(value: Any) -> str:
-    text = str(value or "").replace("\r\n", "\n").replace("\r", "\n")
+    text = _strip_invalid_xml_chars(_strip_embedded_style_text(value)).replace("\r\n", "\n").replace("\r", "\n")
     if not text:
         return ""
     lines: List[str] = []
@@ -2044,6 +2331,19 @@ def _ensure_list(value: Any) -> List[str]:
     return [str(value)]
 
 
+def normalize_gender_filter_values(value: Any) -> set[str]:
+    return {gender for gender in (normalize_gender(v) for v in _ensure_list(value)) if gender}
+
+
+def is_gender_allowed(gender: Any, allowed_genders: set[str], skip_unknown_gender: bool) -> bool:
+    if not allowed_genders:
+        return True
+    normalized = normalize_gender(gender)
+    if not normalized:
+        return not skip_unknown_gender
+    return normalized in allowed_genders
+
+
 def _select_values(selector_source: Any, selector: str) -> List[str]:
     selector_text = str(selector or "").strip()
     if not selector_text:
@@ -2079,6 +2379,19 @@ def _extract_first(selector_source: Any, selector_spec: Any) -> str:
             if normalized:
                 return normalized
     return ""
+
+
+def _extract_all(selector_source: Any, selector_spec: Any) -> List[str]:
+    values: List[str] = []
+    seen: set[str] = set()
+    for selector in _ensure_list(selector_spec):
+        for value in _select_values(selector_source, selector):
+            normalized = _normalize_text(value)
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            values.append(normalized)
+    return values
 
 
 def _extract_joined_text(selector_source: Any, selector_spec: Any) -> str:
@@ -2394,6 +2707,47 @@ def _classify_browser_blocked_reason(
     return ""
 
 
+def _soften_image_blocked_tag(
+    blocked_tag: str,
+    *,
+    consecutive_failures: int,
+    suspect_failures_threshold: int,
+    soft_image_block_statuses: set[int],
+) -> str:
+    tag = str(blocked_tag or "").strip()
+    if not tag or not soft_image_block_statuses:
+        return tag
+    match = re.match(r"^(?:image_)?http_(\d{3})$", tag)
+    if not match:
+        return tag
+    try:
+        status = int(match.group(1))
+    except Exception:
+        return tag
+    if status in soft_image_block_statuses and consecutive_failures < suspect_failures_threshold:
+        return ""
+    return tag
+
+
+def _looks_like_browser_session_error(error_text: str) -> bool:
+    lowered = str(error_text or "").strip().lower()
+    if not lowered:
+        return False
+    markers = [
+        "invalid session id",
+        "session deleted",
+        "browser has closed the connection",
+        "not connected to devtools",
+        "disconnected: not connected",
+        "no such window",
+        "target window already closed",
+        "chrome not reachable",
+        "edge not reachable",
+        "web view not found",
+    ]
+    return any(marker in lowered for marker in markers)
+
+
 def _fetch_html_via_browser(
     downloader: Any,
     *,
@@ -2401,6 +2755,7 @@ def _fetch_html_via_browser(
     timeout_seconds: int,
     challenge_rounds: int = 8,
     challenge_wait_seconds: float = 1.2,
+    settle_seconds: float = 0.0,
 ) -> Tuple[bool, str, str]:
     driver = getattr(downloader, "driver", None)
     if driver is None:
@@ -2411,10 +2766,14 @@ def _fetch_html_via_browser(
         except Exception:
             pass
         driver.get(url)
+        if settle_seconds > 0:
+            time.sleep(float(settle_seconds))
         html_payload = str(driver.page_source or "")
         rounds = 0
         while _looks_like_browser_challenge(html_payload) and rounds < max(1, int(challenge_rounds)):
             time.sleep(max(0.2, float(challenge_wait_seconds)))
+            if settle_seconds > 0:
+                time.sleep(float(settle_seconds))
             html_payload = str(driver.page_source or "")
             rounds += 1
         if _looks_like_browser_challenge(html_payload):
@@ -2429,9 +2788,9 @@ def _fetch_html_via_browser(
 def _load_existing_detail_urls(path: Path) -> set[str]:
     known: set[str] = set()
     for row in iter_jsonl(path):
-        detail_url = str(row.get("detail_url", "")).strip()
-        if detail_url:
-            known.add(detail_url)
+        key = str(row.get("metadata_key", "") or row.get("detail_url", "")).strip()
+        if key:
+            known.add(key)
     return known
 
 
@@ -2464,6 +2823,7 @@ def run_crawl_browser_mode(config: Dict[str, Any], output_root: Path) -> None:
     profile_path = raw_dir / "profiles.jsonl"
     review_path = raw_dir / "review_queue.jsonl"
     failures_path = raw_dir / "failures.jsonl"
+    gender_skips_path = raw_dir / "gender_skips.jsonl"
     queue_path = raw_dir / "metadata_queue.jsonl"
     metadata_results_path = raw_dir / "metadata_write_results.jsonl"
     metadata_report_path = reports_dir / "metadata_write_report.json"
@@ -2487,6 +2847,9 @@ def run_crawl_browser_mode(config: Dict[str, Any], output_root: Path) -> None:
         raise ValueError("selectors.list_item is required")
 
     default_gender = normalize_gender(rules.get("default_gender", ""))
+    allowed_genders = normalize_gender_filter_values(rules.get("allowed_genders", []))
+    skip_unknown_gender = _parse_bool_rule(rules.get("skip_unknown_gender", False), default=False)
+    infer_gender_from_text = _parse_bool_rule(rules.get("infer_gender_from_text", True), default=True)
     field_map = _resolve_field_map(config)
     gender_map: Dict[str, str] = {}
     for k, v in dict(rules.get("gender_map", {})).items():
@@ -2499,11 +2862,21 @@ def run_crawl_browser_mode(config: Dict[str, Any], output_root: Path) -> None:
 
     required_fields = _ensure_list(rules.get("required_fields", ["name", "detail_url", "image_url"]))
     timeout_seconds = max(5, int(crawl_cfg.get("timeout_seconds", 30)))
+    browser_settle_seconds = max(0.0, float(crawl_cfg.get("browser_settle_seconds", 0.0)))
     blocked_statuses = {
         int(s)
         for s in crawl_cfg.get("blocked_statuses", [403, 429])
         if str(s).strip().isdigit()
     }
+    soft_image_block_statuses = {
+        int(s)
+        for s in crawl_cfg.get("soft_image_block_statuses", [])
+        if str(s).strip().isdigit()
+    }
+    image_failures_do_not_backoff = _parse_bool_rule(
+        crawl_cfg.get("image_failures_do_not_backoff", rules.get("image_failures_do_not_backoff", False)),
+        default=False,
+    )
     backoff_hours = float(crawl_cfg.get("blocked_backoff_hours", 6))
     suspect_failures_threshold = max(2, int(crawl_cfg.get("suspect_block_consecutive_failures", 3)))
     browser_engine = str(rules.get("browser_engine", "auto")).strip().lower()
@@ -2578,6 +2951,7 @@ def run_crawl_browser_mode(config: Dict[str, Any], output_root: Path) -> None:
         "detail_requests_enqueued": 0,
         "detail_pages_saved": 0,
         "detail_duplicates_skipped": 0,
+        "gender_filtered_skipped": 0,
         "missing_required_items": 0,
         "failures": 0,
         "blocked_stops": 0,
@@ -2626,7 +3000,8 @@ def run_crawl_browser_mode(config: Dict[str, Any], output_root: Path) -> None:
         person_name = _display_person_name(profile_row.get("name", ""), detail_url_inline)
         if not detail_url_inline:
             return ""
-        if detail_url_inline in inline_existing_detail_urls:
+        metadata_key_inline = _metadata_key_for_row(profile_row)
+        if metadata_key_inline in inline_existing_detail_urls:
             inline_metadata_totals["skipped_existing_detail"] += 1
             return ""
 
@@ -2645,7 +3020,12 @@ def run_crawl_browser_mode(config: Dict[str, Any], output_root: Path) -> None:
                 {
                     "scraped_at": utc_now_iso(),
                     "reason": "metadata_missing_local_image_path",
+                    "metadata_key": metadata_key_inline,
                     "detail_url": detail_url_inline,
+                    "image_url": str(profile_row.get("image_url", "")).strip(),
+                    "image_role": normalize_optional_field(profile_row.get("image_role", "")),
+                    "image_index": profile_row.get("image_index", ""),
+                    "image_total": profile_row.get("image_total", ""),
                     "candidates": [source_path_value],
                 },
             )
@@ -2674,7 +3054,7 @@ def run_crawl_browser_mode(config: Dict[str, Any], output_root: Path) -> None:
             if copied_flag:
                 inline_metadata_totals["copied_to_named_folder"] += 1
             append_jsonl(queue_path, queue_row)
-            inline_existing_detail_urls.add(detail_url_inline)
+            inline_existing_detail_urls.add(metadata_key_inline)
             return norm_abs_path(final_path) or final_path
         inline_metadata_totals["failed"] += 1
         runtime_log(
@@ -2705,8 +3085,16 @@ def run_crawl_browser_mode(config: Dict[str, Any], output_root: Path) -> None:
     blocked_reason: Optional[str] = None
     consecutive_page_failures = 0
     consecutive_inline_image_failures = 0
+    prefer_existing_list_records = _parse_bool_rule(
+        crawl_cfg.get("prefer_existing_list_records", rules.get("prefer_existing_list_records", False)),
+        default=False,
+    )
+    if prefer_existing_list_records and list_path.exists() and count_jsonl(list_path) > 0:
+        list_queue.clear()
+        queued_list_urls.clear()
 
     temp_root = scoped_temp_dir("_tmp_browser_crawl", scope_hint=str(output_root))
+    image_downloader: Optional[Any] = None
     downloader = ImageDownloader(
         save_dir=str(temp_root),
         interval_min=max(0.1, float(interval_min)),
@@ -2718,7 +3106,23 @@ def run_crawl_browser_mode(config: Dict[str, Any], output_root: Path) -> None:
         turbo_mode=True,
         browser_engine=browser_engine,
         disable_page_images=disable_page_images_during_crawl,
+        browser_image_settle_seconds=float(crawl_cfg.get("browser_image_settle_seconds", 4)),
     )
+    if image_failures_do_not_backoff and inline_download_enabled:
+        image_temp_root = scoped_temp_dir("_tmp_browser_image_downloads", scope_hint=str(output_root))
+        image_downloader = ImageDownloader(
+            save_dir=str(image_temp_root),
+            interval_min=max(0.1, float(interval_min)),
+            interval_max=max(float(interval_min), float(interval_max)),
+            timeout=timeout_seconds,
+            max_retries=max(1, int(crawl_cfg.get("retry_times", 3))),
+            use_browser=True,
+            downloaded_urls=set(),
+            turbo_mode=True,
+            browser_engine=browser_engine,
+            disable_page_images=False,
+            browser_image_settle_seconds=float(crawl_cfg.get("browser_image_settle_seconds", 4)),
+        )
 
     def _maybe_sleep_between_pages() -> None:
         nonlocal fetch_count
@@ -2778,6 +3182,51 @@ def run_crawl_browser_mode(config: Dict[str, Any], output_root: Path) -> None:
             blocked_until=blocked_until,
         )
 
+    def _restart_browser_session(reason: str, url: str, phase: str) -> bool:
+        runtime_log(
+            "WARN",
+            "browser session lost, restart and retry once",
+            phase=phase,
+            url=url,
+            reason=reason,
+        )
+        try:
+            downloader._close_browser()  # type: ignore[attr-defined]
+        except Exception:
+            pass
+        try:
+            time.sleep(1.0)
+            downloader._init_browser()  # type: ignore[attr-defined]
+            return True
+        except Exception as exc:
+            runtime_log(
+                "FAIL",
+                "browser session restart failed",
+                phase=phase,
+                url=url,
+                error=str(exc),
+            )
+            return False
+
+    def _fetch_html_with_recovery(url: str, phase: str) -> Tuple[bool, str, str, bool]:
+        ok, html_payload, error = _fetch_html_via_browser(
+            downloader,
+            url=url,
+            timeout_seconds=timeout_seconds,
+            settle_seconds=browser_settle_seconds,
+        )
+        if ok or (not _looks_like_browser_session_error(error)):
+            return ok, html_payload, error, False
+        if not _restart_browser_session(error, url, phase):
+            return False, html_payload, error, True
+        ok_retry, html_retry, error_retry = _fetch_html_via_browser(
+            downloader,
+            url=url,
+            timeout_seconds=timeout_seconds,
+            settle_seconds=browser_settle_seconds,
+        )
+        return ok_retry, html_retry, error_retry, _looks_like_browser_session_error(error_retry)
+
     try:
         downloader._init_browser()  # type: ignore[attr-defined]
 
@@ -2801,11 +3250,7 @@ def run_crawl_browser_mode(config: Dict[str, Any], output_root: Path) -> None:
                 continue
 
             _maybe_sleep_between_pages()
-            ok, html_payload, error = _fetch_html_via_browser(
-                downloader,
-                url=list_url,
-                timeout_seconds=timeout_seconds,
-            )
+            ok, html_payload, error, browser_session_error = _fetch_html_with_recovery(list_url, "list")
             if not ok:
                 consecutive_page_failures += 1
                 blocked_tag = _classify_browser_blocked_reason(
@@ -2813,7 +3258,9 @@ def run_crawl_browser_mode(config: Dict[str, Any], output_root: Path) -> None:
                     html_payload=html_payload,
                     blocked_statuses=blocked_statuses,
                 )
-                if (not blocked_tag) and (consecutive_page_failures >= suspect_failures_threshold):
+                if browser_session_error:
+                    blocked_tag = ""
+                if (not blocked_tag) and (not browser_session_error) and (consecutive_page_failures >= suspect_failures_threshold):
                     blocked_tag = "suspected_block_consecutive_page_failures"
                 if blocked_tag:
                     _activate_backoff(blocked_tag, list_url, phase="list")
@@ -2887,6 +3334,23 @@ def run_crawl_browser_mode(config: Dict[str, Any], output_root: Path) -> None:
                 queued_list_urls.add(next_url)
                 list_queue.append(next_url)
 
+        if (not detail_queue) and list_path.exists():
+            for list_record in iter_jsonl(list_path):
+                detail_url = normalize_optional_field(list_record.get("detail_url", ""))
+                if not detail_url:
+                    continue
+                if not _url_allowed(detail_url, allowed_domains):
+                    continue
+                if detail_url in known_detail_urls:
+                    continue
+                seed_name = normalize_optional_field(list_record.get("name", ""))
+                list_url = normalize_optional_field(list_record.get("list_url", ""))
+                seed_fields_raw = list_record.get("fields", {})
+                seed_fields = seed_fields_raw if isinstance(seed_fields_raw, dict) else {}
+                known_detail_urls.add(detail_url)
+                metrics["detail_requests_enqueued"] += 1
+                detail_queue.append((detail_url, seed_name, list_url, seed_fields))
+
         while detail_queue:
             if blocked_until:
                 break
@@ -2905,11 +3369,7 @@ def run_crawl_browser_mode(config: Dict[str, Any], output_root: Path) -> None:
                 continue
 
             _maybe_sleep_between_pages()
-            ok, html_payload, error = _fetch_html_via_browser(
-                downloader,
-                url=detail_url,
-                timeout_seconds=timeout_seconds,
-            )
+            ok, html_payload, error, browser_session_error = _fetch_html_with_recovery(detail_url, "detail")
             if not ok:
                 consecutive_page_failures += 1
                 blocked_tag = _classify_browser_blocked_reason(
@@ -2917,7 +3377,9 @@ def run_crawl_browser_mode(config: Dict[str, Any], output_root: Path) -> None:
                     html_payload=html_payload,
                     blocked_statuses=blocked_statuses,
                 )
-                if (not blocked_tag) and (consecutive_page_failures >= suspect_failures_threshold):
+                if browser_session_error:
+                    blocked_tag = ""
+                if (not blocked_tag) and (not browser_session_error) and (consecutive_page_failures >= suspect_failures_threshold):
                     blocked_tag = "suspected_block_consecutive_page_failures"
                 if blocked_tag:
                     _activate_backoff(blocked_tag, detail_url, phase="detail")
@@ -2936,10 +3398,21 @@ def run_crawl_browser_mode(config: Dict[str, Any], output_root: Path) -> None:
 
             detail_source = _build_selector_source_from_html(html_payload, selectors, phase="detail")
             detail_name = _extract_first(detail_source, selectors.get("detail_name"))
-            name = detail_name or _normalize_text(seed_name)
+            name = _prefer_person_name(detail_name, seed_name)
             person_name = _display_person_name(name, detail_url)
             image_raw = _extract_first(detail_source, selectors.get("detail_image"))
             image_url = urljoin(detail_url, image_raw) if image_raw else ""
+            image_urls: List[str] = []
+            if _parse_bool_rule(rules.get("download_all_detail_images", False), default=False):
+                detail_images_spec = selectors.get("detail_images") or selectors.get("detail_image")
+                for raw_image in _extract_all(detail_source, detail_images_spec):
+                    absolute_image = urljoin(detail_url, raw_image)
+                    if absolute_image and absolute_image not in image_urls:
+                        image_urls.append(absolute_image)
+                if image_url and image_url not in image_urls:
+                    image_urls.insert(0, image_url)
+                if (not image_url) and image_urls:
+                    image_url = image_urls[0]
 
             gender_text = _extract_first(detail_source, selectors.get("detail_gender"))
             gender_lookup = _normalize_text(gender_text)
@@ -2972,13 +3445,15 @@ def run_crawl_browser_mode(config: Dict[str, Any], output_root: Path) -> None:
                 if value:
                     merged_fields[key] = value
 
-            if not gender:
+            if (not gender) and infer_gender_from_text:
                 gender = infer_gender_from_texts(
                     gender_text,
                     summary,
                     full_content,
                     " ".join(str(v) for v in merged_fields.values()),
-                ) or default_gender
+                )
+            if not gender:
+                gender = default_gender
 
             mapped_fields = _apply_field_map(
                 field_map,
@@ -3004,6 +3479,8 @@ def run_crawl_browser_mode(config: Dict[str, Any], output_root: Path) -> None:
                         continue
                     image_url = urljoin((detail_url or list_url), fallback_raw)
                     break
+            if image_url and image_url not in image_urls:
+                image_urls.insert(0, image_url)
 
             record = {
                 "scraped_at": utc_now_iso(),
@@ -3011,6 +3488,11 @@ def run_crawl_browser_mode(config: Dict[str, Any], output_root: Path) -> None:
                 "detail_url": detail_url,
                 "list_url": list_url,
                 "image_url": image_url,
+                "image_urls": image_urls,
+                "metadata_embed_full_content": _parse_bool_rule(
+                    rules.get("metadata_embed_full_content", True),
+                    default=True,
+                ),
                 "gender": gender,
                 "gender_raw": gender_text,
                 "summary": summary,
@@ -3018,6 +3500,19 @@ def run_crawl_browser_mode(config: Dict[str, Any], output_root: Path) -> None:
                 "fields": merged_fields,
                 "mapped": mapped_fields,
             }
+            if not is_gender_allowed(gender, allowed_genders, skip_unknown_gender):
+                metrics["gender_filtered_skipped"] += 1
+                append_jsonl(
+                    gender_skips_path,
+                    {
+                        "scraped_at": utc_now_iso(),
+                        "reason": "gender_filtered",
+                        "allowed_genders": sorted(allowed_genders),
+                        "skip_unknown_gender": skip_unknown_gender,
+                        "record": record,
+                    },
+                )
+                continue
             append_jsonl(profile_path, record)
             metrics["detail_pages_saved"] += 1
 
@@ -3043,7 +3538,7 @@ def run_crawl_browser_mode(config: Dict[str, Any], output_root: Path) -> None:
                             interval_min=interval_min,
                             interval_max=interval_max,
                             browser_engine=browser_engine,
-                            downloader=downloader,
+                            downloader=image_downloader if image_downloader is not None else downloader,
                             output_root_hint=str(output_root),
                         )
                         if not ok_img:
@@ -3053,7 +3548,15 @@ def run_crawl_browser_mode(config: Dict[str, Any], output_root: Path) -> None:
                                 html_payload="",
                                 blocked_statuses=blocked_statuses,
                             )
-                            if (not blocked_tag) and (consecutive_inline_image_failures >= suspect_failures_threshold):
+                            blocked_tag = _soften_image_blocked_tag(
+                                blocked_tag,
+                                consecutive_failures=consecutive_inline_image_failures,
+                                suspect_failures_threshold=suspect_failures_threshold,
+                                soft_image_block_statuses=soft_image_block_statuses,
+                            )
+                            if image_failures_do_not_backoff:
+                                blocked_tag = ""
+                            elif (not blocked_tag) and (consecutive_inline_image_failures >= suspect_failures_threshold):
                                 blocked_tag = "suspected_block_consecutive_image_failures"
                             if blocked_tag:
                                 _activate_backoff(blocked_tag, image_url, phase="image_inline")
@@ -3085,8 +3588,10 @@ def run_crawl_browser_mode(config: Dict[str, Any], output_root: Path) -> None:
                             blocked_tag = ""
                             if challenge_payload:
                                 blocked_tag = "browser_challenge_payload"
-                            elif consecutive_inline_image_failures >= suspect_failures_threshold:
+                            elif (not image_failures_do_not_backoff) and consecutive_inline_image_failures >= suspect_failures_threshold:
                                 blocked_tag = "suspected_block_consecutive_image_failures"
+                            if image_failures_do_not_backoff:
+                                blocked_tag = ""
                             if blocked_tag:
                                 _activate_backoff(blocked_tag, image_url, phase="image_inline")
                             metrics["inline_image_failed"] += 1
@@ -3183,12 +3688,12 @@ def run_crawl_browser_mode(config: Dict[str, Any], output_root: Path) -> None:
                         detail_url=detail_url,
                         timeout_seconds=timeout_seconds,
                         max_retries=max(1, int(crawl_cfg.get("retry_times", 3))),
-                    interval_min=interval_min,
-                    interval_max=interval_max,
-                    browser_engine=browser_engine,
-                    downloader=downloader,
-                    output_root_hint=str(output_root),
-                )
+                        interval_min=interval_min,
+                        interval_max=interval_max,
+                        browser_engine=browser_engine,
+                        downloader=image_downloader if image_downloader is not None else downloader,
+                        output_root_hint=str(output_root),
+                    )
                     if not ok_img:
                         consecutive_inline_image_failures += 1
                         blocked_tag = _classify_browser_blocked_reason(
@@ -3196,7 +3701,15 @@ def run_crawl_browser_mode(config: Dict[str, Any], output_root: Path) -> None:
                             html_payload="",
                             blocked_statuses=blocked_statuses,
                         )
-                        if (not blocked_tag) and (consecutive_inline_image_failures >= suspect_failures_threshold):
+                        blocked_tag = _soften_image_blocked_tag(
+                            blocked_tag,
+                            consecutive_failures=consecutive_inline_image_failures,
+                            suspect_failures_threshold=suspect_failures_threshold,
+                            soft_image_block_statuses=soft_image_block_statuses,
+                        )
+                        if image_failures_do_not_backoff:
+                            blocked_tag = ""
+                        elif (not blocked_tag) and (consecutive_inline_image_failures >= suspect_failures_threshold):
                             blocked_tag = "suspected_block_consecutive_image_failures"
                         if blocked_tag:
                             _activate_backoff(blocked_tag, image_url, phase="image_inline")
@@ -3228,8 +3741,10 @@ def run_crawl_browser_mode(config: Dict[str, Any], output_root: Path) -> None:
                         blocked_tag = ""
                         if challenge_payload:
                             blocked_tag = "browser_challenge_payload"
-                        elif consecutive_inline_image_failures >= suspect_failures_threshold:
+                        elif (not image_failures_do_not_backoff) and consecutive_inline_image_failures >= suspect_failures_threshold:
                             blocked_tag = "suspected_block_consecutive_image_failures"
+                        if image_failures_do_not_backoff:
+                            blocked_tag = ""
                         if blocked_tag:
                             _activate_backoff(blocked_tag, image_url, phase="image_inline")
                         metrics["inline_image_failed"] += 1
@@ -3316,6 +3831,11 @@ def run_crawl_browser_mode(config: Dict[str, Any], output_root: Path) -> None:
                     },
                 )
     finally:
+        if image_downloader is not None:
+            try:
+                image_downloader._close_browser()  # type: ignore[attr-defined]
+            except Exception:
+                pass
         try:
             downloader._close_browser()  # type: ignore[attr-defined]
         except Exception:
@@ -3370,6 +3890,8 @@ def run_crawl_browser_mode(config: Dict[str, Any], output_root: Path) -> None:
         "crawl_mode": "browser",
         "browser_engine": browser_engine,
         "disable_page_images_during_crawl": disable_page_images_during_crawl,
+        "image_failures_do_not_backoff": image_failures_do_not_backoff,
+        "prefer_existing_list_records": prefer_existing_list_records,
         "interval_min_seconds": interval_min,
         "interval_max_seconds": interval_max,
         "inline_download_enabled": inline_download_enabled,
@@ -3542,6 +4064,16 @@ def _download_image_with_d2i_browser(
                     last_error = "browser_no_output_file"
             except Exception as exc:
                 last_error = str(exc)
+                if _looks_like_browser_session_error(last_error):
+                    try:
+                        downloader._close_browser()  # type: ignore[attr-defined]
+                    except Exception:
+                        pass
+                    try:
+                        time.sleep(1.0)
+                        downloader._init_browser()  # type: ignore[attr-defined]
+                    except Exception as restart_exc:
+                        last_error = f"{last_error}; browser_restart_failed:{restart_exc}"
         return False, b"", "", last_error or "browser_download_failed"
     finally:
         if own_downloader:
@@ -3585,13 +4117,14 @@ def download_images(config: Dict[str, Any], output_root: Path) -> Dict[str, Any]
     direct_named_dir: Optional[Path] = None
     direct_reserved_paths: set[str] = set()
     manifest_by_detail: Dict[str, Dict[str, str]] = {}
+    manifest_by_image: Dict[str, Dict[str, str]] = {}
     if direct_write_images:
         direct_named_dir = resolve_named_output_dir(output_root, rules)
         direct_named_dir.mkdir(parents=True, exist_ok=True)
         for p in sorted(direct_named_dir.glob("*")):
             if p.is_file():
                 direct_reserved_paths.add(str(p.resolve()))
-        manifest_by_detail, _ = _load_download_manifest_lookups(download_manifest)
+        manifest_by_detail, manifest_by_image = _load_download_manifest_lookups(download_manifest)
 
     url_index: Dict[str, str] = {}
     sha_index: Dict[str, str] = {}
@@ -3618,6 +4151,11 @@ def download_images(config: Dict[str, Any], output_root: Path) -> Dict[str, Any]
     blocked_statuses = {
         int(s)
         for s in crawl_cfg.get("blocked_statuses", [403, 429])
+        if str(s).strip().isdigit()
+    }
+    soft_image_block_statuses = {
+        int(s)
+        for s in crawl_cfg.get("soft_image_block_statuses", [])
         if str(s).strip().isdigit()
     }
     timeout_seconds = int(crawl_cfg.get("timeout_seconds", 30))
@@ -3717,7 +4255,8 @@ def download_images(config: Dict[str, Any], output_root: Path) -> Dict[str, Any]
         detail_url = str(profile_row.get("detail_url", "")).strip()
         if not detail_url:
             return ""
-        if detail_url in inline_existing_detail_urls:
+        metadata_key_inline = _metadata_key_for_row(profile_row)
+        if metadata_key_inline in inline_existing_detail_urls:
             inline_metadata_totals["skipped_existing_detail"] += 1
             return ""
 
@@ -3735,7 +4274,12 @@ def download_images(config: Dict[str, Any], output_root: Path) -> Dict[str, Any]
                 {
                     "scraped_at": utc_now_iso(),
                     "reason": "metadata_missing_local_image_path",
+                    "metadata_key": metadata_key_inline,
                     "detail_url": detail_url,
+                    "image_url": str(profile_row.get("image_url", "")).strip(),
+                    "image_role": normalize_optional_field(profile_row.get("image_role", "")),
+                    "image_index": profile_row.get("image_index", ""),
+                    "image_total": profile_row.get("image_total", ""),
                     "candidates": [source_path_value],
                 },
             )
@@ -3764,7 +4308,7 @@ def download_images(config: Dict[str, Any], output_root: Path) -> Dict[str, Any]
             if copied_flag:
                 inline_metadata_totals["copied_to_named_folder"] += 1
             append_jsonl(queue_path, queue_row)
-            inline_existing_detail_urls.add(detail_url)
+            inline_existing_detail_urls.add(metadata_key_inline)
             return norm_abs_path(final_path) or final_path
         inline_metadata_totals["failed"] += 1
         runtime_log(
@@ -3835,7 +4379,14 @@ def download_images(config: Dict[str, Any], output_root: Path) -> Dict[str, Any]
         )
 
     try:
-        for profile in iter_jsonl(profiles_path):
+        def _iter_download_scan_rows() -> Iterable[Dict[str, Any]]:
+            for profile_row in iter_jsonl(profiles_path):
+                if not isinstance(profile_row, dict):
+                    continue
+                for expanded_row in _iter_profile_download_rows(profile_row, rules):
+                    yield expanded_row
+
+        for profile in _iter_download_scan_rows():
             wait_if_manual_paused(output_root, stage="download:images")
             totals["profiles_seen"] += 1
             image_url = str(profile.get("image_url", "")).strip()
@@ -3855,8 +4406,9 @@ def download_images(config: Dict[str, Any], output_root: Path) -> Dict[str, Any]
                 image=image_url,
             )
 
+            image_multi = _parse_bool_rule(profile.get("image_multi", False), default=False)
             if direct_write_images and direct_named_dir is not None and detail_url:
-                previous = manifest_by_detail.get(detail_url, {})
+                previous = manifest_by_image.get(image_url, {}) if image_multi else manifest_by_detail.get(detail_url, {})
                 previous_sha = str(previous.get("sha", "")).strip()
                 previous_path = norm_abs_path(str(previous.get("path", "")))
                 if previous_path and _is_usable_cached_image(previous_path):
@@ -3867,7 +4419,9 @@ def download_images(config: Dict[str, Any], output_root: Path) -> Dict[str, Any]
                         if prev_p.parent.resolve() != direct_named_dir.resolve():
                             target_named = unique_named_path(
                                 direct_named_dir,
-                                normalize_optional_field(profile.get("name", "")) or person_name,
+                                normalize_optional_field(profile.get("download_display_name", ""))
+                                or normalize_optional_field(profile.get("name", ""))
+                                or person_name,
                                 ext=".jpg",
                                 reserved=direct_reserved_paths,
                             )
@@ -3880,13 +4434,18 @@ def download_images(config: Dict[str, Any], output_root: Path) -> Dict[str, Any]
                                     "detail_url": detail_url,
                                     "image_url": image_url,
                                     "name": profile.get("name", ""),
+                                    "image_role": profile.get("image_role", ""),
+                                    "image_index": profile.get("image_index", ""),
+                                    "image_total": profile.get("image_total", ""),
                                     "sha256": previous_sha,
                                     "saved_path": copied_path,
                                     "named_path": copied_path,
                                     "route": "direct_copy_existing",
                                 },
                             )
-                            manifest_by_detail[detail_url] = {"sha": previous_sha, "path": copied_path}
+                            manifest_by_image[image_url] = {"sha": previous_sha, "path": copied_path}
+                            if not image_multi:
+                                manifest_by_detail[detail_url] = {"sha": previous_sha, "path": copied_path}
                             if inline_metadata_enabled:
                                 _inline_write_for_profile(profile, previous_sha, copied_path)
                             continue
@@ -3936,6 +4495,12 @@ def download_images(config: Dict[str, Any], output_root: Path) -> Dict[str, Any]
                         error_text=browser_error,
                         html_payload="",
                         blocked_statuses=blocked_statuses,
+                    )
+                    blocked_tag = _soften_image_blocked_tag(
+                        blocked_tag,
+                        consecutive_failures=consecutive_download_failures,
+                        suspect_failures_threshold=suspect_failures_threshold,
+                        soft_image_block_statuses=soft_image_block_statuses,
                     )
                     if (not blocked_tag) and (consecutive_download_failures >= suspect_failures_threshold):
                         blocked_tag = "suspected_block_consecutive_image_failures"
@@ -4099,7 +4664,7 @@ def download_images(config: Dict[str, Any], output_root: Path) -> Dict[str, Any]
 
             if direct_write_images and direct_named_dir is not None:
                 target_named: Optional[Path] = None
-                previous = manifest_by_detail.get(detail_url, {}) if detail_url else {}
+                previous = manifest_by_image.get(image_url, {}) if image_multi else (manifest_by_detail.get(detail_url, {}) if detail_url else {})
                 previous_path = norm_abs_path(str(previous.get("path", "")))
                 if previous_path:
                     try:
@@ -4116,7 +4681,9 @@ def download_images(config: Dict[str, Any], output_root: Path) -> Dict[str, Any]
                 if target_named is None:
                     target_named = unique_named_path(
                         direct_named_dir,
-                        normalize_optional_field(profile.get("name", "")) or person_name,
+                        normalize_optional_field(profile.get("download_display_name", ""))
+                        or normalize_optional_field(profile.get("name", ""))
+                        or person_name,
                         ext=".jpg",
                         reserved=direct_reserved_paths,
                     )
@@ -4151,13 +4718,18 @@ def download_images(config: Dict[str, Any], output_root: Path) -> Dict[str, Any]
                         "detail_url": detail_url,
                         "image_url": image_url,
                         "name": profile.get("name", ""),
+                        "image_role": profile.get("image_role", ""),
+                        "image_index": profile.get("image_index", ""),
+                        "image_total": profile.get("image_total", ""),
                         "sha256": sha,
                         "saved_path": saved_path,
                         "named_path": named_path,
                         "route": f"{route_used}_direct",
                     },
                 )
-                if detail_url:
+                if image_url:
+                    manifest_by_image[image_url] = {"sha": sha, "path": named_path}
+                if detail_url and (not image_multi):
                     manifest_by_detail[detail_url] = {"sha": sha, "path": named_path}
                 continue
 
@@ -4266,7 +4838,8 @@ def download_images(config: Dict[str, Any], output_root: Path) -> Dict[str, Any]
     return report
 
 
-def build_metadata_queue(output_root: Path) -> Dict[str, Any]:
+def build_metadata_queue(output_root: Path, config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    rules = dict((config or {}).get("rules", {}))
     profiles_path = output_root / "raw" / "profiles.jsonl"
     queue_path = output_root / "raw" / "metadata_queue.jsonl"
     url_index_path = output_root / "state" / "image_url_index.json"
@@ -4303,7 +4876,7 @@ def build_metadata_queue(output_root: Path) -> Dict[str, Any]:
             profiles_by_detail[detail_url] = profile
 
     queue_rows: List[Dict[str, Any]] = []
-    existing_details: set[str] = set()
+    existing_keys: set[str] = set()
     refreshed = 0
     for row_raw in iter_jsonl(queue_path):
         if not isinstance(row_raw, dict):
@@ -4315,6 +4888,33 @@ def build_metadata_queue(output_root: Path) -> Dict[str, Any]:
 
         profile = profiles_by_detail.get(detail_url, {})
         changed = False
+        if isinstance(profile, dict) and _parse_bool_rule(rules.get("download_all_detail_images", False), default=False):
+            row_image_url = str(row.get("image_url", "")).strip()
+            for expanded_profile in _iter_profile_download_rows(profile, rules):
+                expanded_image_url = str(expanded_profile.get("image_url", "")).strip()
+                expanded_index = str(expanded_profile.get("image_index", "")).strip()
+                matches_image = bool(row_image_url and expanded_image_url == row_image_url)
+                matches_first = (not row_image_url) and expanded_index in {"", "0"}
+                if not (matches_image or matches_first):
+                    continue
+                for key in (
+                    "metadata_key",
+                    "download_display_name",
+                    "image_urls",
+                    "image_index",
+                    "image_total",
+                    "image_multi",
+                    "image_role",
+                    "metadata_embed_full_content",
+                ):
+                    value = expanded_profile.get(key)
+                    if value not in (None, "") and row.get(key) != value:
+                        row[key] = value
+                        changed = True
+                if (not row_image_url) and expanded_image_url:
+                    row["image_url"] = expanded_image_url
+                    changed = True
+                break
 
         if not str(row.get("name", "")).strip():
             profile_name = str(profile.get("name", "")).strip() if isinstance(profile, dict) else ""
@@ -4359,6 +4959,15 @@ def build_metadata_queue(output_root: Path) -> Dict[str, Any]:
         if (not str(row.get("source_url", "")).strip()) and profile_source_url:
             row["source_url"] = profile_source_url
             changed = True
+        embed_full_rule = _parse_bool_rule(rules.get("metadata_embed_full_content", True), default=True)
+        if _parse_bool_rule(row.get("metadata_embed_full_content", True), default=True) != embed_full_rule:
+            row["metadata_embed_full_content"] = embed_full_rule
+            changed = True
+
+        metadata_key = _metadata_key_for_row(row)
+        if metadata_key and str(row.get("metadata_key", "")).strip() != metadata_key:
+            row["metadata_key"] = metadata_key
+            changed = True
 
         image_url = str(row.get("image_url", "")).strip() or profile_image_url
         row_sha = str(row.get("image_sha256", "")).strip()
@@ -4383,35 +4992,40 @@ def build_metadata_queue(output_root: Path) -> Dict[str, Any]:
         if changed:
             refreshed += 1
 
+        if metadata_key and metadata_key in existing_keys:
+            continue
         queue_rows.append(row)
-        existing_details.add(detail_url)
+        if metadata_key:
+            existing_keys.add(metadata_key)
 
     added = 0
     for profile in profiles:
-        detail_url = str(profile.get("detail_url", "")).strip()
-        if not detail_url or detail_url in existing_details:
-            continue
-        image_url = str(profile.get("image_url", "")).strip()
-        sha = str(url_index.get(image_url, "")).strip()
-        local_path = norm_abs_path(str(sha_index.get(sha, ""))) if sha else ""
-        resolved_sha, resolved_path, _ = _resolve_metadata_source_path(
-            detail_url=detail_url,
-            image_url=image_url,
-            image_sha=sha,
-            row_local_path=local_path,
-            url_index=url_index,
-            sha_index=sha_index,
-            manifest_by_detail=manifest_by_detail,
-            manifest_by_image=manifest_by_image,
-        )
-        row = build_metadata_queue_row_from_profile(
-            profile,
-            resolved_sha or sha,
-            resolved_path or local_path,
-        )
-        queue_rows.append(row)
-        existing_details.add(detail_url)
-        added += 1
+        for expanded_profile in _iter_profile_download_rows(profile, rules):
+            metadata_key = _metadata_key_for_row(expanded_profile)
+            if not metadata_key or metadata_key in existing_keys:
+                continue
+            detail_url = str(expanded_profile.get("detail_url", "")).strip()
+            image_url = str(expanded_profile.get("image_url", "")).strip()
+            sha = str(url_index.get(image_url, "")).strip()
+            local_path = norm_abs_path(str(sha_index.get(sha, ""))) if sha else ""
+            resolved_sha, resolved_path, _ = _resolve_metadata_source_path(
+                detail_url=detail_url,
+                image_url=image_url,
+                image_sha=sha,
+                row_local_path=local_path,
+                url_index=url_index,
+                sha_index=sha_index,
+                manifest_by_detail=manifest_by_detail,
+                manifest_by_image=manifest_by_image,
+            )
+            row = build_metadata_queue_row_from_profile(
+                expanded_profile,
+                resolved_sha or sha,
+                resolved_path or local_path,
+            )
+            queue_rows.append(row)
+            existing_keys.add(metadata_key)
+            added += 1
 
     write_jsonl(queue_path, queue_rows)
 
@@ -4508,6 +5122,7 @@ def write_metadata_for_downloads(output_root: Path, config: Dict[str, Any]) -> D
             reserved_paths.add(str(existing_path.resolve()))
 
     detail_to_final_path: Dict[str, str] = {}
+    image_to_final_path: Dict[str, str] = {}
     url_index_path = output_root / "state" / "image_url_index.json"
     sha_index_path = output_root / "state" / "image_sha_index.json"
     url_index_raw = load_json(url_index_path, {})
@@ -4547,13 +5162,15 @@ def write_metadata_for_downloads(output_root: Path, config: Dict[str, Any]) -> D
         wait_if_manual_paused(output_root, stage="metadata:write")
         totals["rows_seen"] += 1
         detail_url = str(row.get("detail_url", "")).strip()
+        metadata_key = _metadata_key_for_row(row)
         row_name = _display_person_name(row.get("name", ""), detail_url)
-        last_status = str(latest_status_map.get(detail_url, "")).strip().lower() if detail_url else ""
+        last_status = str(latest_status_map.get(metadata_key, "")).strip().lower() if metadata_key else ""
         runtime_log(
             "STEP",
             f"正在写入{row_name}的元数据",
             idx=totals["rows_seen"],
             detail=detail_url,
+            key=metadata_key,
             person=row_name,
             retry_previous_fail=(last_status not in {"", "ok"}),
         )
@@ -4593,7 +5210,12 @@ def write_metadata_for_downloads(output_root: Path, config: Dict[str, Any]) -> D
                 {
                     "scraped_at": utc_now_iso(),
                     "reason": "metadata_missing_local_image_path",
+                    "metadata_key": metadata_key,
                     "detail_url": detail_url,
+                    "image_url": image_url,
+                    "image_role": normalize_optional_field(row.get("image_role", "")),
+                    "image_index": row.get("image_index", ""),
+                    "image_total": row.get("image_total", ""),
                     "candidates": local_path_candidates,
                 },
             )
@@ -4601,7 +5223,12 @@ def write_metadata_for_downloads(output_root: Path, config: Dict[str, Any]) -> D
                 results_path,
                 {
                     "processed_at": utc_now_iso(),
+                    "metadata_key": metadata_key,
                     "detail_url": detail_url,
+                    "image_url": image_url,
+                    "image_role": normalize_optional_field(row.get("image_role", "")),
+                    "image_index": row.get("image_index", ""),
+                    "image_total": row.get("image_total", ""),
                     "name": row_name,
                     "status": "fail",
                     "error": "metadata_missing_local_image_path",
@@ -4627,6 +5254,7 @@ def write_metadata_for_downloads(output_root: Path, config: Dict[str, Any]) -> D
             review_path=review_path,
             results_path=results_path,
             detail_to_final_path=detail_to_final_path,
+            image_to_final_path=image_to_final_path,
             sha_runtime_path=sha_runtime_path,
             llm_enricher=llm_enricher,
             max_attempts=metadata_write_retries,
@@ -4665,12 +5293,16 @@ def write_metadata_for_downloads(output_root: Path, config: Dict[str, Any]) -> D
         save_json(sha_index_path, sha_runtime_path)
 
     # Keep original saved_path, add named_path for consumer use.
-    if downloads_manifest_path.exists() and detail_to_final_path:
+    if downloads_manifest_path.exists() and (detail_to_final_path or image_to_final_path):
         manifest_rows = list(iter_jsonl(downloads_manifest_path))
         changed = False
         for item in manifest_rows:
             detail = str(item.get("detail_url", "")).strip()
-            if detail and detail in detail_to_final_path:
+            image = str(item.get("image_url", "")).strip()
+            if image and image in image_to_final_path:
+                item["named_path"] = image_to_final_path[image]
+                changed = True
+            elif detail and detail in detail_to_final_path:
                 item["named_path"] = detail_to_final_path[detail]
                 changed = True
         if changed:
@@ -4982,9 +5614,10 @@ def write_delivery_record(output_root: Path, config: Dict[str, Any], reconcile_r
     metadata_audit_path = output_root / "reports" / "metadata_audit_report.json"
     download_manifest_path = output_root / "downloads" / "image_downloads.jsonl"
     images: List[Dict[str, Any]] = []
+    metadata_queue_rows = list(iter_jsonl(queue_path)) if queue_path.exists() else []
 
-    if queue_path.exists():
-        for row in iter_jsonl(queue_path):
+    if metadata_queue_rows:
+        for row in metadata_queue_rows:
             local_path = norm_abs_path(str(row.get("local_image_path", "")))
             if not local_path:
                 continue
@@ -4999,6 +5632,12 @@ def write_delivery_record(output_root: Path, config: Dict[str, Any], reconcile_r
                 "detail_url": str(row.get("detail_url", "")).strip(),
                 "source_url": str(row.get("source_url", "")).strip(),
                 "image_url": str(row.get("image_url", "")).strip(),
+                "metadata_key": _metadata_key_for_row(row),
+                "image_role": normalize_optional_field(row.get("image_role", "")),
+                "image_index": row.get("image_index", ""),
+                "image_total": row.get("image_total", ""),
+                "summary": _normalize_multiline_text(row.get("summary", "")),
+                "full_content": _normalize_multiline_text(row.get("full_content", "")),
             }
             images.append(item)
 
@@ -5064,6 +5703,7 @@ def write_delivery_record(output_root: Path, config: Dict[str, Any], reconcile_r
         },
         "trace": {
             "download_manifest": download_manifest,
+            "metadata_queue": metadata_queue_rows,
             "metadata_write_results": metadata_results,
             "metadata_audit": metadata_audit if isinstance(metadata_audit, dict) else {},
             "review_queue": review_items,
@@ -5333,39 +5973,52 @@ def main() -> int:
     inline_metadata_done = False
     retry_failed_first = bool(rules.get("retry_failed_first", True))
 
+    def _expected_metadata_rows() -> int:
+        profiles_path = output_root / "raw" / "profiles.jsonl"
+        total = 0
+        for profile in iter_jsonl(profiles_path):
+            if not isinstance(profile, dict):
+                continue
+            expanded = list(_iter_profile_download_rows(profile, rules))
+            if expanded:
+                total += len([row for row in expanded if str(row.get("image_url", "")).strip()])
+            elif str(profile.get("image_url", "")).strip():
+                total += 1
+        return total
+
     def _metadata_queue_has_pending_retry() -> bool:
         queue_path = output_root / "raw" / "metadata_queue.jsonl"
         if not queue_path.exists():
             return False
 
-        queue_details: set[str] = set()
+        queue_keys: set[str] = set()
         for row in iter_jsonl(queue_path):
-            detail_url = str(row.get("detail_url", "")).strip()
-            if detail_url:
-                queue_details.add(detail_url)
-        if not queue_details:
+            metadata_key = _metadata_key_for_row(row)
+            if metadata_key:
+                queue_keys.add(metadata_key)
+        if not queue_keys:
             return False
 
         results_path = output_root / "raw" / "metadata_write_results.jsonl"
         latest_status: Dict[str, str] = {}
         if results_path.exists():
             for row in iter_jsonl(results_path):
-                detail_url = str(row.get("detail_url", "")).strip()
-                if not detail_url:
+                metadata_key = _metadata_key_for_row(row)
+                if not metadata_key:
                     continue
-                latest_status[detail_url] = str(row.get("status", "")).strip().lower()
+                latest_status[metadata_key] = str(row.get("status", "")).strip().lower()
 
-        for detail_url in queue_details:
-            if latest_status.get(detail_url, "") != "ok":
+        for metadata_key in queue_keys:
+            if latest_status.get(metadata_key, "") != "ok":
                 return True
         return False
 
     def _inline_metadata_fully_synced() -> bool:
-        profile_rows = count_jsonl(output_root / "raw" / "profiles.jsonl")
-        if profile_rows <= 0:
+        expected_rows = _expected_metadata_rows()
+        if expected_rows <= 0:
             return False
         queue_rows = count_jsonl(output_root / "raw" / "metadata_queue.jsonl")
-        if queue_rows < profile_rows:
+        if queue_rows < expected_rows:
             return False
         if _metadata_queue_has_pending_retry():
             return False
@@ -5374,11 +6027,11 @@ def main() -> int:
     def _metadata_pre_retry_needed() -> bool:
         if args.skip_metadata:
             return False
-        profile_rows = count_jsonl(output_root / "raw" / "profiles.jsonl")
-        if profile_rows <= 0:
+        expected_rows = _expected_metadata_rows()
+        if expected_rows <= 0:
             return False
         queue_rows = count_jsonl(output_root / "raw" / "metadata_queue.jsonl")
-        if queue_rows < profile_rows:
+        if queue_rows < expected_rows:
             return True
         if _metadata_queue_has_pending_retry():
             return True
@@ -5394,9 +6047,10 @@ def main() -> int:
         url_index: Dict[str, str] = {}
         sha_index: Dict[str, str] = {}
         manifest_by_detail: Dict[str, Dict[str, str]] = {}
+        manifest_by_image: Dict[str, Dict[str, str]] = {}
         if direct_write_images:
             downloads_manifest_path = output_root / "downloads" / "image_downloads.jsonl"
-            manifest_by_detail, _ = _load_download_manifest_lookups(downloads_manifest_path)
+            manifest_by_detail, manifest_by_image = _load_download_manifest_lookups(downloads_manifest_path)
         else:
             url_index_raw = load_json(url_index_path, {})
             sha_index_raw = load_json(sha_index_path, {})
@@ -5414,32 +6068,38 @@ def main() -> int:
         missing_url_index = 0
         stale_cache = 0
         for profile in iter_jsonl(profiles_path):
-            image_url = str(profile.get("image_url", "")).strip()
-            if not image_url:
+            if not isinstance(profile, dict):
                 continue
-            profiles_with_image += 1
-            if direct_write_images:
-                detail_url = str(profile.get("detail_url", "")).strip()
-                entry = manifest_by_detail.get(detail_url, {}) if detail_url else {}
-                cached_path = norm_abs_path(str(entry.get("path", "")))
-                if not cached_path:
+            for expanded_profile in _iter_profile_download_rows(profile, rules):
+                image_url = str(expanded_profile.get("image_url", "")).strip()
+                if not image_url:
+                    continue
+                profiles_with_image += 1
+                if direct_write_images:
+                    detail_url = str(expanded_profile.get("detail_url", "")).strip()
+                    image_multi = _metadata_row_has_multiple_images(expanded_profile)
+                    entry = manifest_by_image.get(image_url, {}) if image_multi else {}
+                    if not entry and detail_url:
+                        entry = manifest_by_detail.get(detail_url, {})
+                    cached_path = norm_abs_path(str(entry.get("path", "")))
+                    if not cached_path:
+                        pending_images += 1
+                        missing_url_index += 1
+                        continue
+                    if not _is_usable_cached_image(cached_path):
+                        pending_images += 1
+                        stale_cache += 1
+                    continue
+
+                image_sha = str(url_index.get(image_url, "")).strip()
+                if not image_sha:
                     pending_images += 1
                     missing_url_index += 1
                     continue
+                cached_path = norm_abs_path(str(sha_index.get(image_sha, "")))
                 if not _is_usable_cached_image(cached_path):
                     pending_images += 1
                     stale_cache += 1
-                continue
-
-            image_sha = str(url_index.get(image_url, "")).strip()
-            if not image_sha:
-                pending_images += 1
-                missing_url_index += 1
-                continue
-            cached_path = norm_abs_path(str(sha_index.get(image_sha, "")))
-            if not _is_usable_cached_image(cached_path):
-                pending_images += 1
-                stale_cache += 1
 
         review_image_failures = 0
         for item in iter_jsonl(review_path):
@@ -5464,7 +6124,7 @@ def main() -> int:
             "metadata pre-retry start (retry failed first)",
             queue=queue_before_retry,
         )
-        build_metadata_queue(output_root)
+        build_metadata_queue(output_root, active_config)
         queue_after_retry_build = count_jsonl(output_root / "raw" / "metadata_queue.jsonl")
         _log(
             "STAT",
@@ -5681,7 +6341,7 @@ def main() -> int:
         counts_before_meta = _counts_snapshot()
         queue_before = count_jsonl(output_root / "raw" / "metadata_queue.jsonl")
         _log("STAGE", "metadata stage start", queue=queue_before, skip_write=args.skip_metadata)
-        build_metadata_queue(output_root)
+        build_metadata_queue(output_root, active_config)
         queue_after_build = count_jsonl(output_root / "raw" / "metadata_queue.jsonl")
         _log("STAT", "metadata queue built", queue=queue_after_build, added=max(0, queue_after_build - queue_before))
         if not args.skip_metadata:

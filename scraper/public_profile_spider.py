@@ -18,10 +18,30 @@ def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
 
+def _strip_html_markup(value: Any) -> str:
+    text = str(value or "")
+    if not text:
+        return ""
+    if "<" in text and ">" in text:
+        text = re.sub(r"(?is)<script[^>]*>.*?</script>", " ", text)
+        text = re.sub(r"(?is)<style[^>]*>.*?</style>", " ", text)
+        text = re.sub(r"<[^>]+>", " ", text)
+        text = (
+            text.replace("&nbsp;", " ")
+            .replace("&#160;", " ")
+            .replace("&amp;", "&")
+            .replace("&lt;", "<")
+            .replace("&gt;", ">")
+            .replace("&quot;", '"')
+            .replace("&#39;", "'")
+        )
+    return text
+
+
 def _normalize_text(value: Optional[str]) -> str:
     if not value:
         return ""
-    text = " ".join(str(value).split()).strip()
+    text = " ".join(_strip_html_markup(value).split()).strip()
     if not text:
         return ""
     if re.search(r"[\u4e00-\u9fff]", text):
@@ -38,8 +58,94 @@ def _normalize_text(value: Optional[str]) -> str:
     return text
 
 
+def _is_usable_person_name(name: Any) -> bool:
+    text = _normalize_text(str(name or ""))
+    if not text:
+        return False
+    lowered = text.lower()
+    if "<title" in lowered or "</title>" in lowered:
+        return False
+    if re.search(r"\u4e2a\u4eba\u7b80\u5386|\u5e02\u653f\u5e9c\u9886\u5bfc|\u4eba\u6c11\u653f\u5e9c$|\u9996\u9875|\u7f51\u7ad9\u5730\u56fe|\u5173\u4e8e\u672c\u7ad9", text):
+        return False
+    compact = re.sub(r"\s+", "", text)
+    if re.fullmatch(r"[\u4e00-\u9fff]{2,4}", compact):
+        return True
+    m = re.search(r"([\u4e00-\u9fff]{2,4})\s*$", text)
+    if m and not re.search(r"\u7b80\u5386|\u804c\u52a1|\u9886\u5bfc|\u804c\u8d23", m.group(1)):
+        return True
+    if 2 <= len(compact) <= 16 and re.search(r"[\u4e00-\u9fff]{2,}", compact):
+        if not re.search(r"\u7b80\u5386|\u804c\u52a1|\u7f51\u7ad9|\u9996\u9875|\u90e8\u95e8", compact):
+            return True
+    return False
+
+
+def _extract_person_name_token(value: Any) -> str:
+    text = _normalize_text(str(value or ""))
+    if not text:
+        return ""
+    m = re.search(
+        r"(?:\u4ee3\u7406\u5e02\u957f|\u5e38\u52a1\u526f\u5e02\u957f|\u526f\u5e02\u957f|\u5e02\u957f|\u4e66\u8bb0|\u4e3b\u4efb|\u5c40\u957f|\u59d4\u5458)[\uff1a:\s]*"
+        r"([\u4e00-\u9fff](?:\s*[\u4e00-\u9fff]){1,3})\s*$",
+        text,
+    )
+    if m:
+        return re.sub(r"\s+", "", m.group(1))
+    compact = re.sub(r"\s+", "", text)
+    if re.fullmatch(r"[\u4e00-\u9fff]{2,4}", compact):
+        return compact
+    if _is_usable_person_name(text):
+        trailing = re.search(r"([\u4e00-\u9fff]{2,4})\s*$", compact)
+        if trailing and not re.search(r"\u7b80\u5386|\u804c\u52a1|\u9886\u5bfc|\u804c\u8d23", trailing.group(1)):
+            return trailing.group(1)
+        return text
+    return ""
+
+
+def _prefer_person_name(detail_name: Any, seed_name: Any) -> str:
+    detail = _normalize_text(str(detail_name or ""))
+    seed = _normalize_text(str(seed_name or ""))
+    detail_token = _extract_person_name_token(detail)
+    if detail_token:
+        return detail_token
+    seed_token = _extract_person_name_token(seed)
+    if seed_token:
+        return seed_token
+    return detail or seed
+
+
+_TRS_CSS_RULE_RE = re.compile(r"\.TRS_Editor\s+[A-Za-z0-9_-]+\s*\{[^{}]*\}", re.IGNORECASE)
+
+
+def _strip_embedded_style_text(value: Any) -> str:
+    text = str(value or "")
+    if not text:
+        return ""
+    text = _TRS_CSS_RULE_RE.sub("", text)
+    cleaned_lines: List[str] = []
+    for raw_line in text.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        line = str(raw_line or "").strip()
+        lowered = line.lower()
+        if (
+            ("font-family:" in lowered or "line-height:" in lowered or "font-size:" in lowered)
+            and "{" in line
+            and "}" in line
+        ):
+            continue
+        cleaned_lines.append(raw_line)
+    return "\n".join(cleaned_lines)
+
+
+def _strip_invalid_xml_chars(value: Any) -> str:
+    out: List[str] = []
+    for ch in str(value or ""):
+        code = ord(ch)
+        if code in {0x9, 0xA, 0xD} or 0x20 <= code <= 0xD7FF or 0xE000 <= code <= 0xFFFD or 0x10000 <= code <= 0x10FFFF:
+            out.append(ch)
+    return "".join(out)
+
+
 def _normalize_multiline_text(value: Optional[str]) -> str:
-    text = str(value or "").replace("\r\n", "\n").replace("\r", "\n")
+    text = _strip_invalid_xml_chars(_strip_embedded_style_text(value)).replace("\r\n", "\n").replace("\r", "\n")
     if not text:
         return ""
     lines: List[str] = []
@@ -136,6 +242,19 @@ def _ensure_list(value: Any) -> List[str]:
     return [str(value)]
 
 
+def _normalize_gender_filter_values(value: Any) -> set[str]:
+    return {gender for gender in (_normalize_gender(v) for v in _ensure_list(value)) if gender}
+
+
+def _is_gender_allowed(gender: Any, allowed_genders: set[str], skip_unknown_gender: bool) -> bool:
+    if not allowed_genders:
+        return True
+    normalized = _normalize_gender(gender)
+    if not normalized:
+        return not skip_unknown_gender
+    return normalized in allowed_genders
+
+
 def _count_jsonl(path: Path) -> int:
     if not path.exists():
         return 0
@@ -170,6 +289,7 @@ class PublicProfileSpider(scrapy.Spider):
         self.profile_path = self.raw_dir / "profiles.jsonl"
         self.review_path = self.raw_dir / "review_queue.jsonl"
         self.failures_path = self.raw_dir / "failures.jsonl"
+        self.gender_skips_path = self.raw_dir / "gender_skips.jsonl"
 
         self.snapshot_html = bool(self.rules.get("snapshot_html", True))
         self.blocked_statuses = {
@@ -188,6 +308,10 @@ class PublicProfileSpider(scrapy.Spider):
             self.rules.get("required_fields", ["name", "detail_url", "image_url"])
         )
         self.default_gender = _normalize_gender(self.rules.get("default_gender", ""))
+        self.allowed_genders = _normalize_gender_filter_values(self.rules.get("allowed_genders", []))
+        self.skip_unknown_gender = bool(self.rules.get("skip_unknown_gender", False))
+        infer_gender_raw = self.rules.get("infer_gender_from_text", True)
+        self.infer_gender_from_text = str(infer_gender_raw).strip().lower() not in {"0", "false", "no", "off"}
         self.field_map = self._resolve_field_map()
         self.gender_map: Dict[str, str] = {}
         for k, v in dict(self.rules.get("gender_map", {})).items():
@@ -205,6 +329,7 @@ class PublicProfileSpider(scrapy.Spider):
             "detail_requests_enqueued": 0,
             "detail_pages_saved": 0,
             "detail_duplicates_skipped": 0,
+            "gender_filtered_skipped": 0,
             "missing_required_items": 0,
             "failures": 0,
         }
@@ -344,9 +469,26 @@ class PublicProfileSpider(scrapy.Spider):
 
         detail_name = self._extract_first(detail_source, self.selectors.get("detail_name"))
         seed_name = _normalize_text(str(response.meta.get("seed_name", "")))
-        name = detail_name or seed_name
+        name = _prefer_person_name(detail_name, seed_name)
         image_url_raw = self._extract_first(detail_source, self.selectors.get("detail_image"))
         image_url = response.urljoin(image_url_raw) if image_url_raw else ""
+        image_urls: List[str] = []
+        multi_images_enabled = str(self.rules.get("download_all_detail_images", False)).strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        if multi_images_enabled:
+            detail_images_spec = self.selectors.get("detail_images") or self.selectors.get("detail_image")
+            for raw_image in self._extract_all(detail_source, detail_images_spec):
+                absolute_image = response.urljoin(raw_image)
+                if absolute_image and absolute_image not in image_urls:
+                    image_urls.append(absolute_image)
+            if image_url and image_url not in image_urls:
+                image_urls.insert(0, image_url)
+            if (not image_url) and image_urls:
+                image_url = image_urls[0]
         gender_text = self._extract_first(detail_source, self.selectors.get("detail_gender"))
         gender_lookup = _normalize_text(gender_text)
         mapped_gender = self.gender_map.get(gender_text)
@@ -381,15 +523,15 @@ class PublicProfileSpider(scrapy.Spider):
             if value:
                 merged_fields[key] = value
 
-        if not gender:
+        if (not gender) and self.infer_gender_from_text:
             gender = _infer_gender_from_texts(
                 gender_text,
                 summary,
                 full_content,
                 " ".join(str(v) for v in merged_fields.values()),
             )
-            if not gender:
-                gender = self.default_gender
+        if not gender:
+            gender = self.default_gender
 
         mapped_fields = self._apply_field_map(
             name=name,
@@ -421,6 +563,8 @@ class PublicProfileSpider(scrapy.Spider):
                     continue
                 image_url = response.urljoin(fallback_raw)
                 break
+        if image_url and image_url not in image_urls:
+            image_urls.insert(0, image_url)
 
         record = {
             "scraped_at": _utc_now_iso(),
@@ -428,6 +572,9 @@ class PublicProfileSpider(scrapy.Spider):
             "detail_url": response.url,
             "list_url": str(response.meta.get("list_url", "")),
             "image_url": image_url,
+            "image_urls": image_urls,
+            "metadata_embed_full_content": str(self.rules.get("metadata_embed_full_content", True)).strip().lower()
+            in {"1", "true", "yes", "on"},
             "gender": gender,
             "gender_raw": gender_text,
             "summary": summary,
@@ -435,6 +582,19 @@ class PublicProfileSpider(scrapy.Spider):
             "fields": merged_fields,
             "mapped": mapped_fields,
         }
+        if not _is_gender_allowed(gender, self.allowed_genders, self.skip_unknown_gender):
+            self.metrics["gender_filtered_skipped"] += 1
+            self._append_jsonl(
+                self.gender_skips_path,
+                {
+                    "scraped_at": _utc_now_iso(),
+                    "reason": "gender_filtered",
+                    "allowed_genders": sorted(self.allowed_genders),
+                    "skip_unknown_gender": self.skip_unknown_gender,
+                    "record": record,
+                },
+            )
+            return
         self._append_jsonl(self.profile_path, record)
         self.metrics["detail_pages_saved"] += 1
 
@@ -642,6 +802,18 @@ class PublicProfileSpider(scrapy.Spider):
                 if normalized:
                     return normalized
         return ""
+
+    def _extract_all(self, selector_source: Any, selector_spec: Any) -> List[str]:
+        values: List[str] = []
+        seen: set[str] = set()
+        for selector in _ensure_list(selector_spec):
+            for value in self._select_values(selector_source, selector):
+                normalized = _normalize_text(value)
+                if not normalized or normalized in seen:
+                    continue
+                seen.add(normalized)
+                values.append(normalized)
+        return values
 
     def _extract_joined_text(self, selector_source: Any, selector_spec: Any) -> str:
         values: List[str] = []

@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>D2I Cloud · 结果库</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand-block">
+        <div class="brand-mark">D2I</div>
+        <div>
+          <div class="brand-title">D2I Cloud</div>
+          <div class="brand-sub">采集控制台</div>
+        </div>
+      </div>
+
+      <nav class="side-nav">
+        <a class="nav-item" href="/">
+          <span class="nav-ico">▣</span>
+          队列运行中心
+        </a>
+        <a class="nav-item" href="/coverage">
+          <span class="nav-ico">◈</span>
+          覆盖图谱
+        </a>
+        <a class="nav-item active" href="/library">
+          <span class="nav-ico">▦</span>
+          结果库
+        </a>
+        <a class="nav-item disabled" title="后续版本">
+          <span class="nav-ico">◎</span>
+          模板经验
+        </a>
+        <a class="nav-item disabled" title="后续版本">
+          <span class="nav-ico">⚙</span>
+          设置与连接
+        </a>
+      </nav>
+
+      <div class="side-foot">
+        <div class="conn-row">
+          <span id="connDot" class="dot"></span>
+          <span id="connText">连接中…</span>
+        </div>
+        <button type="button" id="btnToken" class="linkish">API Token</button>
+      </div>
+    </aside>
+
+    <div class="main-column">
+      <header class="page-header">
+        <div>
+          <div class="eyebrow">Result Library</div>
+          <h1>结果库</h1>
+          <p class="page-sub">跨队列浏览已落盘结果；预览复用队列条目接口，不扫整库肖像盘。</p>
+        </div>
+        <div class="header-actions">
+          <button type="button" id="btnRefresh" class="btn">刷新</button>
+        </div>
+      </header>
+
+      <section class="overview-strip" id="overviewStrip">
+        <article class="stat-card">
+          <div class="stat-label">条目总数</div>
+          <div class="stat-value" id="statTotal">0</div>
+        </article>
+        <article class="stat-card">
+          <div class="stat-label">可预览</div>
+          <div class="stat-value accent" id="statPreviewable">0</div>
+        </article>
+        <article class="stat-card">
+          <div class="stat-label">参与队列</div>
+          <div class="stat-value" id="statQueues">0</div>
+        </article>
+        <article class="stat-card">
+          <div class="stat-label">当前页</div>
+          <div class="stat-value sm" id="statPage">—</div>
+        </article>
+      </section>
+
+      <section class="workspace library-workspace">
+        <div class="queue-column library-filters">
+          <div class="section-bar">
+            <h2>筛选</h2>
+          </div>
+          <div class="card library-filter-card">
+            <label class="field">
+              <span>关键词</span>
+              <input id="searchInput" type="search" placeholder="姓名 / 路径 / 队列 / URL" />
+            </label>
+            <label class="field">
+              <span>队列</span>
+              <select id="queueFilter">
+                <option value="">全部队列</option>
+              </select>
+            </label>
+            <div class="field">
+              <span>状态</span>
+              <div class="filter-pills" id="statusPills">
+                <button type="button" class="pill active" data-status="all">全部</button>
+                <button type="button" class="pill" data-status="image">有图</button>
+                <button type="button" class="pill" data-status="done">完成</button>
+                <button type="button" class="pill" data-status="pending">未完成</button>
+              </div>
+            </div>
+            <div class="library-filter-actions">
+              <button type="button" class="btn primary" id="btnApplyFilters">应用筛选</button>
+              <button type="button" class="btn ghost" id="btnResetFilters">重置</button>
+            </div>
+            <p class="muted-hint" id="filterHint">默认优先展示有图结果。</p>
+            <div class="library-queue-list" id="queueSummary"></div>
+          </div>
+        </div>
+
+        <div class="detail-column library-main">
+          <div class="card results-card library-results-card">
+            <div class="card-head results-head">
+              <div>
+                <h3>跨队列结果</h3>
+                <span class="muted" id="itemsHint">加载中…</span>
+              </div>
+              <div class="results-toolbar">
+                <button type="button" class="btn ghost sm" id="btnPrevPage" disabled>上一页</button>
+                <button type="button" class="btn ghost sm" id="btnNextPage" disabled>下一页</button>
+              </div>
+            </div>
+            <div class="results-layout">
+              <div class="item-grid" id="itemGrid">
+                <div class="empty-state" style="grid-column:1/-1">正在加载结果库…</div>
+              </div>
+              <aside class="item-side" id="itemSide">
+                <div class="item-side-empty" id="itemSideEmpty">
+                  <div class="empty-illustration sm">▦</div>
+                  <h4>选择一张结果</h4>
+                  <p>查看所属队列、落盘路径、状态与来源页。</p>
+                </div>
+                <div class="item-side-body" id="itemSideBody" hidden>
+                  <div class="item-side-preview-wrap">
+                    <img id="itemSidePreview" alt="预览" hidden />
+                    <div class="item-side-preview-fallback" id="itemSideFallback">无本地预览</div>
+                  </div>
+                  <h4 id="itemSideName">—</h4>
+                  <div class="item-side-tags" id="itemSideTags"></div>
+                  <dl class="meta-grid compact" id="itemSideMeta"></dl>
+                  <div class="item-side-actions">
+                    <button type="button" class="btn sm" id="btnOpenLightbox" disabled>放大查看</button>
+                    <a class="btn sm ghost" id="itemSideQueue" href="#" hidden>打开队列</a>
+                    <a class="btn sm ghost" id="itemSideSource" href="#" target="_blank" rel="noopener" hidden>来源页</a>
+                  </div>
+                </div>
+              </aside>
+            </div>
+          </div>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <dialog id="tokenDialog" class="sheet narrow">
+    <form method="dialog" class="sheet-body">
+      <div class="sheet-head">
+        <div>
+          <div class="eyebrow">Security</div>
+          <h3>API Token</h3>
+        </div>
+      </div>
+      <p class="help">对应环境变量 <code>D2I_WEB_TOKEN</code>。也可通过一次链接 <code>?token=...</code> 自动写入（写入后会从地址栏清除）。</p>
+      <label class="field">
+        <span>Bearer Token</span>
+        <input id="tokenInput" type="password" placeholder="粘贴 token" autocomplete="off" />
+      </label>
+      <p id="tokenMsg" class="form-msg"></p>
+      <div class="sheet-foot">
+        <button value="cancel" class="btn">取消</button>
+        <button value="save" class="btn primary">保存</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="lightboxDialog" class="lightbox">
+    <div class="lightbox-shell">
+      <div class="lightbox-top">
+        <div>
+          <div class="eyebrow">Preview</div>
+          <h3 id="lightboxTitle">—</h3>
+        </div>
+        <div class="lightbox-actions">
+          <button type="button" class="btn ghost sm" id="btnLightboxPrev">上一张</button>
+          <button type="button" class="btn ghost sm" id="btnLightboxNext">下一张</button>
+          <button type="button" class="icon-btn" id="btnLightboxClose" aria-label="关闭">×</button>
+        </div>
+      </div>
+      <div class="lightbox-stage">
+        <img id="lightboxImage" alt="大图预览" />
+        <div class="lightbox-empty" id="lightboxEmpty" hidden>当前项没有可预览的本地图片。</div>
+      </div>
+      <p class="lightbox-meta" id="lightboxMeta">—</p>
+    </div>
+  </dialog>
+
+  <div id="toast" class="toast" hidden></div>
+  <script src="/static/library.js"></script>
+</body>
+</html>

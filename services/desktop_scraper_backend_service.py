@@ -10,7 +10,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
-from services.scraper_monitor_service import extract_scraper_live_actions, read_text_tail
+from services.scraper_monitor_service import extract_scraper_live_actions, read_jsonl_rows, read_text_tail, write_jsonl_rows
 from services.runtime_service import build_utf8_subprocess_env, resolve_python_cli_executable
 from services.settings_service import load_app_settings
 from services.task_orchestration_service import (
@@ -53,6 +53,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 APP_FILE = str(PROJECT_ROOT / "app.py")
 BACKEND_PROVIDER = "python-cli"
 BACKEND_VERSION = "scraper-backend-v2"
+# Legacy default under project root; may be read-only in Cloud containers.
 REGISTRY_PATH = PROJECT_ROOT / ".tmp" / "desktop-next" / "scraper-runtime-registry.json"
 RUNNING_LIKE_STATES = {"运行中", "继续运行中", "失败重试中", "元数据重写中"}
 CONTROL_DEFAULTS = {
@@ -127,8 +128,17 @@ def _registry_default_payload() -> Dict[str, Any]:
 
 
 def _registry_path() -> Path:
-    REGISTRY_PATH.parent.mkdir(parents=True, exist_ok=True)
-    return REGISTRY_PATH
+    override = str(os.environ.get("D2I_SCRAPER_REGISTRY_PATH", "") or "").strip()
+    if override:
+        path = Path(override).expanduser()
+    else:
+        data_root = str(os.environ.get("D2I_CLOUD_DATA_ROOT", "") or "").strip()
+        if data_root:
+            path = Path(data_root).expanduser() / "desktop-next" / "scraper-runtime-registry.json"
+        else:
+            path = REGISTRY_PATH
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
 
 
 def _normalize_registry_entry(entry: Any) -> Dict[str, Any]:
@@ -269,6 +279,53 @@ def _serialize_progress_rows(rows: Iterable[Dict[str, Any]]) -> List[Dict[str, s
                 "reason": str(row.get("reason", "") or "").strip(),
                 "detail_url": str(row.get("detail_url", "") or "").strip(),
                 "image_path": str(row.get("image_path", "") or "").strip(),
+            }
+        )
+    return output
+
+
+def _review_row_detail_url(row: Dict[str, Any]) -> str:
+    detail = str(row.get("detail_url", "") or "").strip()
+    if detail:
+        return detail
+    record = row.get("record")
+    if isinstance(record, dict):
+        return str(record.get("detail_url", "") or "").strip()
+    return ""
+
+
+def _serialize_review_rows(root: str, progress_rows: Iterable[Dict[str, Any]], limit: int = 120) -> List[Dict[str, Any]]:
+    review_path = os.path.join(root, "raw", "review_queue.jsonl")
+    rows = read_jsonl_rows(review_path, max_rows=max(1, int(limit or 120)))
+    progress_by_detail: Dict[str, Dict[str, Any]] = {}
+    for item in list(progress_rows or []):
+        if not isinstance(item, dict):
+            continue
+        detail = str(item.get("detail_url", "") or "").strip()
+        if detail:
+            progress_by_detail[detail] = item
+
+    output: List[Dict[str, Any]] = []
+    for index, row in enumerate(rows, start=1):
+        if not isinstance(row, dict):
+            continue
+        detail = _review_row_detail_url(row)
+        record = row.get("record") if isinstance(row.get("record"), dict) else {}
+        progress = progress_by_detail.get(detail, {})
+        missing_raw = row.get("missing_fields")
+        missing_fields = [str(item or "").strip() for item in missing_raw] if isinstance(missing_raw, list) else []
+        output.append(
+            {
+                "idx": str(index),
+                "detail_url": detail,
+                "name": str(row.get("name", "") or record.get("name", "") or progress.get("name", "") or "").strip(),
+                "reason": str(row.get("reason", "") or progress.get("reason", "") or "").strip(),
+                "missing_fields": [item for item in missing_fields if item],
+                "scraped_at": str(row.get("scraped_at", "") or record.get("scraped_at", "") or "").strip(),
+                "image_path": str(row.get("image_path", "") or record.get("image_path", "") or progress.get("image_path", "") or "").strip(),
+                "detail": str(progress.get("detail", "") or "").strip(),
+                "image": str(progress.get("image", "") or "").strip(),
+                "meta": str(progress.get("meta", "") or "").strip(),
             }
         )
     return output
@@ -649,6 +706,7 @@ def build_scraper_workspace_payload(
             "metadata_rows": max(0, int(metadata_rows or 0)),
             "review_rows": max(0, int((selected_task or {}).get("review", 0) or 0)),
             "failure_rows": max(0, int((selected_task or {}).get("failures", 0) or 0)),
+            "review_queue": _serialize_review_rows(active_root, progress_rows, limit=120),
             "pending_rows": _serialize_progress_rows(pending_rows),
             "done_rows": _serialize_progress_rows(done_rows),
             "log_tail": str(log_tail or ""),
@@ -674,6 +732,40 @@ def build_scraper_workspace_payload(
         "selected_task": selected_task,
         "detail": detail,
         "control_defaults": build_control_defaults_payload(),
+    }
+
+
+def clear_scraper_review_item(
+    output_root: str,
+    detail_url: str,
+    *,
+    base_root: str = "",
+) -> Dict[str, Any]:
+    root = normalize_public_task_root(output_root)
+    detail = str(detail_url or "").strip()
+    if (not root) or (not os.path.isdir(root)):
+        raise RuntimeError("请先选择一个抓取任务。")
+    if not detail:
+        raise RuntimeError("缺少复核条目的详情链接。")
+
+    review_path = os.path.join(root, "raw", "review_queue.jsonl")
+    rows = read_jsonl_rows(review_path, max_rows=0)
+    kept: List[Dict[str, Any]] = []
+    removed = 0
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        if _review_row_detail_url(row) == detail:
+            removed += 1
+            continue
+        kept.append(row)
+    if removed > 0:
+        write_jsonl_rows(review_path, kept)
+
+    return {
+        "message": f"已移出复核队列：{removed} 条" if removed else "复核队列中没有匹配条目",
+        "removed": removed,
+        "workspace": build_scraper_workspace_payload(base_root or default_public_tasks_root(APP_FILE), selected_root=root),
     }
 
 

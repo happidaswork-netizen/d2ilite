@@ -1,0 +1,835 @@
+(() => {
+  const TOKEN_KEY = "d2i_cloud_token";
+  const state = {
+    queues: [],
+    templates: [],
+    selectedId: localStorage.getItem("d2i_cloud_selected_queue") || "",
+    filter: "all",
+    itemFilter: "all",
+    items: [],
+    itemsMeta: null,
+    selectedItemId: "",
+    objectUrls: [],
+    timer: null,
+  };
+
+  const $ = (id) => document.getElementById(id);
+
+  function token() {
+    return (localStorage.getItem(TOKEN_KEY) || "").trim();
+  }
+
+  function setToken(value) {
+    const next = String(value || "").trim();
+    if (next) localStorage.setItem(TOKEN_KEY, next);
+    else localStorage.removeItem(TOKEN_KEY);
+    return next;
+  }
+
+  // One-shot bootstrap: ?token= / #token= / ?access_token= then strip from URL.
+  function bootstrapTokenFromUrl() {
+    try {
+      const url = new URL(window.location.href);
+      const fromQuery =
+        url.searchParams.get("token") ||
+        url.searchParams.get("access_token") ||
+        url.searchParams.get("d2i_token") ||
+        "";
+      let fromHash = "";
+      if (url.hash && url.hash.length > 1) {
+        const hp = new URLSearchParams(url.hash.replace(/^#/, ""));
+        fromHash = hp.get("token") || hp.get("access_token") || hp.get("d2i_token") || "";
+      }
+      const boot = String(fromQuery || fromHash || "").trim();
+      if (!boot) return false;
+      setToken(boot);
+      url.searchParams.delete("token");
+      url.searchParams.delete("access_token");
+      url.searchParams.delete("d2i_token");
+      const cleanHash = new URLSearchParams(url.hash.replace(/^#/, ""));
+      cleanHash.delete("token");
+      cleanHash.delete("access_token");
+      cleanHash.delete("d2i_token");
+      const hashText = cleanHash.toString();
+      url.hash = hashText ? `#${hashText}` : "";
+      window.history.replaceState({}, document.title, url.pathname + url.search + url.hash);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  function authHeaders() {
+    const headers = { "Content-Type": "application/json" };
+    const t = token();
+    if (t) headers.Authorization = `Bearer ${t}`;
+    return headers;
+  }
+
+  async function api(path, options = {}) {
+    const res = await fetch(path, {
+      ...options,
+      headers: { ...authHeaders(), ...(options.headers || {}) },
+    });
+    const text = await res.text();
+    let body = null;
+    try {
+      body = text ? JSON.parse(text) : null;
+    } catch {
+      body = { raw: text };
+    }
+    if (!res.ok) {
+      const detail = body?.detail || body?.error || res.statusText || "request failed";
+      const err = new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
+      err.status = res.status;
+      throw err;
+    }
+    return body;
+  }
+
+  function escapeHtml(value) {
+    return String(value ?? "")
+      .replaceAll("&", "&amp;")
+      .replaceAll("<", "&lt;")
+      .replaceAll(">", "&gt;")
+      .replaceAll('"', "&quot;");
+  }
+
+  function fmtTime(ts) {
+    if (!ts) return "—";
+    const n = Number(ts);
+    if (!Number.isFinite(n) || n <= 0) return String(ts);
+    try {
+      return new Date(n * 1000).toLocaleString();
+    } catch {
+      return String(ts);
+    }
+  }
+
+  function statusLabel(status) {
+    const map = {
+      running: "运行中",
+      paused: "已暂停",
+      completed: "已完成",
+      cooldown: "冷却中",
+      created: "已创建",
+      idle: "空闲",
+      stopped: "已停止",
+      error: "异常",
+      cancelled: "已取消",
+    };
+    return map[status] || status || "未知";
+  }
+
+  function tierLabel(tier) {
+    const map = { safe: "安全", standard: "标准", turbo: "极速" };
+    const key = String(tier || "safe");
+    return `${map[key] || key} · ${key}`;
+  }
+
+  function toast(message) {
+    const el = $("toast");
+    el.hidden = false;
+    el.textContent = message;
+    clearTimeout(toast._t);
+    toast._t = setTimeout(() => {
+      el.hidden = true;
+    }, 2600);
+  }
+
+  function setConn(ok, text) {
+    const dot = $("connDot");
+    const label = $("connText");
+    dot.className = `dot ${ok ? "ok" : "bad"}`;
+    label.textContent = text;
+  }
+
+  function filteredQueues() {
+    if (state.filter === "all") return state.queues;
+    return state.queues.filter((q) => String(q.runtime?.status || "") === state.filter);
+  }
+
+  function progressRatio(q) {
+    const kpi = q.kpi || {};
+    const done = Number(kpi.completed || 0);
+    const total = Math.max(done, Number(kpi.discovered || 0), Number(kpi.profiles || 0), 1);
+    return Math.max(0, Math.min(100, Math.round((done / total) * 100)));
+  }
+
+  function renderQueues() {
+    const list = $("queueList");
+    const rows = filteredQueues();
+    if (!state.queues.length) {
+      list.innerHTML = `<div class="empty-state">还没有队列。点击右上角「新建队列」开始。</div>`;
+      return;
+    }
+    if (!rows.length) {
+      list.innerHTML = `<div class="empty-state">当前筛选下没有队列。</div>`;
+      return;
+    }
+    list.innerHTML = rows
+      .map((q) => {
+        const rt = q.runtime || {};
+        const kpi = q.kpi || {};
+        const active = q.id === state.selectedId ? "active" : "";
+        return `<article class="queue-card ${active}" data-id="${escapeHtml(q.id)}">
+          <div class="queue-card-top">
+            <div>
+              <div class="queue-name">${escapeHtml(q.name || q.id)}</div>
+              <div class="queue-id">${escapeHtml(q.id)}</div>
+            </div>
+            <span class="tag ${escapeHtml(rt.status || "idle")}">${escapeHtml(statusLabel(rt.status))}</span>
+          </div>
+          <div class="queue-metrics">
+            <div class="metric"><div class="n">${kpi.completed ?? 0}</div><div class="l">完成</div></div>
+            <div class="metric"><div class="n">${kpi.downloaded ?? 0}</div><div class="l">下载</div></div>
+            <div class="metric"><div class="n">${kpi.failures ?? 0}</div><div class="l">失败</div></div>
+            <div class="metric"><div class="n">${kpi.review ?? 0}</div><div class="l">复核</div></div>
+          </div>
+          <div class="queue-foot">
+            <span>${escapeHtml(tierLabel(q.speed_tier))}</span>
+            <span>${escapeHtml(fmtTime(q.updated_at))}</span>
+          </div>
+        </article>`;
+      })
+      .join("");
+  }
+
+  function renderOverview(status) {
+    const running = state.queues.filter((q) => q.runtime?.session_running || q.runtime?.status === "running").length;
+    const paused = state.queues.filter((q) => q.runtime?.status === "paused").length;
+    $("statQueues").textContent = String(state.queues.length);
+    $("statRunning").textContent = String(status?.running ?? running);
+    $("statPaused").textContent = String(status?.paused ?? paused);
+    $("statService").textContent = status?.ok ? "正常" : "异常";
+  }
+
+  async function loadStatus() {
+    try {
+      const data = await api("/api/v1/status");
+      setConn(true, `已连接 · v${data.version || "0.1"}`);
+      renderOverview(data);
+      return data;
+    } catch (err) {
+      setConn(false, err.status === 401 ? "需要 Token" : `连接失败：${err.message}`);
+      throw err;
+    }
+  }
+
+  async function loadTemplates() {
+    const data = await api("/api/v1/templates");
+    state.templates = data.templates || [];
+    const sel = $("templateId");
+    const prev = sel.value;
+    sel.innerHTML = "";
+    if (!state.templates.length) {
+      sel.innerHTML = `<option value="">（无可用模板）</option>`;
+      return;
+    }
+    for (const t of state.templates) {
+      const opt = document.createElement("option");
+      opt.value = t.id;
+      opt.dataset.path = t.path || "";
+      const urls = (t.start_urls || []).filter(Boolean);
+      opt.dataset.url = urls[0] || "";
+      opt.textContent = `${t.name || t.id}`;
+      sel.appendChild(opt);
+    }
+    if (prev && [...sel.options].some((o) => o.value === prev)) sel.value = prev;
+    onTemplateChange();
+  }
+
+  function onTemplateChange() {
+    const opt = $("templateId").selectedOptions[0];
+    if (!opt) return;
+    if (!$("startUrl").value.trim() && opt.dataset.url) {
+      $("startUrl").value = opt.dataset.url;
+    }
+  }
+
+  function onTierChange() {
+    const turbo = $("speedTier").value === "turbo";
+    $("allowTurboWrap").hidden = !turbo;
+    if (!turbo) $("allowTurbo").checked = false;
+  }
+
+  async function loadQueues() {
+    const data = await api("/api/v1/queues?limit=200");
+    state.queues = data.queues || [];
+    renderQueues();
+    renderOverview();
+    if (state.selectedId) {
+      const still = state.queues.some((q) => q.id === state.selectedId);
+      if (still) await showDetail(state.selectedId, false);
+      else {
+        state.selectedId = "";
+        localStorage.removeItem("d2i_cloud_selected_queue");
+        clearDetail();
+      }
+    }
+  }
+
+  function clearDetail() {
+    $("detailEmpty").hidden = false;
+    $("detailBody").hidden = true;
+    clearItems();
+  }
+
+  function revokeObjectUrls() {
+    for (const url of state.objectUrls) {
+      try {
+        URL.revokeObjectURL(url);
+      } catch {
+        /* ignore */
+      }
+    }
+    state.objectUrls = [];
+  }
+
+  function clearItems() {
+    revokeObjectUrls();
+    state.items = [];
+    state.itemsMeta = null;
+    state.selectedItemId = "";
+    if ($("itemGrid")) $("itemGrid").innerHTML = "";
+    if ($("itemsHint")) $("itemsHint").textContent = "队列成功项与可预览图片";
+    renderItemSide(null);
+  }
+
+  function authQuery() {
+    const t = token();
+    return t ? `access_token=${encodeURIComponent(t)}` : "";
+  }
+
+  /** Fetch binary with Authorization (img src cannot set headers). */
+  async function fetchAuthorizedBlob(url) {
+    const res = await fetch(url, { headers: authHeaders() });
+    if (!res.ok) {
+      const text = await res.text();
+      let detail = res.statusText;
+      try {
+        detail = JSON.parse(text)?.detail || detail;
+      } catch {
+        detail = text || detail;
+      }
+      const err = new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
+      err.status = res.status;
+      throw err;
+    }
+    return res.blob();
+  }
+
+  async function loadPreviewInto(imgEl, previewUrl, fallbackEl) {
+    if (!imgEl || !previewUrl) {
+      if (imgEl) {
+        imgEl.hidden = true;
+        imgEl.removeAttribute("src");
+      }
+      if (fallbackEl) fallbackEl.hidden = false;
+      return null;
+    }
+    try {
+      const blob = await fetchAuthorizedBlob(previewUrl);
+      const objectUrl = URL.createObjectURL(blob);
+      state.objectUrls.push(objectUrl);
+      imgEl.src = objectUrl;
+      imgEl.hidden = false;
+      if (fallbackEl) fallbackEl.hidden = true;
+      return objectUrl;
+    } catch (err) {
+      imgEl.hidden = true;
+      imgEl.removeAttribute("src");
+      if (fallbackEl) {
+        fallbackEl.hidden = false;
+        fallbackEl.textContent = `预览失败：${err.message || "unknown"}`;
+      }
+      return null;
+    }
+  }
+
+  function selectedItem() {
+    return state.items.find((row) => row.id === state.selectedItemId) || null;
+  }
+
+  function flagText(ok, label) {
+    return `${label}${ok ? "√" : "·"}`;
+  }
+
+  function renderItemSide(item) {
+    const empty = $("itemSideEmpty");
+    const body = $("itemSideBody");
+    if (!empty || !body) return;
+    if (!item) {
+      empty.hidden = false;
+      body.hidden = true;
+      return;
+    }
+    empty.hidden = true;
+    body.hidden = false;
+    $("itemSideName").textContent = item.name || "未命名";
+    $("itemSideTags").innerHTML = [
+      `<span class="tag soft">${escapeHtml(item.status || item.bucket || "item")}</span>`,
+      item.has_preview ? `<span class="tag running">可预览</span>` : `<span class="tag">无图</span>`,
+      `<span class="tag soft">${escapeHtml(flagText(item.flags?.detail_ok, "详"))}</span>`,
+      `<span class="tag soft">${escapeHtml(flagText(item.flags?.image_ok, "图"))}</span>`,
+      `<span class="tag soft">${escapeHtml(flagText(item.flags?.meta_ok, "元"))}</span>`,
+    ].join("");
+
+    const meta = [
+      ["条目 ID", item.id || "—"],
+      ["状态", item.status || "—"],
+      ["落盘路径", item.image_path || "—"],
+      ["原因", item.reason || "—"],
+      ["详情 URL", item.detail_url || "—"],
+    ];
+    $("itemSideMeta").innerHTML = meta
+      .map(([k, v]) => `<dt>${escapeHtml(k)}</dt><dd title="${escapeHtml(v)}">${escapeHtml(v)}</dd>`)
+      .join("");
+
+    const source = $("itemSideSource");
+    if (item.detail_url) {
+      source.hidden = false;
+      source.href = item.detail_url;
+    } else {
+      source.hidden = true;
+      source.removeAttribute("href");
+    }
+    $("btnOpenLightbox").disabled = !item.has_preview;
+
+    const img = $("itemSidePreview");
+    const fallback = $("itemSideFallback");
+    fallback.textContent = item.has_preview ? "加载预览…" : "无本地预览";
+    fallback.hidden = false;
+    img.hidden = true;
+    img.removeAttribute("src");
+    if (item.has_preview && item.preview_url) {
+      loadPreviewInto(img, item.preview_url, fallback);
+    }
+  }
+
+  function renderItemGrid() {
+    const grid = $("itemGrid");
+    if (!grid) return;
+    const rows = state.items || [];
+    const meta = state.itemsMeta || {};
+    if (!rows.length) {
+      grid.innerHTML = `<div class="empty-state" style="grid-column:1/-1">当前筛选下没有条目。</div>`;
+      $("itemsHint").textContent = meta.total != null ? `0 / ${meta.total}` : "暂无条目";
+      return;
+    }
+    $("itemsHint").textContent = `${rows.length} 条展示 · 可预览 ${meta.previewable ?? 0} · 共 ${meta.total ?? rows.length}`;
+    grid.innerHTML = rows
+      .map((row) => {
+        const active = row.id === state.selectedItemId ? "active" : "";
+        const flags = [
+          flagText(row.flags?.detail_ok, "详"),
+          flagText(row.flags?.image_ok, "图"),
+          flagText(row.flags?.meta_ok, "元"),
+        ].join(" ");
+        const thumbInner = row.has_preview
+          ? `<div class="item-thumb-loading">加载中</div>`
+          : `<div class="item-thumb-placeholder">${escapeHtml(flags || "无图")}</div>`;
+        return `<article class="item-card ${active}" data-item-id="${escapeHtml(row.id)}" title="${escapeHtml(
+          row.reason || row.detail_url || row.image_path || ""
+        )}">
+          <div class="item-thumb ${row.has_preview ? "has-image" : "has-flags"}" data-preview-host="1">${thumbInner}</div>
+          <div class="item-body">
+            <div class="item-name">${escapeHtml(row.name || "未命名")}</div>
+            <div class="item-meta">
+              <span>${escapeHtml(row.status || row.bucket || "")}</span>
+              <span>${escapeHtml(flags)}</span>
+            </div>
+          </div>
+        </article>`;
+      })
+      .join("");
+
+    // Lazy-fill thumbs with authorized blobs (sequential small batch).
+    const cards = [...grid.querySelectorAll(".item-card[data-item-id]")];
+    let cursor = 0;
+    const pump = () => {
+      const slice = cards.slice(cursor, cursor + 4);
+      cursor += 4;
+      if (!slice.length) return;
+      Promise.all(
+        slice.map(async (card) => {
+          const id = card.dataset.itemId;
+          const row = state.items.find((item) => item.id === id);
+          if (!row?.has_preview || !row.preview_url) return;
+          const host = card.querySelector("[data-preview-host]");
+          if (!host) return;
+          try {
+            const blob = await fetchAuthorizedBlob(row.preview_url);
+            const objectUrl = URL.createObjectURL(blob);
+            state.objectUrls.push(objectUrl);
+            host.innerHTML = `<img src="${objectUrl}" alt="${escapeHtml(row.name || "")}" loading="lazy" />`;
+          } catch {
+            host.innerHTML = `<div class="item-thumb-placeholder">预览失败</div>`;
+          }
+        })
+      ).finally(() => {
+        if (cursor < cards.length) pump();
+      });
+    };
+    pump();
+  }
+
+  async function loadItems(queueId, { keepSelection = true } = {}) {
+    if (!queueId) return;
+    const prevId = keepSelection ? state.selectedItemId : "";
+    revokeObjectUrls();
+    const statusParam =
+      state.itemFilter === "all" ? "" : `status=${encodeURIComponent(state.itemFilter)}&`;
+    try {
+      const payload = await api(
+        `/api/v1/queues/${encodeURIComponent(queueId)}/items?${statusParam}limit=60&offset=0`
+      );
+      state.items = payload.items || [];
+      state.itemsMeta = {
+        total: payload.total,
+        previewable: payload.previewable,
+        counts: payload.counts || {},
+      };
+      if (prevId && state.items.some((row) => row.id === prevId)) {
+        state.selectedItemId = prevId;
+      } else {
+        const firstPreview = state.items.find((row) => row.has_preview);
+        state.selectedItemId = firstPreview?.id || state.items[0]?.id || "";
+      }
+      renderItemGrid();
+      renderItemSide(selectedItem());
+    } catch (err) {
+      state.items = [];
+      state.itemsMeta = null;
+      $("itemGrid").innerHTML = `<div class="empty-state" style="grid-column:1/-1">条目读取失败：${escapeHtml(
+        err.message
+      )}</div>`;
+      $("itemsHint").textContent = "读取失败";
+      renderItemSide(null);
+    }
+  }
+
+  function selectItem(itemId) {
+    state.selectedItemId = itemId;
+    renderItemGrid();
+    renderItemSide(selectedItem());
+  }
+
+  function openLightbox(item) {
+    const dialog = $("lightboxDialog");
+    if (!dialog || !item) return;
+    $("lightboxTitle").textContent = item.name || item.id || "预览";
+    $("lightboxMeta").textContent = item.image_path || item.detail_url || item.reason || "—";
+    const img = $("lightboxImage");
+    const empty = $("lightboxEmpty");
+    img.hidden = true;
+    img.removeAttribute("src");
+    empty.hidden = false;
+    empty.textContent = item.has_preview ? "加载中…" : "当前项没有可预览的本地图片。";
+    dialog.showModal();
+    if (item.has_preview && item.preview_url) {
+      loadPreviewInto(img, item.preview_url, empty).then((url) => {
+        if (url) empty.hidden = true;
+      });
+    }
+  }
+
+  function shiftLightbox(delta) {
+    if (!state.items.length || !state.selectedItemId) return;
+    const idx = state.items.findIndex((row) => row.id === state.selectedItemId);
+    if (idx < 0) return;
+    let next = idx;
+    for (let step = 0; step < state.items.length; step += 1) {
+      next = (next + delta + state.items.length) % state.items.length;
+      if (state.items[next]?.has_preview || step === state.items.length - 1) break;
+    }
+    selectItem(state.items[next].id);
+    if ($("lightboxDialog")?.open) openLightbox(state.items[next]);
+  }
+
+  async function showDetail(id, fetchItems = true) {
+    state.selectedId = id;
+    localStorage.setItem("d2i_cloud_selected_queue", id);
+    renderQueues();
+
+    const data = await api(`/api/v1/queues/${encodeURIComponent(id)}`);
+    const q = data.queue || {};
+    const kpi = q.kpi || {};
+    const rt = q.runtime || {};
+
+    $("detailEmpty").hidden = true;
+    $("detailBody").hidden = false;
+    $("detailKicker").textContent = q.template_id || "QUEUE";
+    $("detailTitle").textContent = q.name || q.id;
+    $("detailStatus").className = `tag ${rt.status || "idle"}`;
+    $("detailStatus").textContent = statusLabel(rt.status);
+    $("detailTier").textContent = tierLabel(q.speed_tier);
+
+    const running = Boolean(rt.session_running) || rt.status === "running";
+    const paused = Boolean(rt.manual_paused) || rt.status === "paused";
+    const actionState = {
+      start: !running,
+      pause: Boolean(rt.can_pause) || running,
+      resume: Boolean(rt.can_continue) || paused,
+      retry: Boolean(rt.can_retry) || Number(kpi.failures || 0) > 0,
+      cancel: running || paused,
+    };
+    $("detailActions").querySelectorAll("button[data-action]").forEach((btn) => {
+      const key = btn.dataset.action;
+      btn.disabled = actionState[key] === false;
+    });
+
+    const cards = [
+      ["发现", kpi.discovered],
+      ["下载", kpi.downloaded],
+      ["完成", kpi.completed],
+      ["失败", kpi.failures],
+      ["档案", kpi.profiles],
+      ["图片", kpi.images],
+      ["待处理", kpi.pending],
+      ["复核", kpi.review],
+    ];
+    $("kpiGrid").innerHTML = cards
+      .map(
+        ([label, n]) =>
+          `<div class="kpi"><div class="n">${n ?? 0}</div><div class="l">${label}</div></div>`
+      )
+      .join("");
+
+    const meta = [
+      ["ID", q.id],
+      ["PID", rt.pid || "—"],
+      ["模板", q.template_id || q.template_path || "—"],
+      ["URL", q.start_url || "—"],
+      ["输出目录", q.output_root || "—"],
+      ["落盘", rt.output_path || "—"],
+      ["日志", rt.log_path || "—"],
+      ["档位理由", q.speed_tier_reason || "—"],
+      ["创建时间", fmtTime(q.created_at)],
+      ["更新时间", fmtTime(q.updated_at)],
+      ["最近错误", q.last_error || "—"],
+    ];
+    $("metaGrid").innerHTML = meta
+      .map(([k, v]) => `<dt>${escapeHtml(k)}</dt><dd>${escapeHtml(v)}</dd>`)
+      .join("");
+
+    const ratio = progressRatio(q);
+    $("progressText").textContent = rt.progress_text || `完成 ${kpi.completed ?? 0} / 发现 ${kpi.discovered ?? 0}`;
+    $("progressFill").style.width = `${ratio}%`;
+    $("progressLegend").innerHTML = `
+      <span>进度 ${ratio}%</span>
+      <span>失败 ${kpi.failures ?? 0}</span>
+      <span>复核 ${kpi.review ?? 0}</span>
+    `;
+
+    if (fetchItems) {
+      try {
+        const logs = await api(`/api/v1/queues/${encodeURIComponent(id)}/logs?lines=100`);
+        $("logTail").textContent = logs.tail || "（暂无日志）";
+      } catch (err) {
+        $("logTail").textContent = `日志读取失败：${err.message}`;
+      }
+      await loadItems(id, { keepSelection: false });
+    }
+  }
+
+  function openCreate() {
+    $("createMsg").textContent = "";
+    $("createMsg").className = "form-msg";
+    $("createDialog").showModal();
+  }
+
+  function closeCreate() {
+    if ($("createDialog").open) $("createDialog").close();
+  }
+
+  async function createQueue(ev) {
+    ev.preventDefault();
+    const msg = $("createMsg");
+    msg.textContent = "创建中…";
+    msg.className = "form-msg";
+    const opt = $("templateId").selectedOptions[0];
+    const payload = {
+      template_id: $("templateId").value,
+      template_path: opt?.dataset.path || "",
+      start_url: $("startUrl").value.trim(),
+      name: $("queueName").value.trim(),
+      speed_tier: $("speedTier").value,
+      speed_tier_reason: $("speedReason").value.trim(),
+      start: $("startNow").checked,
+      allow_turbo: $("allowTurbo").checked,
+    };
+    try {
+      const data = await api("/api/v1/queues", {
+        method: "POST",
+        body: JSON.stringify(payload),
+      });
+      msg.textContent = `已创建 ${data.queue?.id || ""}`;
+      msg.className = "form-msg ok";
+      toast("队列已创建");
+      closeCreate();
+      await loadStatus();
+      await loadQueues();
+      if (data.queue?.id) await showDetail(data.queue.id);
+    } catch (err) {
+      msg.textContent = err.message;
+      msg.className = "form-msg err";
+    }
+  }
+
+  async function control(action) {
+    if (!state.selectedId) return;
+    const btn = document.querySelector(`#detailActions [data-action="${action}"]`);
+    if (btn) btn.disabled = true;
+    try {
+      await api(`/api/v1/queues/${encodeURIComponent(state.selectedId)}/${action}`, {
+        method: "POST",
+        body: JSON.stringify({ options: {} }),
+      });
+      toast(`${action} 成功`);
+      await loadStatus();
+      await loadQueues();
+      await showDetail(state.selectedId);
+    } catch (err) {
+      toast(`${action} 失败：${err.message}`);
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  }
+
+  function bind() {
+    $("btnRefresh").addEventListener("click", () => refreshAll(true));
+    $("btnOpenCreate").addEventListener("click", openCreate);
+    $("btnOpenCreate2").addEventListener("click", openCreate);
+    $("btnCloseCreate").addEventListener("click", closeCreate);
+    $("btnCancelCreate").addEventListener("click", closeCreate);
+    $("templateId").addEventListener("change", onTemplateChange);
+    $("speedTier").addEventListener("change", onTierChange);
+    $("createForm").addEventListener("submit", createQueue);
+
+    $("filterPills").addEventListener("click", (ev) => {
+      const btn = ev.target.closest("button[data-filter]");
+      if (!btn) return;
+      state.filter = btn.dataset.filter;
+      [...$("filterPills").children].forEach((el) => el.classList.toggle("active", el === btn));
+      renderQueues();
+    });
+
+    $("queueList").addEventListener("click", (ev) => {
+      const card = ev.target.closest(".queue-card[data-id]");
+      if (!card) return;
+      showDetail(card.dataset.id).catch((err) => toast(err.message));
+    });
+
+    $("detailActions").addEventListener("click", (ev) => {
+      const btn = ev.target.closest("button[data-action]");
+      if (!btn) return;
+      control(btn.dataset.action);
+    });
+
+    $("btnReloadLogs").addEventListener("click", async () => {
+      if (!state.selectedId) return;
+      try {
+        const logs = await api(`/api/v1/queues/${encodeURIComponent(state.selectedId)}/logs?lines=100`);
+        $("logTail").textContent = logs.tail || "（暂无日志）";
+      } catch (err) {
+        toast(err.message);
+      }
+    });
+
+    $("btnReloadItems")?.addEventListener("click", () => {
+      if (!state.selectedId) return;
+      loadItems(state.selectedId).catch((err) => toast(err.message));
+    });
+
+    $("itemFilterPills")?.addEventListener("click", (ev) => {
+      const btn = ev.target.closest("button[data-item-filter]");
+      if (!btn) return;
+      state.itemFilter = btn.dataset.itemFilter || "all";
+      [...$("itemFilterPills").children].forEach((el) => el.classList.toggle("active", el === btn));
+      if (state.selectedId) loadItems(state.selectedId, { keepSelection: false }).catch((err) => toast(err.message));
+    });
+
+    $("itemGrid")?.addEventListener("click", (ev) => {
+      const card = ev.target.closest(".item-card[data-item-id]");
+      if (!card) return;
+      selectItem(card.dataset.itemId);
+    });
+
+    $("itemGrid")?.addEventListener("dblclick", (ev) => {
+      const card = ev.target.closest(".item-card[data-item-id]");
+      if (!card) return;
+      const item = state.items.find((row) => row.id === card.dataset.itemId);
+      if (item) openLightbox(item);
+    });
+
+    $("btnOpenLightbox")?.addEventListener("click", () => {
+      const item = selectedItem();
+      if (item) openLightbox(item);
+    });
+
+    $("btnLightboxClose")?.addEventListener("click", () => $("lightboxDialog")?.close());
+    $("btnLightboxPrev")?.addEventListener("click", () => shiftLightbox(-1));
+    $("btnLightboxNext")?.addEventListener("click", () => shiftLightbox(1));
+    $("lightboxDialog")?.addEventListener("click", (ev) => {
+      if (ev.target === $("lightboxDialog")) $("lightboxDialog").close();
+    });
+    document.addEventListener("keydown", (ev) => {
+      if (!$("lightboxDialog")?.open) return;
+      if (ev.key === "ArrowLeft") shiftLightbox(-1);
+      if (ev.key === "ArrowRight") shiftLightbox(1);
+      if (ev.key === "Escape") $("lightboxDialog").close();
+    });
+
+    const tokenDialog = $("tokenDialog");
+    $("btnToken").addEventListener("click", () => {
+      $("tokenInput").value = token();
+      $("tokenMsg").textContent = "";
+      tokenDialog.showModal();
+    });
+    tokenDialog.addEventListener("close", () => {
+      if (tokenDialog.returnValue === "save") {
+        setToken($("tokenInput").value);
+        refreshAll(true);
+      }
+    });
+  }
+
+  async function refreshAll(showToast = false) {
+    try {
+      await loadStatus();
+      await loadTemplates();
+      await loadQueues();
+      if (showToast) toast("已刷新");
+    } catch (err) {
+      if (err.status === 401) {
+        setConn(false, "需要 Token");
+        if (!$("tokenDialog").open) {
+          $("tokenInput").value = token();
+          $("tokenMsg").textContent = "未授权：请保存 API Token 后重试。";
+          $("tokenDialog").showModal();
+        }
+      } else if (err.status !== 401) {
+        console.error(err);
+      }
+    }
+  }
+
+  const booted = bootstrapTokenFromUrl();
+  try {
+    const bootQueue = new URL(window.location.href).searchParams.get("queue") || "";
+    if (bootQueue.trim()) {
+      state.selectedId = bootQueue.trim();
+      localStorage.setItem("d2i_cloud_selected_queue", state.selectedId);
+    }
+  } catch {
+    /* ignore */
+  }
+  bind();
+  onTierChange();
+  refreshAll(booted);
+  state.timer = setInterval(() => {
+    loadStatus().catch(() => {});
+    loadQueues().catch(() => {});
+  }, 5000);
+})();

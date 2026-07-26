@@ -152,10 +152,19 @@ def sanitize_public_subdir_name(value: Any) -> str:
     text = str(value or "").strip()
     if not text:
         return ""
-    text = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", text)
-    text = re.sub(r"\s+", " ", text).strip().strip(". ")
-    text = re.sub(r"_+", "_", text).strip("_")
-    return text
+    # Keep path separators so patterns like "{region}/{city}/{unit}" stay multi-level.
+    text = text.replace("\\", "/")
+    parts: List[str] = []
+    for part in text.split("/"):
+        segment = str(part or "").strip()
+        if not segment:
+            continue
+        segment = re.sub(r'[<>:"\\|?*\x00-\x1f]', "_", segment)
+        segment = re.sub(r"\s+", " ", segment).strip().strip(". ")
+        segment = re.sub(r"_+", "_", segment).strip("_")
+        if segment:
+            parts.append(segment)
+    return "/".join(parts)
 
 
 def extract_public_year_token(*texts: Any) -> str:
@@ -247,6 +256,12 @@ def resolve_public_task_output_root(
     host = sanitize_public_subdir_name(
         str((urllib.parse.urlparse(str(start_url or "")).hostname or "").strip().lower())
     )
+    admin = rules.get("admin") if isinstance(rules.get("admin"), dict) else {}
+    region = sanitize_public_subdir_name(
+        str(rules.get("output_region") or rules.get("region") or admin.get("province") or "")
+    )
+    province = sanitize_public_subdir_name(str(admin.get("province") or region or ""))
+    city = sanitize_public_subdir_name(str(admin.get("city") or ""))
     year = sanitize_public_subdir_name(
         str(
             rules.get("year_hint")
@@ -263,17 +278,47 @@ def resolve_public_task_output_root(
     if not pattern:
         pattern = "{unit}{year_suffix}"
 
+    class _SafeDict(dict):
+        def __missing__(self, key: str) -> str:
+            return ""
+
+    # Expand nested output_subdir (e.g. "沧州市/市级/{unit}") before the outer pattern.
+    inner_subdir_tpl = str(rules.get("output_subdir") or "").strip()
+    try:
+        output_subdir = sanitize_public_subdir_name(
+            inner_subdir_tpl.format_map(
+                _SafeDict(
+                    {
+                        "unit": unit_name,
+                        "year": year,
+                        "year_suffix": year_suffix,
+                        "site_name": site_name,
+                        "host": host,
+                        "region": region,
+                        "province": province,
+                        "city": city,
+                    }
+                )
+            )
+            if inner_subdir_tpl
+            else ""
+        )
+    except Exception:
+        output_subdir = sanitize_public_subdir_name(inner_subdir_tpl.replace("{unit}", unit_name))
+
     format_ctx = {
         "unit": unit_name,
         "year": year,
         "year_suffix": year_suffix,
         "site_name": site_name,
         "host": host,
+        "region": region,
+        "province": province,
+        "city": city,
+        "output_subdir": output_subdir,
+        # Gender is per-person; task-root resolve leaves it empty.
+        "gender": "",
     }
-
-    class _SafeDict(dict):
-        def __missing__(self, key: str) -> str:
-            return ""
 
     try:
         subdir_raw = pattern.format_map(_SafeDict(format_ctx))

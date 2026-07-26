@@ -1,0 +1,43 @@
+# D2I Cloud MVP on feiniu NAS — independent of Hermes control plane.
+services:
+  d2i-cloud:
+    image: d2i-lite-hermes-worker:core-local
+    container_name: d2i-cloud
+    restart: unless-stopped
+    network_mode: host
+    user: "1000:1001"
+    working_dir: /opt/d2ilite
+    environment:
+      PYTHONUNBUFFERED: "1"
+      PYTHONDONTWRITEBYTECODE: "1"
+      TZ: Asia/Shanghai
+      HOME: /tmp/d2i-cloud-home
+      D2I_CLOUD_DATA_ROOT: /runtime/d2i-cloud-data
+      D2I_CLOUD_TASKS_ROOT: /runtime/d2i-cloud-tasks
+      D2I_SCRAPER_REGISTRY_PATH: /runtime/d2i-cloud-data/desktop-next/scraper-runtime-registry.json
+      TMPDIR: /runtime/d2i-cloud-data/tmp
+      D2I_WEB_TOKEN: ${D2I_WEB_TOKEN:-}
+      HTTP_PROXY: ${D2I_HTTP_PROXY:-}
+      HTTPS_PROXY: ${D2I_HTTPS_PROXY:-}
+      NO_PROXY: 127.0.0.1,localhost,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,.local,.lan
+      PATH: /opt/cloud-venv/bin:/usr/local/bin:/usr/bin:/bin
+      PYTHONPATH: /opt/d2ilite
+    volumes:
+      - ${D2I_CLOUD_CODE_HOST:-/vol1/1001/d2i-cloud/current}:/opt/d2ilite:ro
+      - ${D2I_CLOUD_DATA_HOST:-/vol4/1001/hermes-runtime/d2i-cloud-data}:/runtime/d2i-cloud-data
+      - ${D2I_CLOUD_TASKS_HOST:-/vol4/1001/hermes-runtime/d2i-cloud-tasks}:/runtime/d2i-cloud-tasks
+      - ${D2I_CLOUD_VENV_HOST:-/vol4/1001/hermes-runtime/d2i-cloud-venv}:/opt/cloud-venv
+    command:
+      - /bin/bash
+      - -lc
+      - |
+        set -euo pipefail
+        mkdir -p /tmp/d2i-cloud-home /runtime/d2i-cloud-data /runtime/d2i-cloud-tasks \
+          /runtime/d2i-cloud-data/tmp /runtime/d2i-cloud-data/desktop-next
+        if [[ ! -x /opt/cloud-venv/bin/python ]]; then
+          python -m venv --system-site-packages /opt/cloud-venv
+          /opt/cloud-venv/bin/pip install -U pip
+          /opt/cloud-venv/bin/pip install fastapi 'uvicorn[standard]' pydantic httpx
+        fi
+        export PYTHONPATH="/opt/d2ilite"
+        exec /opt/cloud-venv/bin/python -m uvicorn cloud.api:app --host 0.0.0.0 --port 8787

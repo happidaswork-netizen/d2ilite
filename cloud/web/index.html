@@ -1,0 +1,303 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>D2I Cloud · 队列运行中心</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand-block">
+        <div class="brand-mark">D2I</div>
+        <div>
+          <div class="brand-title">D2I Cloud</div>
+          <div class="brand-sub">采集控制台</div>
+        </div>
+      </div>
+
+      <nav class="side-nav">
+        <a class="nav-item active" href="/">
+          <span class="nav-ico">▣</span>
+          队列运行中心
+        </a>
+        <a class="nav-item" href="/coverage">
+          <span class="nav-ico">◈</span>
+          覆盖图谱
+        </a>
+        <a class="nav-item" href="/library">
+          <span class="nav-ico">▦</span>
+          结果库
+        </a>
+        <a class="nav-item disabled" title="后续版本">
+          <span class="nav-ico">◎</span>
+          模板经验
+        </a>
+        <a class="nav-item disabled" title="后续版本">
+          <span class="nav-ico">⚙</span>
+          设置与连接
+        </a>
+      </nav>
+
+      <div class="side-foot">
+        <div class="conn-row">
+          <span id="connDot" class="dot"></span>
+          <span id="connText">连接中…</span>
+        </div>
+        <button type="button" id="btnToken" class="linkish">API Token</button>
+      </div>
+    </aside>
+
+    <div class="main-column">
+      <header class="page-header">
+        <div>
+          <div class="eyebrow">Queue Center</div>
+          <h1>队列运行中心</h1>
+          <p class="page-sub">统一查看采集队列、成功/失败计数、速度档与任务控制。交互骨架对齐 TITI 队列台。</p>
+        </div>
+        <div class="header-actions">
+          <button type="button" id="btnRefresh" class="btn">刷新</button>
+          <button type="button" id="btnOpenCreate" class="btn primary">新建队列</button>
+        </div>
+      </header>
+
+      <section class="overview-strip" id="overviewStrip">
+        <article class="stat-card">
+          <div class="stat-label">队列总数</div>
+          <div class="stat-value" id="statQueues">0</div>
+        </article>
+        <article class="stat-card">
+          <div class="stat-label">运行中</div>
+          <div class="stat-value accent" id="statRunning">0</div>
+        </article>
+        <article class="stat-card">
+          <div class="stat-label">已暂停</div>
+          <div class="stat-value warn" id="statPaused">0</div>
+        </article>
+        <article class="stat-card">
+          <div class="stat-label">服务状态</div>
+          <div class="stat-value sm" id="statService">—</div>
+        </article>
+      </section>
+
+      <section class="workspace">
+        <div class="queue-column">
+          <div class="section-bar">
+            <h2>队列列表</h2>
+            <div class="filter-pills" id="filterPills">
+              <button type="button" class="pill active" data-filter="all">全部</button>
+              <button type="button" class="pill" data-filter="running">运行</button>
+              <button type="button" class="pill" data-filter="paused">暂停</button>
+              <button type="button" class="pill" data-filter="completed">完成</button>
+            </div>
+          </div>
+          <div id="queueList" class="queue-list">
+            <div class="empty-state">正在加载队列…</div>
+          </div>
+        </div>
+
+        <div class="detail-column">
+          <div id="detailEmpty" class="detail-empty">
+            <div class="empty-illustration">▣</div>
+            <h3>选择一个队列</h3>
+            <p>查看 KPI、速度档、落盘路径、日志与条目进度。也可直接新建队列开始采集。</p>
+            <button type="button" class="btn primary" id="btnOpenCreate2">新建队列</button>
+          </div>
+
+          <div id="detailBody" class="detail-body" hidden>
+            <div class="detail-top">
+              <div>
+                <div class="detail-kicker" id="detailKicker">QUEUE</div>
+                <h2 id="detailTitle">—</h2>
+                <div class="detail-tags">
+                  <span id="detailStatus" class="tag">idle</span>
+                  <span id="detailTier" class="tag soft">safe</span>
+                </div>
+              </div>
+              <div class="detail-actions" id="detailActions">
+                <button type="button" data-action="start" class="btn primary">启动</button>
+                <button type="button" data-action="pause" class="btn">暂停</button>
+                <button type="button" data-action="resume" class="btn">继续</button>
+                <button type="button" data-action="retry" class="btn">重试失败</button>
+                <button type="button" data-action="cancel" class="btn danger ghost">取消</button>
+              </div>
+            </div>
+
+            <div class="kpi-grid" id="kpiGrid"></div>
+
+            <div class="split-panels">
+              <div class="card">
+                <div class="card-head">
+                  <h3>运行信息</h3>
+                </div>
+                <dl class="meta-grid" id="metaGrid"></dl>
+              </div>
+              <div class="card">
+                <div class="card-head">
+                  <h3>进度摘要</h3>
+                </div>
+                <p class="progress-text" id="progressText">—</p>
+                <div class="progress-track"><div class="progress-fill" id="progressFill"></div></div>
+                <div class="progress-legend" id="progressLegend"></div>
+              </div>
+            </div>
+
+            <div class="card results-card">
+              <div class="card-head results-head">
+                <div>
+                  <h3>结果预览</h3>
+                  <span class="muted" id="itemsHint">队列成功项与可预览图片</span>
+                </div>
+                <div class="results-toolbar">
+                  <div class="filter-pills" id="itemFilterPills">
+                    <button type="button" class="pill active" data-item-filter="all">全部</button>
+                    <button type="button" class="pill" data-item-filter="image">有图</button>
+                    <button type="button" class="pill" data-item-filter="done">完成</button>
+                    <button type="button" class="pill" data-item-filter="pending">未完成</button>
+                  </div>
+                  <button type="button" class="btn ghost sm" id="btnReloadItems">刷新条目</button>
+                </div>
+              </div>
+              <div class="results-layout">
+                <div class="item-grid" id="itemGrid"></div>
+                <aside class="item-side" id="itemSide">
+                  <div class="item-side-empty" id="itemSideEmpty">
+                    <div class="empty-illustration sm">▦</div>
+                    <h4>选择一张结果</h4>
+                    <p>查看大图、落盘路径、详情/图片/元数据状态与来源 URL。</p>
+                  </div>
+                  <div class="item-side-body" id="itemSideBody" hidden>
+                    <div class="item-side-preview-wrap">
+                      <img id="itemSidePreview" alt="预览" hidden />
+                      <div class="item-side-preview-fallback" id="itemSideFallback">无本地预览</div>
+                    </div>
+                    <h4 id="itemSideName">—</h4>
+                    <div class="item-side-tags" id="itemSideTags"></div>
+                    <dl class="meta-grid compact" id="itemSideMeta"></dl>
+                    <div class="item-side-actions">
+                      <button type="button" class="btn sm" id="btnOpenLightbox" disabled>放大查看</button>
+                      <a class="btn sm ghost" id="itemSideSource" href="#" target="_blank" rel="noopener" hidden>来源页</a>
+                    </div>
+                  </div>
+                </aside>
+              </div>
+            </div>
+
+            <div class="card">
+              <div class="card-head">
+                <h3>运行日志</h3>
+                <button type="button" class="btn ghost sm" id="btnReloadLogs">刷新日志</button>
+              </div>
+              <pre class="log-box" id="logTail">（暂无日志）</pre>
+            </div>
+          </div>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <dialog id="createDialog" class="sheet">
+    <form method="dialog" id="createForm" class="sheet-body">
+      <div class="sheet-head">
+        <div>
+          <div class="eyebrow">New Queue</div>
+          <h3>新建采集队列</h3>
+        </div>
+        <button type="button" class="icon-btn" id="btnCloseCreate" value="cancel" formmethod="dialog">×</button>
+      </div>
+
+      <div class="form-stack">
+        <label class="field">
+          <span>模板</span>
+          <select id="templateId" required></select>
+        </label>
+        <label class="field">
+          <span>起始 URL</span>
+          <input id="startUrl" type="url" placeholder="https://example.org/list" />
+        </label>
+        <label class="field">
+          <span>显示名称（可选）</span>
+          <input id="queueName" type="text" placeholder="默认使用站点名" />
+        </label>
+        <div class="field-row">
+          <label class="field">
+            <span>速度档</span>
+            <select id="speedTier">
+              <option value="safe" selected>安全 · safe（默认）</option>
+              <option value="standard">标准 · standard</option>
+              <option value="turbo">极速 · turbo</option>
+            </select>
+          </label>
+          <label class="field grow">
+            <span>档位理由</span>
+            <input id="speedReason" type="text" placeholder="例如：政务门户，默认安全" />
+          </label>
+        </div>
+        <label class="check-row">
+          <input id="startNow" type="checkbox" />
+          <span>创建后立即启动</span>
+        </label>
+        <label class="check-row" id="allowTurboWrap" hidden>
+          <input id="allowTurbo" type="checkbox" />
+          <span>我确认该站点可使用极速档</span>
+        </label>
+        <p id="createMsg" class="form-msg"></p>
+      </div>
+
+      <div class="sheet-foot">
+        <button type="button" class="btn" id="btnCancelCreate" value="cancel">取消</button>
+        <button type="submit" class="btn primary" id="btnSubmitCreate">创建队列</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="tokenDialog" class="sheet narrow">
+    <form method="dialog" class="sheet-body">
+      <div class="sheet-head">
+        <div>
+          <div class="eyebrow">Security</div>
+          <h3>API Token</h3>
+        </div>
+      </div>
+      <p class="help">对应环境变量 <code>D2I_WEB_TOKEN</code>。也可通过一次链接 <code>?token=...</code> 自动写入（写入后会从地址栏清除）。</p>
+      <label class="field">
+        <span>Bearer Token</span>
+        <input id="tokenInput" type="password" placeholder="粘贴 token" autocomplete="off" />
+      </label>
+      <p id="tokenMsg" class="form-msg"></p>
+      <div class="sheet-foot">
+        <button value="cancel" class="btn">取消</button>
+        <button value="save" class="btn primary">保存</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="lightboxDialog" class="lightbox">
+    <div class="lightbox-shell">
+      <div class="lightbox-top">
+        <div>
+          <div class="eyebrow">Preview</div>
+          <h3 id="lightboxTitle">—</h3>
+        </div>
+        <div class="lightbox-actions">
+          <button type="button" class="btn ghost sm" id="btnLightboxPrev">上一张</button>
+          <button type="button" class="btn ghost sm" id="btnLightboxNext">下一张</button>
+          <button type="button" class="icon-btn" id="btnLightboxClose" aria-label="关闭">×</button>
+        </div>
+      </div>
+      <div class="lightbox-stage">
+        <img id="lightboxImage" alt="大图预览" />
+        <div class="lightbox-empty" id="lightboxEmpty" hidden>当前项没有可预览的本地图片。</div>
+      </div>
+      <p class="lightbox-meta" id="lightboxMeta">—</p>
+    </div>
+  </dialog>
+
+  <div id="toast" class="toast" hidden></div>
+  <script src="/static/app.js"></script>
+</body>
+</html>

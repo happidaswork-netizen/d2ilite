@@ -1,0 +1,14 @@
+# Local origin bridge for Cloudflare tunnel hostname d2i.517411.xyz
+# Tunnel remote ingress already points d2i.517411.xyz -> http://192.168.5.36:18888
+# Access/Zero Trust is already enforced on the hostname; do not expose 18888 publicly beyond LAN/tunnel.
+services:
+  d2i-proxy-18888:
+    image: nginx:alpine
+    container_name: d2i-proxy-18888
+    restart: unless-stopped
+    ports:
+      - "18888:80"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ${D2I_PROXY_CONF_HOST:-/vol4/1001/d2i-proxy-18888/nginx.conf}:/etc/nginx/conf.d/default.conf:ro

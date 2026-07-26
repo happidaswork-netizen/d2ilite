@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>D2I Cloud · 覆盖图谱</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand-block">
+        <div class="brand-mark">D2I</div>
+        <div>
+          <div class="brand-title">D2I Cloud</div>
+          <div class="brand-sub">采集控制台</div>
+        </div>
+      </div>
+
+      <nav class="side-nav">
+        <a class="nav-item" href="/">
+          <span class="nav-ico">▣</span>
+          队列运行中心
+        </a>
+        <a class="nav-item active" href="/coverage">
+          <span class="nav-ico">◈</span>
+          覆盖图谱
+        </a>
+        <a class="nav-item" href="/library">
+          <span class="nav-ico">▦</span>
+          结果库
+        </a>
+        <a class="nav-item disabled" title="后续版本">
+          <span class="nav-ico">◎</span>
+          模板经验
+        </a>
+      </nav>
+
+      <div class="side-foot">
+        <div class="conn-row">
+          <span id="connDot" class="dot"></span>
+          <span id="connText">连接中…</span>
+        </div>
+        <button type="button" id="btnToken" class="linkish">API Token</button>
+      </div>
+    </aside>
+
+    <div class="main-column">
+      <header class="page-header">
+        <div>
+          <div class="eyebrow">Coverage Graph · C1/C2</div>
+          <h1>覆盖图谱</h1>
+          <p class="page-sub">
+            树看战役层级，地图热力看区域厚薄。点节点 → AI 侦察提案 → 人确认 → 队列执行（默认 safe）。
+          </p>
+        </div>
+        <div class="header-actions">
+          <div class="view-tabs" id="viewTabs">
+            <button type="button" class="pill active" data-view="tree">树</button>
+            <button type="button" class="pill" data-view="map">地图热力</button>
+          </div>
+          <button type="button" id="btnRefresh" class="btn">刷新</button>
+        </div>
+      </header>
+
+      <section class="overview-strip">
+        <article class="stat-card">
+          <div class="stat-label">人物 registry</div>
+          <div class="stat-value" id="statPeople">0</div>
+        </article>
+        <article class="stat-card">
+          <div class="stat-label">单位节点</div>
+          <div class="stat-value" id="statUnits">0</div>
+        </article>
+        <article class="stat-card">
+          <div class="stat-label">数据源</div>
+          <div class="stat-value sm" id="statSource">—</div>
+        </article>
+        <article class="stat-card">
+          <div class="stat-label">交互</div>
+          <div class="stat-value sm" id="statLoop">提案→确认→队列</div>
+        </article>
+      </section>
+
+      <section class="workspace coverage-workspace">
+        <div class="queue-column coverage-left">
+          <div class="section-bar">
+            <h2 id="leftTitle">覆盖树</h2>
+            <span class="muted-hint" id="leftHint">领域 → 省 → 市 → 单位</span>
+          </div>
+          <div id="treePanel" class="coverage-panel"></div>
+          <div id="mapPanel" class="coverage-panel" hidden></div>
+        </div>
+
+        <div class="detail-column">
+          <div id="detailEmpty" class="detail-empty">
+            <div class="empty-illustration">◈</div>
+            <h3>选择节点</h3>
+            <p>查看完成度、建议 next_action；AI 侦察仅提案，确认后才入队（默认不自动 start）。</p>
+          </div>
+          <div id="detailBody" class="detail-body" hidden>
+            <div class="detail-top">
+              <div>
+                <div class="detail-kicker" id="detailKicker">NODE</div>
+                <h2 id="detailTitle">—</h2>
+                <div class="detail-tags">
+                  <span id="detailHeat" class="tag">—</span>
+                  <span id="detailAction" class="tag soft">—</span>
+                </div>
+              </div>
+            </div>
+            <div class="kpi-grid" id="detailKpis"></div>
+            <div class="detail-section">
+              <h3>可做什么</h3>
+              <div id="detailActions" class="detail-actions wrap action-stack"></div>
+              <p class="muted-hint" id="actionNote"></p>
+            </div>
+            <div class="detail-section" id="enqueueForm" hidden>
+              <h3>确认后再执行</h3>
+              <div class="enqueue-fields">
+                <label>所选动作 <input id="enqAction" type="text" readonly /></label>
+                <label>网页入口 URL（补缺图 / 新开抓取时必填，或改用模板）
+                  <input id="enqUrl" type="url" placeholder="https://..." />
+                </label>
+                <label>抓取模板 ID（可选）
+                  <input id="enqTemplate" type="text" placeholder="例如某网站模板名" />
+                </label>
+                <label>速度档
+                  <select id="enqTier">
+                    <option value="safe" selected>安全（推荐）</option>
+                    <option value="standard">标准</option>
+                  </select>
+                </label>
+                <label class="check-row"><input id="enqStart" type="checkbox" /> 建好任务后立刻开跑（默认不勾：只建队，去队列台再启动）</label>
+                <label>备注 <input id="enqNotes" type="text" placeholder="例如：只要市领导、排除公安" /></label>
+              </div>
+              <div class="detail-actions wrap">
+                <button type="button" id="btnConfirmEnqueue" class="btn primary">确认并执行</button>
+                <button type="button" id="btnCancelEnqueue" class="btn">取消</button>
+              </div>
+            </div>
+            <div class="detail-section">
+              <h3>AI 侦察提案</h3>
+              <pre id="proposalBox" class="log-box">尚未侦察</pre>
+            </div>
+            <div class="detail-section">
+              <h3>原始节点</h3>
+              <pre id="nodeJson" class="log-box sm"></pre>
+            </div>
+          </div>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <div id="toast" class="toast" hidden></div>
+  <script src="/static/vendor/echarts.min.js"></script>
+  <script src="/static/coverage.js"></script>
+</body>
+</html>
