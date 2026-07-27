@@ -5,10 +5,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import subprocess
 import threading
 import time
+import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -34,8 +36,13 @@ from services.task_service import (
     summarize_public_task,
 )
 
+logger = logging.getLogger("d2i.cloud.queue")
+
 _AUTO_FINALIZE_LOCK = threading.Lock()
 _AUTO_FINALIZING: set[str] = set()
+# Per-process owner token for jobs.sqlite promote leases (M9).
+_LEASE_OWNER = f"queue-svc:{os.getpid()}:{uuid.uuid4().hex[:8]}"
+PROMOTE_LEASE_TTL_SECONDS = float(os.environ.get("D2I_PROMOTE_LEASE_TTL", "600") or 600)
 # H2: live status "completed" requires metadata ok on every profile, so queues with
 # no-photo people never reach it. A stopped queue with images that stayed quiet for
 # this long is treated as finished and allowed one auto-promote.
@@ -461,10 +468,26 @@ def _maybe_auto_finalize(record: Dict[str, Any], live: Dict[str, Any]) -> Dict[s
     queue_id = str(record.get("id") or "").strip()
     if not queue_id or not _should_auto_finalize(record, live):
         return record
+    # M9: process-local set + durable jobs.sqlite lease (multi-worker safe).
     with _AUTO_FINALIZE_LOCK:
         if queue_id in _AUTO_FINALIZING:
             return record
         _AUTO_FINALIZING.add(queue_id)
+    lease = jobs_db.try_acquire_queue_lease(
+        queue_id,
+        lease_kind="promote",
+        owner=_LEASE_OWNER,
+        ttl_seconds=PROMOTE_LEASE_TTL_SECONDS,
+    )
+    if not lease.get("acquired"):
+        with _AUTO_FINALIZE_LOCK:
+            _AUTO_FINALIZING.discard(queue_id)
+        logger.info(
+            "auto-finalize skipped lease held queue=%s owner=%s",
+            queue_id,
+            lease.get("owner"),
+        )
+        return record
     try:
         from cloud import promote_service
 
@@ -488,8 +511,15 @@ def _maybe_auto_finalize(record: Dict[str, Any], live: Dict[str, Any]) -> Dict[s
         if bool(report.get("ok")) and str(live.get("status") or "") == "completed":
             patch["desired_state"] = "completed"
         jobs_db.update_queue(queue_id, **patch)
+        logger.info(
+            "auto-finalize done queue=%s ok=%s counts=%s",
+            queue_id,
+            report.get("ok"),
+            report.get("counts"),
+        )
         return jobs_db.get_queue(queue_id) or record
     except Exception as exc:
+        logger.exception("auto-finalize failed queue=%s", queue_id)
         try:
             jobs_db.update_queue(
                 queue_id,
@@ -507,6 +537,12 @@ def _maybe_auto_finalize(record: Dict[str, Any], live: Dict[str, Any]) -> Dict[s
         except Exception:
             return record
     finally:
+        try:
+            jobs_db.release_queue_lease(
+                queue_id, lease_kind="promote", owner=_LEASE_OWNER
+            )
+        except Exception:
+            logger.exception("release promote lease failed queue=%s", queue_id)
         with _AUTO_FINALIZE_LOCK:
             _AUTO_FINALIZING.discard(queue_id)
 
@@ -878,42 +914,83 @@ def finalize_queue(
     limit: int = 0,
     write_people: bool = True,
 ) -> Dict[str, Any]:
-    """Promote task images into 角色肖像 and write back people.sqlite."""
+    """Promote task images into 角色肖像 and write back people.sqlite.
+
+    M9: shares the same promote lease as auto-finalize so manual + auto cannot
+    double-write people/终落点 under multi-worker.
+    """
     record = jobs_db.get_queue(queue_id)
     if not record:
         raise KeyError(f"queue not found: {queue_id}")
     from cloud import promote_service
 
-    report = promote_service.promote_queue_record(
-        record,
-        dry_run=bool(dry_run),
-        limit=int(limit or 0),
-        write_people=bool(write_people),
-    )
-    meta_patch = {
-        "last_promote": {
-            "at": report.get("promoted_at"),
-            "dry_run": bool(dry_run),
-            "auto": False,
-            "counts": report.get("counts") or {},
-            "final_base": report.get("final_base") or "",
-            "ok": bool(report.get("ok")),
-        }
-    }
+    lease_owner = ""
     if not dry_run:
-        # Manual finalize also marks desired_state completed when process is done.
-        patch_kwargs: Dict[str, Any] = {"last_error": "", "meta": meta_patch}
-        live_status = ""
-        try:
-            enriched_before = get_enriched_queue(queue_id, auto_finalize=False) or {}
-            live_status = str((enriched_before.get("runtime") or {}).get("status") or "")
-            if live_status == "completed":
-                patch_kwargs["desired_state"] = "completed"
-        except Exception:
-            pass
-        jobs_db.update_queue(queue_id, **patch_kwargs)
-    enriched = get_enriched_queue(queue_id, auto_finalize=False) or {}
-    return {"queue": enriched, "promote": report}
+        with _AUTO_FINALIZE_LOCK:
+            if queue_id in _AUTO_FINALIZING:
+                raise RuntimeError(f"promote already in progress for {queue_id}")
+            _AUTO_FINALIZING.add(queue_id)
+        lease = jobs_db.try_acquire_queue_lease(
+            queue_id,
+            lease_kind="promote",
+            owner=_LEASE_OWNER,
+            ttl_seconds=PROMOTE_LEASE_TTL_SECONDS,
+        )
+        if not lease.get("acquired"):
+            with _AUTO_FINALIZE_LOCK:
+                _AUTO_FINALIZING.discard(queue_id)
+            raise RuntimeError(
+                f"promote lease held by {lease.get('owner') or 'another worker'} "
+                f"(expires_in={lease.get('expires_in')})"
+            )
+        lease_owner = str(lease.get("owner") or _LEASE_OWNER)
+
+    try:
+        report = promote_service.promote_queue_record(
+            record,
+            dry_run=bool(dry_run),
+            limit=int(limit or 0),
+            write_people=bool(write_people),
+        )
+        meta_patch = {
+            "last_promote": {
+                "at": report.get("promoted_at"),
+                "dry_run": bool(dry_run),
+                "auto": False,
+                "counts": report.get("counts") or {},
+                "final_base": report.get("final_base") or "",
+                "ok": bool(report.get("ok")),
+            }
+        }
+        if not dry_run:
+            patch_kwargs: Dict[str, Any] = {"last_error": "", "meta": meta_patch}
+            live_status = ""
+            try:
+                enriched_before = get_enriched_queue(queue_id, auto_finalize=False) or {}
+                live_status = str((enriched_before.get("runtime") or {}).get("status") or "")
+                if live_status == "completed":
+                    patch_kwargs["desired_state"] = "completed"
+            except Exception:
+                logger.exception("finalize post-status probe failed queue=%s", queue_id)
+            jobs_db.update_queue(queue_id, **patch_kwargs)
+            logger.info(
+                "manual finalize done queue=%s ok=%s counts=%s",
+                queue_id,
+                report.get("ok"),
+                report.get("counts"),
+            )
+        enriched = get_enriched_queue(queue_id, auto_finalize=False) or {}
+        return {"queue": enriched, "promote": report}
+    finally:
+        if not dry_run:
+            try:
+                jobs_db.release_queue_lease(
+                    queue_id, lease_kind="promote", owner=lease_owner or _LEASE_OWNER
+                )
+            except Exception:
+                logger.exception("release promote lease failed queue=%s", queue_id)
+            with _AUTO_FINALIZE_LOCK:
+                _AUTO_FINALIZING.discard(queue_id)
 
 
 def control_queue(queue_id: str, action: str, *, options: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:

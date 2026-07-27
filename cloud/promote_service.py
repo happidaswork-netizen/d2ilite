@@ -490,6 +490,18 @@ def upsert_person(
         # Do not clobber a good final path with empty
         if not path_for_db and existing["primary_image_path"] and "primary_image_path" in values:
             values.pop("primary_image_path", None)
+        # Do not overwrite an existing 男/女 with blank / 未知 (promote blank-gender guard).
+        if "gender" in values and "gender" in cols:
+            try:
+                prev_g = conn.execute(
+                    "SELECT gender FROM people WHERE person_id=?", (pid,)
+                ).fetchone()
+                prev = str(prev_g["gender"] if prev_g is not None else "") if prev_g is not None else ""
+            except Exception:
+                prev = ""
+            new_g = str(values.get("gender") or "").strip()
+            if prev in {"男", "女"} and new_g not in {"男", "女"}:
+                values.pop("gender", None)
         assigns = ", ".join(f"{k}=?" for k in values)
         conn.execute(f"UPDATE people SET {assigns} WHERE person_id=?", (*values.values(), pid))
         action = "update"
@@ -869,8 +881,11 @@ def promote_queue_output(
         results.append(rec)
 
     # write report under task reports/
+    # Keep promote_report even when scraper images_only_with_record cleanup
+    # later wipes raw/ — reports/ is re-created here after promote.
     report = {
         "ok": counts["failed"] == 0,
+        "schema": "d2i-cloud-promote-report",
         "queue_id": queue_id,
         "output_root": root,
         "portrait_root": str(por),
@@ -883,6 +898,10 @@ def promote_queue_output(
         "elapsed_sec": round(time.time() - started, 3),
         "results": results,
         "promoted_at": _utc_stamp(),
+        "note": (
+            "promote_report is written after placement; if scraper cleanup "
+            "removes raw/, re-run finalize only when candidates still exist"
+        ),
     }
     if not dry_run:
         try:

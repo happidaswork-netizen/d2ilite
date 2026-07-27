@@ -166,6 +166,12 @@ def cmd_vision_status(_args: argparse.Namespace) -> int:
     return _print(_request("GET", "/api/v1/ai/vision/status"))
 
 
+def cmd_vision_cost(_args: argparse.Namespace) -> int:
+    data = _request("GET", "/api/v1/ai/vision/status")
+    cost = data.get("cost") if isinstance(data, dict) else None
+    return _print({"ok": True, "cost": cost or data})
+
+
 def cmd_vision_run(args: argparse.Namespace) -> int:
     path = str(args.path or "").strip()
     qid = str(args.queue_id or "").strip()
@@ -534,6 +540,8 @@ def build_parser() -> argparse.ArgumentParser:
     v_sub = vision.add_subparsers(dest="vision_cmd", required=True)
     v_status = v_sub.add_parser("status", help="vision runtime status")
     v_status.set_defaults(func=cmd_vision_status)
+    v_cost = v_sub.add_parser("cost", help="vision cost/usage summary (from status.cost)")
+    v_cost.set_defaults(func=cmd_vision_cost)
     v_inv = v_sub.add_parser("inventory", help="list people with photo but no visual_gender")
     v_inv.add_argument("--province", default="")
     v_inv.add_argument("--city", default="")

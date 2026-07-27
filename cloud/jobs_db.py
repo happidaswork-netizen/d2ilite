@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import threading
 import time
@@ -78,6 +79,19 @@ def init_db(db_path: Optional[Path] = None) -> None:
                   ON vision_jobs(status, priority ASC, created_at ASC);
                 CREATE INDEX IF NOT EXISTS idx_vision_jobs_updated
                   ON vision_jobs(updated_at DESC);
+
+                -- M9: cross-process promote/finalize lease (survives multi-worker).
+                CREATE TABLE IF NOT EXISTS queue_leases (
+                  queue_id TEXT NOT NULL,
+                  lease_kind TEXT NOT NULL,
+                  owner TEXT NOT NULL DEFAULT '',
+                  acquired_at REAL NOT NULL,
+                  expires_at REAL NOT NULL,
+                  meta_json TEXT NOT NULL DEFAULT '{}',
+                  PRIMARY KEY (queue_id, lease_kind)
+                );
+                CREATE INDEX IF NOT EXISTS idx_queue_leases_exp
+                  ON queue_leases(expires_at);
                 """
             )
             conn.commit()
@@ -810,5 +824,138 @@ def query_library_items(
                 "previewable": previewable,
                 "items": [dict(row) for row in rows],
             }
+        finally:
+            conn.close()
+
+
+# ---------------------------------------------------------------------------
+# M9: queue promote/finalize leases (cross-process)
+# ---------------------------------------------------------------------------
+
+
+def try_acquire_queue_lease(
+    queue_id: str,
+    *,
+    lease_kind: str = "promote",
+    owner: str = "",
+    ttl_seconds: float = 600.0,
+    db_path: Optional[Path] = None,
+) -> Dict[str, Any]:
+    """Try to acquire an exclusive lease. Returns {ok, acquired, ...}.
+
+    Expired leases are stolen. Same owner may refresh.
+    """
+    qid = str(queue_id or "").strip()
+    kind = str(lease_kind or "promote").strip() or "promote"
+    if not qid:
+        return {"ok": False, "acquired": False, "error": "queue_id required"}
+    now = time.time()
+    ttl = max(30.0, float(ttl_seconds or 600.0))
+    own = str(owner or "").strip() or f"pid:{os.getpid()}:{uuid.uuid4().hex[:6]}"
+    with _LOCK:
+        conn = _connect(db_path)
+        try:
+            # ensure table exists even if init_db ran on older schema
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS queue_leases (
+                  queue_id TEXT NOT NULL,
+                  lease_kind TEXT NOT NULL,
+                  owner TEXT NOT NULL DEFAULT '',
+                  acquired_at REAL NOT NULL,
+                  expires_at REAL NOT NULL,
+                  meta_json TEXT NOT NULL DEFAULT '{}',
+                  PRIMARY KEY (queue_id, lease_kind)
+                )
+                """
+            )
+            row = conn.execute(
+                "SELECT * FROM queue_leases WHERE queue_id=? AND lease_kind=?",
+                (qid, kind),
+            ).fetchone()
+            if row is not None:
+                exp = float(row["expires_at"] or 0)
+                cur_owner = str(row["owner"] or "")
+                if exp > now and cur_owner and cur_owner != own:
+                    return {
+                        "ok": True,
+                        "acquired": False,
+                        "reason": "held",
+                        "owner": cur_owner,
+                        "expires_at": exp,
+                        "expires_in": round(exp - now, 1),
+                    }
+            conn.execute(
+                """
+                INSERT INTO queue_leases(queue_id, lease_kind, owner, acquired_at, expires_at, meta_json)
+                VALUES(?,?,?,?,?,?)
+                ON CONFLICT(queue_id, lease_kind) DO UPDATE SET
+                  owner=excluded.owner,
+                  acquired_at=excluded.acquired_at,
+                  expires_at=excluded.expires_at
+                """,
+                (qid, kind, own, now, now + ttl, "{}"),
+            )
+            conn.commit()
+            return {
+                "ok": True,
+                "acquired": True,
+                "owner": own,
+                "queue_id": qid,
+                "lease_kind": kind,
+                "expires_at": now + ttl,
+                "ttl_seconds": ttl,
+            }
+        finally:
+            conn.close()
+
+
+def release_queue_lease(
+    queue_id: str,
+    *,
+    lease_kind: str = "promote",
+    owner: str = "",
+    db_path: Optional[Path] = None,
+) -> Dict[str, Any]:
+    qid = str(queue_id or "").strip()
+    kind = str(lease_kind or "promote").strip() or "promote"
+    own = str(owner or "").strip()
+    if not qid:
+        return {"ok": False, "released": False, "error": "queue_id required"}
+    with _LOCK:
+        conn = _connect(db_path)
+        try:
+            if own:
+                cur = conn.execute(
+                    "DELETE FROM queue_leases WHERE queue_id=? AND lease_kind=? AND owner=?",
+                    (qid, kind, own),
+                )
+            else:
+                cur = conn.execute(
+                    "DELETE FROM queue_leases WHERE queue_id=? AND lease_kind=?",
+                    (qid, kind),
+                )
+            conn.commit()
+            return {"ok": True, "released": cur.rowcount > 0, "queue_id": qid, "lease_kind": kind}
+        finally:
+            conn.close()
+
+
+def get_queue_lease(
+    queue_id: str,
+    *,
+    lease_kind: str = "promote",
+    db_path: Optional[Path] = None,
+) -> Optional[Dict[str, Any]]:
+    qid = str(queue_id or "").strip()
+    kind = str(lease_kind or "promote").strip() or "promote"
+    with _LOCK:
+        conn = _connect(db_path)
+        try:
+            row = conn.execute(
+                "SELECT * FROM queue_leases WHERE queue_id=? AND lease_kind=?",
+                (qid, kind),
+            ).fetchone()
+            return dict(row) if row else None
         finally:
             conn.close()

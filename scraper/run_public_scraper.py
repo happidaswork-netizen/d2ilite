@@ -5686,6 +5686,35 @@ def cleanup_intermediate_outputs(output_root: Path, config: Dict[str, Any], reco
             "review_items": review_count,
         }
 
+    # Cloud promote needs profiles.jsonl + image_downloads.jsonl. If a promote
+    # has not succeeded yet, keep raw/ so finalize can still run (Cangzhou
+    # regression: cleanup raced auto-promote and left candidates=0).
+    promote_report = output_root / "reports" / "promote_report.json"
+    promote_ok = False
+    try:
+        if promote_report.is_file():
+            import json as _json
+
+            pr = _json.loads(promote_report.read_text(encoding="utf-8"))
+            promote_ok = bool(pr.get("ok")) and int((pr.get("counts") or {}).get("candidates") or 0) >= 0
+            # require at least one promoted/exists/no_photo accounting
+            c = pr.get("counts") if isinstance(pr.get("counts"), dict) else {}
+            promote_ok = bool(pr.get("ok")) and (
+                int(c.get("promoted") or 0)
+                + int(c.get("exists") or 0)
+                + int(c.get("no_photo") or 0)
+                + int(c.get("rejected_qa") or 0)
+            ) > 0
+    except Exception:
+        promote_ok = False
+    if not promote_ok:
+        return {
+            "mode": mode,
+            "cleaned": False,
+            "skipped_awaiting_promote": True,
+            "hint": "wait for Cloud finalize/auto-promote before images_only cleanup",
+        }
+
     named_dir = resolve_named_output_dir(output_root, rules)
     keep_record = mode == "images_only_with_record"
     removed: List[str] = []

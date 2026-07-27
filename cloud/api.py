@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import hmac
+import logging
 import os
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -22,6 +23,23 @@ from cloud import vision_service
 from cloud.paths import cloud_data_root, jobs_db_path
 
 WEB_DIR = Path(__file__).resolve().parent / "web"
+logger = logging.getLogger("d2i.cloud.api")
+
+
+def _configure_logging() -> None:
+    """Idempotent module logging for cloud package (stage-C leftover)."""
+    root = logging.getLogger("d2i.cloud")
+    if root.handlers:
+        return
+    level_name = str(os.environ.get("D2I_LOG_LEVEL", "INFO") or "INFO").upper()
+    level = getattr(logging, level_name, logging.INFO)
+    root.setLevel(level)
+    handler = logging.StreamHandler()
+    handler.setFormatter(
+        logging.Formatter("%(asctime)s %(levelname)s [%(name)s] %(message)s")
+    )
+    root.addHandler(handler)
+    root.propagate = False
 
 
 def _auth_enabled() -> bool:
@@ -193,8 +211,10 @@ class PeopleMarkBody(BaseModel):
 
 
 def create_app() -> FastAPI:
+    _configure_logging()
     jobs_db.init_db()
     app = FastAPI(title="D2I Cloud", version="0.1.0", description="NAS queue API for d2ilite")
+    logger.info("D2I Cloud app starting data_root=%s", cloud_data_root())
     app.add_middleware(
         CORSMiddleware,
         # Converged origins: public console + local dev shells; wildcard with

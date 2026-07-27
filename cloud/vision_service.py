@@ -200,6 +200,11 @@ def status_payload() -> Dict[str, Any]:
         key_ok = bool(runtime.api_key())
     except Exception:
         key_ok = False
+    cost = {}
+    try:
+        cost = vision_cost_summary(limit_jobs=200)
+    except Exception:
+        cost = {"ok": False}
     return {
         "ok": True,
         "enabled": bool(runtime.enabled),
@@ -220,6 +225,65 @@ def status_payload() -> Dict[str, Any]:
             "visual_hairstyle",
             "visual_pose",
         ],
+        "cost": cost,
+    }
+
+
+def vision_cost_summary(*, limit_jobs: int = 200) -> Dict[str, Any]:
+    """P2-lite: aggregate vision job counters for ops (not real $ billing)."""
+    from cloud import jobs_db
+
+    rows = jobs_db.list_vision_jobs(limit=max(1, min(int(limit_jobs or 200), 1000)))
+    totals = {
+        "jobs": 0,
+        "items_total": 0,
+        "ok_items": 0,
+        "failed": 0,
+        "skipped": 0,
+        "missing": 0,
+        "by_status": {},
+        "by_province": {},
+        "error_codes": {},
+    }
+    for job in rows:
+        totals["jobs"] += 1
+        st = str(job.get("status") or "")
+        totals["by_status"][st] = int(totals["by_status"].get(st) or 0) + 1
+        totals["items_total"] += int(job.get("total") or 0)
+        totals["ok_items"] += int(job.get("ok_count") or 0)
+        totals["failed"] += int(job.get("failed_count") or 0)
+        totals["skipped"] += int(job.get("skipped_count") or 0)
+        totals["missing"] += int(job.get("missing_count") or 0)
+        prov = str(job.get("province") or "").strip() or "(空)"
+        billed = int(job.get("ok_count") or 0) + int(job.get("failed_count") or 0)
+        # skipped already-visioned should not count as Grok spend; missing neither
+        totals["by_province"][prov] = int(totals["by_province"].get(prov) or 0) + billed
+        # pull compact error codes from result if present
+        result = job.get("result") if isinstance(job.get("result"), dict) else {}
+        for code, n in (result.get("error_code_counts") or result.get("reason_counts") or {}).items():
+            try:
+                totals["error_codes"][str(code)] = int(totals["error_codes"].get(str(code)) or 0) + int(n)
+            except Exception:
+                continue
+    # estimated billable calls ≈ ok + failed (each item that hit the model)
+    totals["estimated_model_calls"] = int(totals["ok_items"]) + int(totals["failed"])
+    totals["by_province"] = dict(
+        sorted(totals["by_province"].items(), key=lambda kv: -kv[1])[:20]
+    )
+    totals["error_codes"] = dict(
+        sorted(totals["error_codes"].items(), key=lambda kv: -kv[1])[:20]
+    )
+    counts = {}
+    try:
+        counts = jobs_db.vision_job_counts()
+    except Exception:
+        counts = {}
+    return {
+        "ok": True,
+        "window_jobs": len(rows),
+        "job_counts": counts,
+        **totals,
+        "note": "estimated_model_calls ≈ ok+failed in recent jobs; not USD",
     }
 
 
