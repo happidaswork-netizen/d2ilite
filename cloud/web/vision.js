@@ -353,6 +353,40 @@
         )
         .join("");
 
+      // Auto-route follow-up summary (written when the job finished).
+      const fu = (j.result && j.result.followup) || null;
+      let fuHost = $("followupBanner");
+      if (!fuHost) {
+        fuHost = document.createElement("div");
+        fuHost.id = "followupBanner";
+        fuHost.className = "followup-banner";
+        const kpi = $("kpiGrid");
+        if (kpi && kpi.parentNode) kpi.parentNode.insertBefore(fuHost, kpi.nextSibling);
+      }
+      if (fu && (fu.retry_created || fu.held_items || fu.skipped)) {
+        fuHost.hidden = false;
+        const bits = [];
+        if (fu.retry_created) bits.push(`已自动建重跑 ${fu.retry_created} 批 / ${fu.retry_items || 0} 人`);
+        if (fu.held_items) bits.push(`建议重抓 ${fu.held_items} 人`);
+        if (fu.skipped) bits.push(`跳过：${fu.skipped}`);
+        const heldTop = Object.entries(fu.held_reason_counts || {})
+          .sort((a, b) => b[1] - a[1])
+          .slice(0, 3)
+          .map(([k, n]) => `${k}×${n}`)
+          .join(" · ");
+        fuHost.innerHTML = `<strong>跑完分流</strong> · ${escapeHtml(bits.join(" · "))}${
+          heldTop ? ` <span class="muted-hint">（${escapeHtml(heldTop)}）</span>` : ""
+        }${
+          fu.inbox_path
+            ? ` <button type="button" class="btn ghost sm" id="btnOpenInboxFromDetail">打开收件箱</button>`
+            : ""
+        }`;
+        $("btnOpenInboxFromDetail")?.addEventListener("click", () => loadRecrawlInbox());
+      } else {
+        fuHost.hidden = true;
+        fuHost.innerHTML = "";
+      }
+
       const meta = [
         ["ID", j.id],
         ["状态", statusLabel(j.status)],
@@ -753,6 +787,76 @@
     }
   }
 
+  async function loadRecrawlInbox() {
+    try {
+      const data = await api("/api/v1/ai/vision/recrawl-inbox?limit=100", { timeoutMs: 20000 });
+      state.recrawlInbox = data;
+      const total = Number(data.total || 0);
+      const top = Object.entries(data.reason_counts || {})
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 5)
+        .map(([k, n]) => `${k}×${n}`)
+        .join(" · ");
+      toast(
+        total
+          ? `建议重抓收件箱 ${data.day || ""}：${total} 人${top ? `（${top}）` : ""}`
+          : `建议重抓收件箱 ${data.day || ""} 为空（跑完有失败时会自动写入）`
+      );
+      // Render into inventory/side panel if present, else a simple overlay list in itemsHint area.
+      let host = $("recrawlInboxPanel");
+      if (!host) {
+        host = document.createElement("section");
+        host.id = "recrawlInboxPanel";
+        host.className = "card recrawl-inbox-panel";
+        const main = document.querySelector(".main-column") || document.body;
+        main.appendChild(host);
+      }
+      if (!total) {
+        host.innerHTML = `<div class="section-bar tight"><h2>建议重抓收件箱</h2><span class="muted-hint">${escapeHtml(
+          data.day || ""
+        )} · 空</span></div><div class="empty-state">暂无自动分流写入的需重抓条目。</div>`;
+        return;
+      }
+      const rows = (data.items || []).slice(0, 80);
+      host.innerHTML = `
+        <div class="section-bar tight">
+          <h2>建议重抓收件箱</h2>
+          <span class="muted-hint">${escapeHtml(data.day || "")} · ${total} 人 · 来自跑完自动分流</span>
+          <button type="button" class="btn ghost sm" id="btnCloseInbox">收起</button>
+        </div>
+        <div class="muted-hint" style="margin:0 12px 8px">${escapeHtml(top)}</div>
+        <div class="table-wrap">
+          <table class="vision-table">
+            <thead><tr><th>姓名</th><th>原因</th><th>路径</th><th>来源批</th><th>时间</th></tr></thead>
+            <tbody>
+              ${rows
+                .map((it) => {
+                  const exp = explainError(it.error_code || it.last_error || "");
+                  return `<tr>
+                    <td>${escapeHtml(it.name || "—")}</td>
+                    <td title="${escapeHtml(exp.hint || it.last_error || "")}">${escapeHtml(
+                      exp.label || it.error_code || "—"
+                    )}</td>
+                    <td class="path-cell" title="${escapeHtml(it.path || "")}">${escapeHtml(
+                      it.path || "—"
+                    )}</td>
+                    <td class="path-cell">${escapeHtml(it.source_job || "—")}</td>
+                    <td>${escapeHtml(it.at || "—")}</td>
+                  </tr>`;
+                })
+                .join("")}
+            </tbody>
+          </table>
+        </div>`;
+      $("btnCloseInbox")?.addEventListener("click", () => {
+        host.innerHTML = "";
+      });
+      host.scrollIntoView({ behavior: "smooth", block: "start" });
+    } catch (err) {
+      toast(`读取建议重抓收件箱失败：${err.message || err}`);
+    }
+  }
+
   async function requeueFailed(jobId, { policy = "retryable", includeReview = false } = {}) {
     if (state.busy) return;
     state.busy = true;
@@ -854,6 +958,7 @@
         requeueFailed("", { policy: "must_recrawl" });
       }
     });
+    $("btnRecrawlInbox")?.addEventListener("click", () => loadRecrawlInbox());
 
     $("invByCity")?.addEventListener("click", (ev) => {
       const btn = ev.target.closest("button[data-prov]");

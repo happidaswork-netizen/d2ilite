@@ -557,6 +557,27 @@ def create_app() -> FastAPI:
         except Exception as exc:
             raise HTTPException(status_code=500, detail=str(exc)) from exc
 
+    @api.get("/ai/vision/recrawl-inbox")
+    def vision_recrawl_inbox(
+        day: str = Query(default=""),
+        limit: int = Query(default=200, ge=1, le=2000),
+    ) -> Dict[str, Any]:
+        """建议重抓 inbox produced by auto-route after vision jobs finish."""
+        try:
+            return vision_service.list_recrawl_inbox(day=day, limit=limit)
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    @api.post("/ai/vision/jobs/{job_id}/auto-route")
+    def vision_job_auto_route(job_id: str) -> Dict[str, Any]:
+        """Manually trigger post-job routing (retry-auto + 建议重抓 inbox)."""
+        try:
+            return vision_service.auto_route_vision_job_outcomes(job_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+
     @api.post("/ai/vision/normalize-status")
     def vision_normalize_status() -> Dict[str, Any]:
         try:

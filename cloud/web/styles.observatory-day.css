@@ -1241,3 +1241,8 @@ dialog::backdrop {
 @media (max-width: 820px) {
   .vision-ops-form .field-row { grid-template-columns: 1fr; }
 }
+
+.followup-banner{margin:10px 0 4px;padding:10px 12px;border-radius:10px;border:1px solid var(--border, #e4e7ec);background:var(--bg-muted, #f8fafc);font-size:var(--fs-sm, 0.8rem);line-height:1.45}
+.followup-banner[hidden]{display:none}
+.recrawl-inbox-panel{margin:16px;padding:12px 14px}
+.btn.sm{padding:4px 8px;font-size:0.75rem}

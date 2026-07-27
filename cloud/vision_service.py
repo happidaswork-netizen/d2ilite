@@ -14,7 +14,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from cloud.paths import default_tasks_base_root, people_db_path, portrait_root
+from cloud.paths import cloud_data_root, default_tasks_base_root, people_db_path, portrait_root
 from image_asset_safety import sha256_file
 from llm_client import OpenAICompatibleClient
 from visual_classifier import (
@@ -1781,6 +1781,182 @@ def _job_status_from_counts(counts: Dict[str, Any], report: Dict[str, Any]) -> s
     return "completed"
 
 
+def vision_followup_inbox_dir() -> Path:
+    """Durable inbox for '建议重抓' items produced by auto-route after vision runs."""
+    root = cloud_data_root() / "vision_followup" / "recrawl_inbox"
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def _is_auto_followup_source(job: Dict[str, Any]) -> bool:
+    """retry-auto / followup descendants must not auto-spawn more children (loop guard)."""
+    key = str(job.get("batch_key") or "")
+    name = str(job.get("name") or "")
+    return (
+        key.startswith("retry-auto::")
+        or key.startswith("followup::")
+        or name.startswith("retry-auto ")
+        or name.startswith("followup ")
+    )
+
+
+def _append_recrawl_inbox(held: List[Dict[str, Any]], *, source_job_id: str) -> Dict[str, Any]:
+    """Append must_recrawl / review items into a rolling JSONL inbox (no vision rebill)."""
+    if not held:
+        return {"ok": True, "appended": 0, "path": ""}
+    day = datetime.now().strftime("%Y%m%d")
+    path = vision_followup_inbox_dir() / f"recrawl_{day}.jsonl"
+    appended = 0
+    with path.open("a", encoding="utf-8") as fh:
+        for row in held:
+            payload = {
+                "at": _utc_stamp(),
+                "source_job": source_job_id,
+                "person_id": row.get("person_id") or "",
+                "name": row.get("name") or "",
+                "path": row.get("path") or "",
+                "province": row.get("province") or "",
+                "city": row.get("city") or "",
+                "unit_name": row.get("unit_name") or "",
+                "error_code": row.get("error_code") or "",
+                "error_bucket": row.get("error_bucket") or "must_recrawl",
+                "last_error": row.get("last_error") or "",
+                "next_action": "recrawl_image",
+            }
+            fh.write(json.dumps(payload, ensure_ascii=False) + "\n")
+            appended += 1
+    return {"ok": True, "appended": appended, "path": str(path)}
+
+
+def auto_route_vision_job_outcomes(
+    job_id: str,
+    *,
+    batch_size: int = 20,
+    max_auto_depth: int = 1,
+) -> Dict[str, Any]:
+    """After a vision job finishes: split failures into next streams.
+
+    - retryable  → create ``retry-auto`` vision_jobs (queued; pump will pick up)
+    - must_recrawl / review → append 建议重抓 inbox (no Grok spend)
+    - already visioned → skip
+    - source already ``retry-auto`` / ``followup`` → only write inbox, never re-spawn
+      vision children (prevents infinite retry loops on permanent faults)
+    """
+    from cloud import jobs_db
+
+    job = jobs_db.get_vision_job(job_id)
+    if not job:
+        return {"ok": False, "error": f"vision job not found: {job_id}"}
+    st = str(job.get("status") or "")
+    if st not in {"failed", "completed", "completed_with_errors"}:
+        return {"ok": True, "skipped": f"status={st}", "created_jobs": 0, "held_items": 0}
+    if int(job.get("failed_count") or 0) <= 0 and int(job.get("missing_count") or 0) <= 0:
+        return {"ok": True, "skipped": "no_failures", "created_jobs": 0, "held_items": 0}
+
+    # Always classify; only auto-create vision children for non-auto sources.
+    spawn_vision = not _is_auto_followup_source(job)
+    out = requeue_failed_vision_items(
+        job_id=job_id,
+        batch_size=batch_size,
+        start=False,  # never start a nested pump from inside a running job
+        policy="retryable" if spawn_vision else "must_recrawl",
+        include_review=False,
+    )
+    # When spawn_vision is false, requeue with must_recrawl puts everything in held.
+    # When true, held already has must_recrawl+review; retryable went to created jobs.
+    held = list(out.get("held_sample") or [])
+    # held_sample is capped at 40; if more, re-run must_recrawl to get full list for inbox.
+    if int(out.get("held_items") or 0) > len(held):
+        full = requeue_failed_vision_items(
+            job_id=job_id,
+            batch_size=batch_size,
+            start=False,
+            policy="must_recrawl",
+        )
+        # Reconstruct held from reason counts only gives counts; pull via enrich.
+        enriched = enrich_vision_job(job)
+        held = []
+        for it in enriched.get("items") or []:
+            if str(it.get("status") or "") not in {"failed", "missing"}:
+                continue
+            err = str(it.get("error") or "") or (
+                "image_not_found" if str(it.get("status") or "") == "missing" else ""
+            )
+            cls = classify_vision_error(err)
+            if cls["bucket"] == "retryable" and spawn_vision:
+                continue  # those already went to retry-auto
+            held.append(
+                {
+                    "person_id": str(it.get("person_id") or ""),
+                    "name": str(it.get("name") or ""),
+                    "path": str(it.get("path") or it.get("primary_image_path") or ""),
+                    "province": str(it.get("province") or ""),
+                    "city": str(it.get("city") or ""),
+                    "unit_name": str(it.get("unit_name") or ""),
+                    "error_code": cls["code"],
+                    "error_bucket": cls["bucket"],
+                    "last_error": err[:200],
+                    "source_job": job_id,
+                }
+            )
+        out["held_items"] = len(held)
+        out["held_reason_counts"] = full.get("held_reason_counts") or out.get("held_reason_counts")
+
+    inbox = _append_recrawl_inbox(held, source_job_id=job_id)
+    # Rename created jobs' batch_key already uses retry-auto via policy=retryable.
+    return {
+        "ok": True,
+        "source_job": job_id,
+        "spawn_vision": spawn_vision,
+        "created_jobs": int(out.get("created_jobs") or 0),
+        "requeued_items": int(out.get("requeued_items") or 0),
+        "held_items": int(out.get("held_items") or 0),
+        "skipped_already_visioned": int(out.get("skipped_already_visioned") or 0),
+        "retry_reason_counts": out.get("retry_reason_counts") or {},
+        "held_reason_counts": out.get("held_reason_counts") or {},
+        "jobs": out.get("jobs") or [],
+        "inbox_path": inbox.get("path") or "",
+        "inbox_appended": int(inbox.get("appended") or 0),
+        "skipped": "" if spawn_vision else "source_is_auto_followup",
+    }
+
+
+def list_recrawl_inbox(*, day: str = "", limit: int = 200) -> Dict[str, Any]:
+    """Read today's (or given YYYYMMDD) 建议重抓 inbox for the UI."""
+    day_key = str(day or "").strip() or datetime.now().strftime("%Y%m%d")
+    path = vision_followup_inbox_dir() / f"recrawl_{day_key}.jsonl"
+    items: List[Dict[str, Any]] = []
+    counts: Dict[str, int] = {}
+    if path.is_file():
+        try:
+            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            lines = []
+        # newest last in file; show newest first
+        for line in reversed(lines):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+            except Exception:
+                continue
+            if not isinstance(row, dict):
+                continue
+            code = str(row.get("error_code") or "unknown")
+            counts[code] = int(counts.get(code) or 0) + 1
+            if len(items) < max(1, min(int(limit or 200), 2000)):
+                items.append(row)
+    return {
+        "ok": True,
+        "day": day_key,
+        "path": str(path) if path.is_file() else "",
+        "total": sum(counts.values()) if counts else len(items),
+        "reason_counts": counts,
+        "items": items,
+    }
+
+
 # Failure classes for requeue policy (keep in sync with cloud/web/common.js).
 _RETRYABLE_CODES = frozenset(
     {
@@ -2233,11 +2409,44 @@ def run_vision_job(job_id: str) -> Dict[str, Any]:
             expected_status="running",
         )
         job_out = jobs_db.get_vision_job(job_id) or {}
+        # Auto-route failures into next streams (retry-auto / 建议重抓 inbox).
+        # Skip dry_run and pure retry-auto descendants so we never loop forever.
+        followup: Dict[str, Any] = {}
+        try:
+            if (
+                not bool(job.get("dry_run"))
+                and int(agg_counts.get("failed") or 0) > 0
+                and str(job_out.get("status") or "")
+                in {"failed", "completed_with_errors", "completed"}
+            ):
+                followup = auto_route_vision_job_outcomes(job_id)
+        except Exception as exc:  # noqa: BLE001 — never fail the main job over follow-up
+            followup = {"ok": False, "error": f"{type(exc).__name__}:{exc}"}
+        if followup:
+            try:
+                # Stash a compact follow-up summary on the result for the UI.
+                cur = jobs_db.get_vision_job(job_id) or {}
+                result = dict(cur.get("result") or {})
+                result["followup"] = {
+                    "at": _utc_stamp(),
+                    "retry_created": followup.get("created_jobs") or 0,
+                    "retry_items": followup.get("requeued_items") or 0,
+                    "held_items": followup.get("held_items") or 0,
+                    "held_reason_counts": followup.get("held_reason_counts") or {},
+                    "retry_reason_counts": followup.get("retry_reason_counts") or {},
+                    "skipped": followup.get("skipped") or "",
+                    "inbox_path": followup.get("inbox_path") or "",
+                }
+                jobs_db.update_vision_job(job_id, result=result)
+                job_out = jobs_db.get_vision_job(job_id) or job_out
+            except Exception:
+                pass
         return {
             "ok": True,
             "job_id": job_id,
             "cancelled": str(job_out.get("status") or "") == "cancelled",
             "report": report,
+            "followup": followup,
             "job": enrich_vision_job(job_out),
         }
     except Exception as exc:
