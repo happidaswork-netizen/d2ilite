@@ -242,12 +242,55 @@
 
   // Human-readable failure catalog for vision + scraper item errors.
   // Keep codes stable: backend writes these strings into job items / reason fields.
+  // Pattern rules below map free-text RuntimeError/OSError payloads onto these codes.
   const ERROR_CATALOG = {
     image_not_found: {
       label: "缺图",
       hint: "本地找不到图片文件，检查落盘路径或重新下载",
       action: "重抓图片",
       severity: "must_recrawl",
+    },
+    image_too_small: {
+      label: "图太小",
+      hint: "文件是占位/缩略图（常见 20×20 或总像素过低），Grok 拒绝识别",
+      action: "不要重跑视觉；重抓原图或从源站换高清图后再入队",
+      severity: "must_recrawl",
+    },
+    image_truncated: {
+      label: "图片损坏",
+      hint: "本地文件截断/不完整（Pillow 无法解码），多半下载半截或 0 字节",
+      action: "删坏图后重抓；不要对同一坏文件反复跑视觉",
+      severity: "must_recrawl",
+    },
+    image_invalid: {
+      label: "图片不合格",
+      hint: "上游判定图片参数不合法（尺寸/格式/编码）",
+      action: "打开原图检查；必要时重抓",
+      severity: "must_recrawl",
+    },
+    rate_limited: {
+      label: "限流",
+      hint: "Grok/中继返回 429 或 rate limit，瞬时过载",
+      action: "降并发后重试；泵已带退避，可稍后再跑失败项",
+      severity: "transient",
+    },
+    timeout: {
+      label: "超时",
+      hint: "请求或读图超时",
+      action: "可重跑；若反复超时查网络与模型可用性",
+      severity: "transient",
+    },
+    upstream_4xx: {
+      label: "上游拒绝",
+      hint: "模型/中继返回 4xx（参数或鉴权问题）",
+      action: "看原始错误；鉴权问题查密钥，参数问题查图",
+      severity: "review",
+    },
+    upstream_5xx: {
+      label: "上游故障",
+      hint: "模型/中继 5xx 或连接失败",
+      action: "稍后重试",
+      severity: "transient",
     },
     ambiguous_name_match: {
       label: "同名歧义",
@@ -310,15 +353,95 @@
     "名单失败": { label: "名单失败", hint: "列表页解析失败", action: "检查列表选择器", severity: "must_recrawl" },
   };
 
+  // Ordered pattern rules for free-text exceptions from vision workers.
+  // First match wins. Keep specific image faults ahead of generic http_4xx.
+  const ERROR_PATTERNS = [
+    {
+      code: "image_truncated",
+      test: (s) => /truncated|0 bytes not processed|cannot identify image|UnidentifiedImageError/i.test(s),
+    },
+    {
+      code: "image_too_small",
+      test: (s) =>
+        /too small|below the minimum|total pixels|dimensions?\s+\d+\s*[x×]\s*\d+/i.test(s) ||
+        /width and height must be at least/i.test(s),
+    },
+    {
+      code: "image_not_found",
+      test: (s) => /image_not_found|image not found|No such file|FileNotFoundError/i.test(s),
+    },
+    {
+      code: "rate_limited",
+      test: (s) => /http_429|rate.?limit|too many requests|429/i.test(s),
+    },
+    {
+      code: "timeout",
+      test: (s) => /timed? ?out|Timeout|Read timeout|ConnectTimeout/i.test(s),
+    },
+    {
+      code: "vision_runtime_unavailable",
+      test: (s) => /vision_runtime_unavailable|api_key|OpenAICompatible|runtime.?unavail/i.test(s),
+    },
+    {
+      code: "upstream_5xx",
+      test: (s) => /http_5\d\d|Internal Server Error|Bad Gateway|Service Unavailable|Connection/i.test(s),
+    },
+    {
+      code: "image_invalid",
+      test: (s) => /invalid-argument|invalid.?image|unsupported.?image|bad image/i.test(s),
+    },
+    {
+      code: "upstream_4xx",
+      test: (s) => /http_4\d\d|Unauthorized|Forbidden|invalid.?api.?key/i.test(s),
+    },
+    {
+      code: "ambiguous_name_match",
+      test: (s) => /ambiguous_name_match/i.test(s),
+    },
+    {
+      code: "no_person",
+      test: (s) => /no_person|person_count.?0|无可辨认人物/i.test(s),
+    },
+    {
+      code: "multi_person",
+      test: (s) => /multi_person|多人图|person_count.?[2-9]/i.test(s),
+    },
+  ];
+
+  function extractUpstreamMessage(raw) {
+    // RuntimeError:http_400:{"code":"invalid-argument","error":"..."}
+    const m = String(raw || "").match(/\{[\s\S]*\}$/);
+    if (!m) return "";
+    try {
+      const obj = JSON.parse(m[0]);
+      return String(obj.error || obj.message || obj.detail || obj.code || "").trim();
+    } catch {
+      return "";
+    }
+  }
+
   function explainError(codeOrText) {
     const raw = String(codeOrText || "").trim();
     if (!raw) {
       return { code: "", label: "—", hint: "", action: "", severity: "ok", raw: "" };
     }
-    // Prefer exact catalog hit; else scan known codes as substring (backend sometimes
-    // writes "TypeError:..." or "image_not_found: path").
+
+    // 1) Exact catalog key
     let hit = ERROR_CATALOG[raw];
     let code = raw;
+
+    // 2) Pattern rules on free-text exceptions (most vision failures land here)
+    if (!hit) {
+      for (const rule of ERROR_PATTERNS) {
+        if (rule.test(raw)) {
+          code = rule.code;
+          hit = ERROR_CATALOG[rule.code];
+          break;
+        }
+      }
+    }
+
+    // 3) Substring match against known catalog keys (image_not_found: path …)
     if (!hit) {
       for (const key of Object.keys(ERROR_CATALOG)) {
         if (raw === key || raw.includes(key)) {
@@ -328,18 +451,31 @@
         }
       }
     }
+
+    const upstream = extractUpstreamMessage(raw);
     if (!hit) {
-      // Free-text scraper reason: show as-is, mild severity.
+      // Still unknown: strip ExceptionType: prefix and show a short Chinese-friendly label.
+      const stripped = raw.replace(/^[A-Za-z_]?[\w.]*Error:/, "").replace(/^http_\d+:/, "").trim();
+      const short = upstream || stripped || raw;
       return {
-        code: raw,
-        label: raw.length > 24 ? `${raw.slice(0, 24)}…` : raw,
-        hint: raw,
-        action: "查看日志与原页",
+        code: raw.length > 48 ? raw.slice(0, 48) : raw,
+        label: short.length > 28 ? `${short.slice(0, 28)}…` : short,
+        hint: short,
+        action: "查看原始错误与原图",
         severity: "review",
         raw,
       };
     }
-    return { code, label: hit.label, hint: hit.hint, action: hit.action, severity: hit.severity, raw };
+
+    // Enrich hint with upstream message dimensions when useful (too-small cases).
+    let hint = hit.hint;
+    if (upstream && (code === "image_too_small" || code === "image_invalid" || code === "upstream_4xx")) {
+      hint = `${hit.hint}（上游：${upstream}）`;
+    } else if (code === "image_truncated" && /0 bytes/i.test(raw)) {
+      hint = `${hit.hint}（检测到 0 字节）`;
+    }
+
+    return { code, label: hit.label, hint, action: hit.action, severity: hit.severity, raw };
   }
 
   function countByReason(rows, field = "error") {

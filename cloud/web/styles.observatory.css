@@ -1149,6 +1149,25 @@ dialog::backdrop {
   color: var(--ink);
 }
 .evidence-box .ev-actions { margin-top: 8px; color: var(--ink-mute); }
+
+.evidence-box details.ev-raw {
+  margin-top: 8px;
+  font-size: var(--fs-xs, 0.72rem);
+  color: var(--text-3, var(--ink-dim, #667085));
+}
+.evidence-box details.ev-raw summary {
+  cursor: pointer;
+  user-select: none;
+  font-weight: 600;
+}
+.evidence-box details.ev-raw pre {
+  margin: 6px 0 0;
+  max-height: 180px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
 .evidence-box pre {
   margin: 8px 0 0;
   max-height: 180px;

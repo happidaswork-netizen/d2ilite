@@ -275,15 +275,25 @@
       person_id: item.person_id || null,
     };
     host.hidden = false;
+    const rawErr = String(item.error || "").trim();
+    const showCode =
+      exp.code && exp.code !== exp.label && exp.code.length <= 40 && !exp.code.includes("{");
     host.innerHTML = `
       <h4>${escapeHtml(item.name || "未命名")} · ${escapeHtml(itemStatusLabel(st))}</h4>
       <div><strong>判定：</strong>${escapeHtml(exp.label)}${
-        exp.code && exp.code !== exp.label ? `（${escapeHtml(exp.code)}）` : ""
+        showCode ? ` <span class="tag soft">${escapeHtml(exp.code)}</span>` : ""
       }</div>
       <div><strong>说明：</strong>${escapeHtml(exp.hint || "—")}</div>
       <div class="ev-actions"><strong>建议：</strong>${escapeHtml(exp.action || "—")}</div>
       <div class="ev-actions"><strong>路径：</strong>${escapeHtml(path)}</div>
-      <pre>${escapeHtml(JSON.stringify(raw, null, 2))}</pre>
+      ${
+        rawErr
+          ? `<details class="ev-raw"><summary>原始错误</summary><pre>${escapeHtml(rawErr)}</pre></details>`
+          : ""
+      }
+      <details class="ev-raw"><summary>条目快照</summary><pre>${escapeHtml(
+        JSON.stringify(raw, null, 2)
+      )}</pre></details>
     `;
   }
 
