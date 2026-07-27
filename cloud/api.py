@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 
 from cloud import coverage_service
 from cloud import jobs_db
+from cloud import people_workflow
 from cloud import queue_service
 from cloud import vision_service
 from cloud.paths import cloud_data_root, jobs_db_path
@@ -136,6 +137,20 @@ class CoverageEnqueueBody(BaseModel):
     speed_tier: str = "safe"
     start: bool = False
     notes: str = ""
+
+
+class PeopleMarkBody(BaseModel):
+    """Photo workflow mark: no_photo | hold | resume | unusable."""
+
+    action: str
+    person_id: str = ""
+    name: str = ""
+    unit_like: str = ""
+    person_ids: list[str] = Field(default_factory=list)
+    reason: str = ""
+    hold_until: str = ""
+    clear_primary_path: bool = True
+    dry_run: bool = False
 
 
 def create_app() -> FastAPI:
@@ -411,6 +426,69 @@ def create_app() -> FastAPI:
         if qid:
             return library_index.index_queue(qid)
         return library_index.index_all_queues()
+
+    # --- People photo workflow (确认无图 / 暂挂 / 恢复 / 图不可用) ---
+
+    @api.get("/people/{person_id}")
+    def people_get(person_id: str) -> Dict[str, Any]:
+        row = people_workflow.get_person(person_id)
+        if not row:
+            raise HTTPException(status_code=404, detail=f"person not found: {person_id}")
+        return {"ok": True, "person": row}
+
+    @api.get("/people/workflow/marked")
+    def people_workflow_marked(
+        workflow: str = Query(default=""),
+        limit: int = Query(default=200, ge=1, le=2000),
+        province: str = Query(default=""),
+        city: str = Query(default=""),
+    ) -> Dict[str, Any]:
+        try:
+            return people_workflow.list_marked(
+                workflow=workflow,
+                limit=limit,
+                province=province,
+                city=city,
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    @api.post("/people/mark")
+    def people_mark(body: PeopleMarkBody) -> Dict[str, Any]:
+        """Mark person(s): no_photo | hold | resume | unusable.
+
+        Gates vision inventory / enqueue. no_photo is terminal for crawl+vision
+        until resume; hold is temporary; unusable keeps recrawl eligibility.
+        """
+        payload = body
+        act = str(payload.action or "").strip().lower()
+        ids = [str(x).strip() for x in (payload.person_ids or []) if str(x).strip()]
+        try:
+            if ids:
+                return people_workflow.mark_many(
+                    person_ids=ids,
+                    action=act,
+                    reason=str(payload.reason or ""),
+                    hold_until=str(payload.hold_until or ""),
+                    clear_primary_path=bool(payload.clear_primary_path),
+                    dry_run=bool(payload.dry_run),
+                )
+            return people_workflow.mark_person(
+                person_id=str(payload.person_id or ""),
+                name=str(payload.name or ""),
+                unit_like=str(payload.unit_like or ""),
+                action=act,
+                reason=str(payload.reason or ""),
+                hold_until=str(payload.hold_until or ""),
+                clear_primary_path=bool(payload.clear_primary_path),
+                dry_run=bool(payload.dry_run),
+            )
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
 
     # --- Vision / AI (Grok 4.5 OpenAI-compatible) ---
 

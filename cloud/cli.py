@@ -344,6 +344,47 @@ def cmd_vision_pump(args: argparse.Namespace) -> int:
     return _print(_request("POST", "/api/v1/ai/vision/pump", body=body, timeout=float(args.timeout or 3600)))
 
 
+def cmd_people_get(args: argparse.Namespace) -> int:
+    pid = str(args.person_id or "").strip()
+    if not pid:
+        return _fail("person_id required")
+    q = urllib.parse.quote(pid, safe="")
+    return _print(_request("GET", f"/api/v1/people/{q}", timeout=30.0))
+
+
+def cmd_people_mark(args: argparse.Namespace) -> int:
+    body: Dict[str, Any] = {
+        "action": str(args.action or ""),
+        "person_id": str(args.person_id or ""),
+        "name": str(args.name or ""),
+        "unit_like": str(args.unit_like or ""),
+        "reason": str(args.reason or ""),
+        "hold_until": str(args.hold_until or ""),
+        "clear_primary_path": not bool(args.keep_path),
+        "dry_run": bool(args.dry_run),
+    }
+    ids = [x.strip() for x in str(args.person_ids or "").split(",") if x.strip()]
+    if ids:
+        body["person_ids"] = ids
+    return _print(_request("POST", "/api/v1/people/mark", body=body, timeout=60.0))
+
+
+def cmd_people_marked(args: argparse.Namespace) -> int:
+    return _print(
+        _request(
+            "GET",
+            "/api/v1/people/workflow/marked",
+            query={
+                "workflow": str(args.workflow or ""),
+                "limit": int(args.limit or 200),
+                "province": str(args.province or ""),
+                "city": str(args.city or ""),
+            },
+            timeout=60.0,
+        )
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="d2i", description="D2I Cloud HTTP CLI")
     sub = parser.add_subparsers(dest="group", required=True)
@@ -511,6 +552,36 @@ def build_parser() -> argparse.ArgumentParser:
     )
     v_ar.add_argument("job_id")
     v_ar.set_defaults(func=cmd_vision_auto_route)
+
+    people = sub.add_parser("people", help="people photo workflow (no_photo / hold / resume)")
+    p_sub = people.add_subparsers(dest="people_cmd", required=True)
+    p_get = p_sub.add_parser("get", help="show one person + workflow state")
+    p_get.add_argument("person_id")
+    p_get.set_defaults(func=cmd_people_get)
+    p_mark = p_sub.add_parser(
+        "mark",
+        help="mark no_photo|hold|resume|unusable (gates vision inventory)",
+    )
+    p_mark.add_argument("action", choices=["no_photo", "hold", "resume", "unusable"])
+    p_mark.add_argument("--person-id", default="")
+    p_mark.add_argument("--name", default="")
+    p_mark.add_argument("--unit-like", default="")
+    p_mark.add_argument("--person-ids", default="", help="comma-separated person_id list")
+    p_mark.add_argument("--reason", default="")
+    p_mark.add_argument("--hold-until", default="", help="ISO date hint stored in notes (hold only)")
+    p_mark.add_argument("--keep-path", action="store_true", help="no_photo: keep primary_image_path")
+    p_mark.add_argument("--dry-run", action="store_true")
+    p_mark.set_defaults(func=cmd_people_mark)
+    p_list = p_sub.add_parser("marked", help="list no_photo / hold / unusable people")
+    p_list.add_argument(
+        "--workflow",
+        default="",
+        help="no_photo|hold|unusable|empty=any blocked",
+    )
+    p_list.add_argument("--limit", type=int, default=200)
+    p_list.add_argument("--province", default="")
+    p_list.add_argument("--city", default="")
+    p_list.set_defaults(func=cmd_people_marked)
 
     return parser
 

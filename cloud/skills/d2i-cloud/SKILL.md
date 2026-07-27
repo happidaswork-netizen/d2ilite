@@ -58,12 +58,15 @@ Canonical field contract: `docs/d2i_cloud_template_extract_contract.md`
 | Vision recrawl inbox | `GET /api/v1/ai/vision/recrawl-inbox` | 建议重抓收件箱（auto-route 写入）；CLI: `d2i vision recrawl-inbox` |
 | Vision auto-route | `POST /api/v1/ai/vision/jobs/{id}/auto-route` | 单批跑完分流：retry-auto + 收件箱；CLI: `d2i vision auto-route <id>` |
 | Vision normalize status | `POST /api/v1/ai/vision/normalize-status` | repair legacy rows: all-fail→`failed`, partial→`completed_with_errors` |
+| People get | `GET /api/v1/people/{person_id}` | includes derived `workflow` label |
+| People mark | `POST /api/v1/people/mark` | `{action:no_photo\|hold\|unusable\|resume, person_id\|person_ids, reason, dry_run}` gates inventory |
+| People marked list | `GET /api/v1/people/workflow/marked` | list no_photo / hold / unusable |
 | Vision one/batch paths | `POST /api/v1/ai/vision` | `{ "path"|"paths", "names", "person_ids", "write_people", "force" }` |
 | Vision scrape-queue stage 2 | `POST /api/v1/queues/{id}/ai/run` | `{ "steps": ["vision"] }` → classify + `vision_report.json` |
 | Vision report | `GET /api/v1/queues/{id}/ai/vision/report` | 漏图/错图/冲突 buckets + counts |
 | Recrawl plan | `GET /api/v1/queues/{id}/ai/vision/recrawl-plan` | problem names only; `?include_review=true` optional |
 | Recrawl draft | `POST /api/v1/queues/{id}/ai/vision/recrawl` | plan only by default; `create_draft` needs `confirm=true`; **never starts** |
-| CLI | `d2i vision status\|inventory\|plan\|enqueue\|jobs\|job\|pump\|run\|report\|recrawl-plan\|recrawl\|requeue\|recrawl-inbox\|auto-route` | |
+| CLI | `d2i vision …` + `d2i people get\|mark\|marked` | photo workflow marks gate inventory |
 
 Auto-finalize: list may promote **at most one** eligible completed queue per call; single-queue GET promotes when completed and no successful `meta.last_promote`. Opt out with queue meta `auto_finalize: false` / `skip_auto_finalize`.
 
@@ -81,10 +84,26 @@ Auto-finalize: list may promote **at most one** eligible completed queue per cal
 - Default skip rows that already have a non-empty `visual_gender` unless `force=true`.
 - Prefer **post-promote** on durable `角色肖像` paths, not download-time sync vision.
 - Severity: `must_recrawl` = missing image / no person / multi person / classify fail **+ image_too_small / image_truncated**; `review` = gender conflict / uncertain; `ok` = pass or already classified; **retryable** = rate limit / timeout / 5xx / runtime blip.
-- **Auto-route on job finish:** retryable → `retry-auto` vision jobs; must_recrawl/review → daily JSONL inbox under `d2i-cloud-data/vision_followup/recrawl_inbox/`. `retry-auto` sources never spawn more vision children (loop guard).
-- **Do not** requeue vision for 20×20 placeholders or truncated files — fix/recrawl the image first (`d2i vision recrawl-inbox`).
+- **Auto-route on job finish:** retryable → `retry-auto` vision jobs; must_recrawl/review → daily JSONL inbox under `d2i-cloud-data/vision_followup/recrawl_inbox/`. Tiny/truncated assets are also stamped **unusable** on people so inventory stops re-picking them. `retry-auto` sources never spawn more vision children (loop guard).
+- **Do not** requeue vision for 20×20 placeholders or truncated files — fix/recrawl the image first, or mark **no_photo** / **hold** (`d2i people mark …`; UI buttons on evidence panel + inbox).
+- **Inventory/plan/enqueue exclude** people with workflow gates: confirmed no-photo, hold, unusable (see `cloud/people_workflow.py`).
 - Artifacts: `{output_root}/reports/vision_report.json`, `vision_recrawl_candidates.json`, queue `meta.last_vision`, job `result.followup`.
 - Operator one-pager: `skills/d2i-cloud/AGENT_BRIEF.md` (same directory as this skill).
+
+### Photo workflow marks
+
+| Action | Effect | Typical columns |
+| --- | --- | --- |
+| `no_photo` | Terminal: source has no usable portrait; stop crawl+vision | `source_page_image_status=no_photo_on_source`, `image_status=no_photo`, `repair_status=abandoned_no_usable_photo`, clear path |
+| `hold` | Temporary pause | `repair_status=hold` |
+| `unusable` | Bad local asset; skip vision, allow recrawl | `source_image_status=source_too_small_or_corrupt`, `file_status=abandoned` |
+| `resume` | Clear gates | clears the above markers |
+
+```bash
+d2i people mark no_photo --person-id <id> --reason "源站暂无图片"
+d2i people mark hold --person-id <id> --hold-until 2026-08-01
+d2i people marked --workflow no_photo
+```
 
 ## Quality gate (before trusting promote)
 

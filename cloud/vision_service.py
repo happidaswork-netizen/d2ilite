@@ -614,19 +614,37 @@ def _people_with_photos(
             placeholders = ",".join("?" for _ in names)
             where.append(f"name IN ({placeholders})")
             params.extend(names)
+        # Workflow gates: skip 确认无图 / 暂挂 / 图不可用 so they stop cycling vision.
+        try:
+            from cloud.people_workflow import sql_exclude_blocked_vision
+
+            frag, frag_params = sql_exclude_blocked_vision(cols)
+            if frag:
+                # frag starts with " AND …"
+                where_sql_extra = frag
+                params.extend(frag_params)
+            else:
+                where_sql_extra = ""
+        except Exception:
+            where_sql_extra = ""
         select_cols = ["person_id", "name", "gender", "unit_name", "primary_image_path"]
         for extra in (
             "visual_gender",
             "source_url",
             "source_page_image_status",
+            "source_image_status",
+            "image_status",
+            "repair_status",
+            "file_status",
             "province",
             "city",
         ):
             if extra in cols:
                 select_cols.append(extra)
         lim = max(1, min(int(limit or 50), 20000))
+        where_clause = " AND ".join(where) + (where_sql_extra or "")
         sql = (
-            f"SELECT {', '.join(select_cols)} FROM people WHERE {' AND '.join(where)} "
+            f"SELECT {', '.join(select_cols)} FROM people WHERE {where_clause} "
             "ORDER BY rowid DESC LIMIT ?"
         )
         params.append(lim)
@@ -1801,14 +1819,20 @@ def _is_auto_followup_source(job: Dict[str, Any]) -> bool:
 
 
 def _append_recrawl_inbox(held: List[Dict[str, Any]], *, source_job_id: str) -> Dict[str, Any]:
-    """Append must_recrawl / review items into a rolling JSONL inbox (no vision rebill)."""
+    """Append must_recrawl / review items into a rolling JSONL inbox (no vision rebill).
+
+    Also stamps people rows for bad local assets so inventory stops re-picking them:
+    image_too_small / image_truncated / image_invalid → workflow unusable.
+    """
     if not held:
-        return {"ok": True, "appended": 0, "path": ""}
+        return {"ok": True, "appended": 0, "path": "", "people_marked_unusable": 0}
     day = datetime.now().strftime("%Y%m%d")
     path = vision_followup_inbox_dir() / f"recrawl_{day}.jsonl"
     appended = 0
+    mark_ids: List[str] = []
     with path.open("a", encoding="utf-8") as fh:
         for row in held:
+            code = str(row.get("error_code") or "")
             payload = {
                 "at": _utc_stamp(),
                 "source_job": source_job_id,
@@ -1818,14 +1842,45 @@ def _append_recrawl_inbox(held: List[Dict[str, Any]], *, source_job_id: str) -> 
                 "province": row.get("province") or "",
                 "city": row.get("city") or "",
                 "unit_name": row.get("unit_name") or "",
-                "error_code": row.get("error_code") or "",
+                "error_code": code,
                 "error_bucket": row.get("error_bucket") or "must_recrawl",
                 "last_error": row.get("last_error") or "",
                 "next_action": "recrawl_image",
             }
             fh.write(json.dumps(payload, ensure_ascii=False) + "\n")
             appended += 1
-    return {"ok": True, "appended": appended, "path": str(path)}
+            pid = str(row.get("person_id") or "").strip()
+            if pid and code in {"image_too_small", "image_truncated", "image_invalid"}:
+                mark_ids.append(pid)
+    marked = 0
+    if mark_ids:
+        try:
+            from cloud import people_workflow
+
+            # de-dupe while preserving order
+            seen: set = set()
+            uniq = []
+            for pid in mark_ids:
+                if pid in seen:
+                    continue
+                seen.add(pid)
+                uniq.append(pid)
+            out = people_workflow.mark_many(
+                person_ids=uniq,
+                action="unusable",
+                reason=f"auto from vision job {source_job_id}",
+                clear_primary_path=False,
+                dry_run=False,
+            )
+            marked = int(out.get("count_ok") or 0)
+        except Exception:
+            marked = 0
+    return {
+        "ok": True,
+        "appended": appended,
+        "path": str(path),
+        "people_marked_unusable": marked,
+    }
 
 
 def auto_route_vision_job_outcomes(

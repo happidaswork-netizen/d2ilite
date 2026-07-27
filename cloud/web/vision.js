@@ -286,6 +286,12 @@
       <div><strong>说明：</strong>${escapeHtml(exp.hint || "—")}</div>
       <div class="ev-actions"><strong>建议：</strong>${escapeHtml(exp.action || "—")}</div>
       <div class="ev-actions"><strong>路径：</strong>${escapeHtml(path)}</div>
+      <div class="ev-actions workflow-actions" id="itemWorkflowActions">
+        <button type="button" class="btn sm" data-wf="no_photo" ${item.person_id ? "" : "disabled"}>确认无图</button>
+        <button type="button" class="btn sm ghost" data-wf="hold" ${item.person_id ? "" : "disabled"}>暂挂</button>
+        <button type="button" class="btn sm ghost" data-wf="unusable" ${item.person_id ? "" : "disabled"}>图不可用</button>
+        <button type="button" class="btn sm ghost" data-wf="resume" ${item.person_id ? "" : "disabled"}>恢复</button>
+      </div>
       ${
         rawErr
           ? `<details class="ev-raw"><summary>原始错误</summary><pre>${escapeHtml(rawErr)}</pre></details>`
@@ -295,6 +301,43 @@
         JSON.stringify(raw, null, 2)
       )}</pre></details>
     `;
+    host.querySelectorAll("[data-wf]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const action = btn.getAttribute("data-wf");
+        if (!action || !item.person_id) return;
+        markPersonWorkflow(item.person_id, action, item.name || "");
+      });
+    });
+  }
+
+  async function markPersonWorkflow(personId, action, name) {
+    if (!personId || state.busy) return;
+    const labels = {
+      no_photo: "确认无图（停下载+视觉，直到恢复）",
+      hold: "暂挂（暂不入 vision/补采）",
+      unusable: "图不可用（不入 vision，可再抓）",
+      resume: "恢复（重新进入开放工作流）",
+    };
+    if (!window.confirm(`${labels[action] || action}\n\n${name || personId}`)) return;
+    state.busy = true;
+    try {
+      const data = await api("/api/v1/people/mark", {
+        method: "POST",
+        body: JSON.stringify({
+          action,
+          person_id: personId,
+          reason: `vision-ui:${action}`,
+          clear_primary_path: action === "no_photo",
+        }),
+        timeoutMs: 30000,
+      });
+      const wf = (data.workflow && data.workflow.label) || action;
+      toast(`已标记 ${name || personId} → ${wf}`);
+    } catch (err) {
+      toast(`标记失败：${err.message || err}`);
+    } finally {
+      state.busy = false;
+    }
   }
 
   async function showDetail(id, { soft = false } = {}) {
@@ -827,12 +870,13 @@
         <div class="muted-hint" style="margin:0 12px 8px">${escapeHtml(top)}</div>
         <div class="table-wrap">
           <table class="vision-table">
-            <thead><tr><th>姓名</th><th>原因</th><th>路径</th><th>来源批</th><th>时间</th></tr></thead>
+            <thead><tr><th>姓名</th><th>原因</th><th>路径</th><th>来源批</th><th>时间</th><th>工作流</th></tr></thead>
             <tbody>
               ${rows
                 .map((it) => {
                   const exp = explainError(it.error_code || it.last_error || "");
-                  return `<tr>
+                  const pid = it.person_id || "";
+                  return `<tr data-person-id="${escapeHtml(pid)}">
                     <td>${escapeHtml(it.name || "—")}</td>
                     <td title="${escapeHtml(exp.hint || it.last_error || "")}">${escapeHtml(
                       exp.label || it.error_code || "—"
@@ -842,6 +886,14 @@
                     )}</td>
                     <td class="path-cell">${escapeHtml(it.source_job || "—")}</td>
                     <td>${escapeHtml(it.at || "—")}</td>
+                    <td class="wf-cell">
+                      <button type="button" class="btn sm" data-wf="no_photo" data-pid="${escapeHtml(
+                        pid
+                      )}" data-name="${escapeHtml(it.name || "")}" ${pid ? "" : "disabled"}>确认无图</button>
+                      <button type="button" class="btn sm ghost" data-wf="hold" data-pid="${escapeHtml(
+                        pid
+                      )}" data-name="${escapeHtml(it.name || "")}" ${pid ? "" : "disabled"}>暂挂</button>
+                    </td>
                   </tr>`;
                 })
                 .join("")}
@@ -851,9 +903,78 @@
       $("btnCloseInbox")?.addEventListener("click", () => {
         host.innerHTML = "";
       });
+      host.querySelectorAll("[data-wf]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          markPersonWorkflow(btn.getAttribute("data-pid"), btn.getAttribute("data-wf"), btn.getAttribute("data-name") || "");
+        });
+      });
       host.scrollIntoView({ behavior: "smooth", block: "start" });
     } catch (err) {
       toast(`读取建议重抓收件箱失败：${err.message || err}`);
+    }
+  }
+
+  async function loadMarkedPeople() {
+    try {
+      const data = await api("/api/v1/people/workflow/marked?limit=100", { timeoutMs: 20000 });
+      const total = Number(data.total || 0);
+      toast(total ? `工作流标记 ${total} 人` : "当前没有确认无图/暂挂/图不可用标记");
+      let host = $("recrawlInboxPanel");
+      if (!host) {
+        host = document.createElement("section");
+        host.id = "recrawlInboxPanel";
+        host.className = "card recrawl-inbox-panel";
+        const main = document.querySelector(".main-column") || document.body;
+        main.appendChild(host);
+      }
+      const rows = data.items || [];
+      host.innerHTML = `
+        <div class="section-bar tight">
+          <h2>工作流标记</h2>
+          <span class="muted-hint">${escapeHtml(data.workflow_filter || "any")} · ${total} 人</span>
+          <button type="button" class="btn ghost sm" id="btnCloseMarked">收起</button>
+        </div>
+        <div class="table-wrap">
+          <table class="vision-table">
+            <thead><tr><th>姓名</th><th>状态</th><th>单位</th><th>省/市</th><th>操作</th></tr></thead>
+            <tbody>
+              ${
+                rows.length
+                  ? rows
+                      .map((it) => {
+                        const wf = (it.workflow && it.workflow.label) || "—";
+                        const pid = it.person_id || "";
+                        return `<tr>
+                          <td>${escapeHtml(it.name || "—")}</td>
+                          <td>${escapeHtml(wf)}</td>
+                          <td>${escapeHtml(it.unit_name || "—")}</td>
+                          <td>${escapeHtml([it.province, it.city].filter(Boolean).join(" / ") || "—")}</td>
+                          <td><button type="button" class="btn sm" data-wf="resume" data-pid="${escapeHtml(
+                            pid
+                          )}" data-name="${escapeHtml(it.name || "")}">恢复</button></td>
+                        </tr>`;
+                      })
+                      .join("")
+                  : `<tr><td colspan="5">无标记</td></tr>`
+              }
+            </tbody>
+          </table>
+        </div>`;
+      $("btnCloseMarked")?.addEventListener("click", () => {
+        host.innerHTML = "";
+      });
+      host.querySelectorAll("[data-wf]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          markPersonWorkflow(
+            btn.getAttribute("data-pid"),
+            btn.getAttribute("data-wf"),
+            btn.getAttribute("data-name") || ""
+          ).then(() => loadMarkedPeople());
+        });
+      });
+      host.scrollIntoView({ behavior: "smooth", block: "start" });
+    } catch (err) {
+      toast(`读取工作流标记失败：${err.message || err}`);
     }
   }
 
@@ -903,7 +1024,6 @@
       if (retryTop) msg += ` · 重跑:${retryTop}`;
       if (heldTop) msg += ` · 扣下:${heldTop}`;
       toast(msg);
-      // Stash last split on state so the evidence panel / console can inspect.
       state.lastRequeue = data;
       await refreshAll({ softDetail: true });
     } catch (err) {
@@ -959,6 +1079,7 @@
       }
     });
     $("btnRecrawlInbox")?.addEventListener("click", () => loadRecrawlInbox());
+    $("btnMarkedPeople")?.addEventListener("click", () => loadMarkedPeople());
 
     $("invByCity")?.addEventListener("click", (ev) => {
       const btn = ev.target.closest("button[data-prov]");
