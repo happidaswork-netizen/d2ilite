@@ -24,22 +24,41 @@ from pathlib import Path
 
 import paramiko
 
-ROOT = Path(os.environ.get("D2I_REPO_ROOT", r"D:\bugemini\d2ilite"))
+ROOT = Path(os.environ.get("D2I_REPO_ROOT") or Path(__file__).resolve().parents[2])
 DIST = ROOT / "deploy" / "nas" / "dist"
 PACKAGE_SCRIPT = ROOT / "deploy" / "nas" / "package_d2i_cloud_release.py"
+CRED_ROOT = Path(
+    r"C:\Users\rpy\OneDrive\个人知识库\AI备份\02_服务器部署与网络配置_重要勿删"
+    r"\20_SSH密钥库_高敏感\_连接命令与密码记录"
+)
 CRED = Path(
     os.environ.get("D2I_NAS_CRED_FILE")
-    or (
-        r"C:\Users\rpy\OneDrive\个人知识库\AI备份\02_服务器部署与网络配置_重要勿删"
-        r"\20_SSH密钥库_高敏感\_连接命令与密码记录\feiniu_nas_登录凭据.md"
-    )
+    or (CRED_ROOT / "feiniu_nas_登录凭据.md")
+)
+VMISS_CRED = Path(
+    os.environ.get("D2I_VMISS_CRED_FILE")
+    or (CRED_ROOT / "oracle-amd_常用SSH命令_含VMISS密码")
 )
 HOST = os.environ.get("D2I_NAS_HOST", "192.168.5.36")
 USER = os.environ.get("D2I_NAS_USER", "happidas")
+# 1 / true / yes → force VMISS reverse tunnel (外网默认应开)
+VIA_VMISS = str(os.environ.get("D2I_NAS_VIA_VMISS", "1")).strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "y",
+    "on",
+}
+VMISS_HOST = os.environ.get("D2I_VMISS_HOST", "38.244.62.58")
+VMISS_USER = os.environ.get("D2I_VMISS_USER", "root")
+VMISS_TUNNEL_PORT = int(os.environ.get("D2I_VMISS_TUNNEL_PORT", "10022"))
 REMOTE_BASE = "/vol1/1001/d2i-cloud"
 REMOTE_RELEASES = f"{REMOTE_BASE}/releases"
 REMOTE_CURRENT = f"{REMOTE_BASE}/current"
 REMOTE_COMPOSE = f"{REMOTE_BASE}/docker-compose.d2i-cloud.yml"
+
+# Keep jump host alive for the duration of the deploy (SFTP + many execs).
+_VMISS_HOLD: paramiko.SSHClient | None = None
 
 
 def load_password() -> str:
@@ -50,7 +69,18 @@ def load_password() -> str:
     return m.group(1).strip().strip("`\"'")
 
 
-def connect() -> paramiko.SSHClient:
+def load_vmiss_password() -> str:
+    text = VMISS_CRED.read_text(encoding="utf-8")
+    m = re.search(r"##\s*密码\s*\r?\n\s*([^\r\n]+)", text)
+    if not m:
+        # fallback: first non-empty line after a 密码 label
+        m = re.search(r"密码[：:\s]*\r?\n\s*([^\r\n]+)", text)
+    if not m:
+        raise SystemExit("VMISS password not found in credentials note")
+    return m.group(1).strip().strip("`\"'")
+
+
+def connect_direct() -> paramiko.SSHClient:
     c = paramiko.SSHClient()
     c.set_missing_host_key_policy(paramiko.AutoAddPolicy())
     c.connect(
@@ -63,6 +93,61 @@ def connect() -> paramiko.SSHClient:
         banner_timeout=40,
     )
     return c
+
+
+def connect_via_vmiss() -> paramiko.SSHClient:
+    """本机 → VMISS → 127.0.0.1:10022 → NAS happidas (reverse tunnel)."""
+    global _VMISS_HOLD
+    vmiss_password = load_vmiss_password()
+    nas_password = load_password()
+    vmiss = paramiko.SSHClient()
+    vmiss.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    print(f"vmiss jump {VMISS_USER}@{VMISS_HOST} -> 127.0.0.1:{VMISS_TUNNEL_PORT}")
+    vmiss.connect(
+        VMISS_HOST,
+        username=VMISS_USER,
+        password=vmiss_password,
+        timeout=25,
+        auth_timeout=25,
+        banner_timeout=40,
+        allow_agent=False,
+        look_for_keys=False,
+    )
+    _VMISS_HOLD = vmiss
+    transport = vmiss.get_transport()
+    if transport is None:
+        vmiss.close()
+        raise SystemExit("VMISS transport missing after connect")
+    channel = transport.open_channel(
+        "direct-tcpip",
+        ("127.0.0.1", VMISS_TUNNEL_PORT),
+        ("127.0.0.1", 0),
+    )
+    nas = paramiko.SSHClient()
+    nas.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    nas.connect(
+        "127.0.0.1",
+        port=VMISS_TUNNEL_PORT,
+        username=USER,
+        password=nas_password,
+        sock=channel,
+        timeout=25,
+        auth_timeout=25,
+        banner_timeout=40,
+        allow_agent=False,
+        look_for_keys=False,
+    )
+    return nas
+
+
+def connect() -> paramiko.SSHClient:
+    if VIA_VMISS:
+        return connect_via_vmiss()
+    try:
+        return connect_direct()
+    except Exception as exc:  # noqa: BLE001
+        print(f"direct connect failed ({exc!r}); falling back to VMISS tunnel")
+        return connect_via_vmiss()
 
 
 def run(c: paramiko.SSHClient, cmd: str, timeout: int = 300) -> tuple[int, str, str]:
@@ -474,42 +559,94 @@ PY
             print("DEPLOY_FAILED", stamp)
             return 5
 
-        # LAN smoke from this machine
-        print("lan smoke")
-        web_token = load_web_token()
-        print("lan_token_present", bool(web_token), "len", len(web_token))
-        st, body = http_json(f"http://{HOST}:8787/health")
-        print("lan /health", st, body)
-        st, body = http_json(f"http://{HOST}:8787/api/v1/library?limit=2", token=web_token, timeout=90)
-        if isinstance(body, dict):
+        # LAN smoke only when we can reach the NAS on the LAN. Via VMISS the remote
+        # critical smoke already covered health/status/queues/vision.
+        if VIA_VMISS or _VMISS_HOLD is not None:
+            print("lan smoke SKIPPED (via VMISS / no LAN path); remote critical gate already passed")
+        else:
+            print("lan smoke")
+            web_token = load_web_token()
+            print("lan_token_present", bool(web_token), "len", len(web_token))
+            st, body = http_json(f"http://{HOST}:8787/health")
+            print("lan /health", st, body)
+            st, body = http_json(f"http://{HOST}:8787/api/v1/library?limit=2", token=web_token, timeout=90)
+            if isinstance(body, dict):
+                print(
+                    "lan /api/v1/library",
+                    st,
+                    "total",
+                    body.get("total"),
+                    "previewable",
+                    body.get("previewable"),
+                    "queue_count",
+                    body.get("queue_count"),
+                    "source",
+                    body.get("source"),
+                )
+            else:
+                print("lan /api/v1/library", st, body)
+            st, body = http_json(f"http://{HOST}:8787/api/v1/coverage/tree", token=web_token, timeout=90)
             print(
-                "lan /api/v1/library",
+                "lan /api/v1/coverage/tree",
                 st,
-                "total",
-                body.get("total"),
-                "previewable",
-                body.get("previewable"),
-                "queue_count",
-                body.get("queue_count"),
-                "source",
-                body.get("source"),
+                type(body).__name__,
+                list(body)[:6] if isinstance(body, dict) else body,
             )
-        else:
-            print("lan /api/v1/library", st, body)
-        st, body = http_json(f"http://{HOST}:8787/api/v1/coverage/tree", token=web_token, timeout=90)
-        print("lan /api/v1/coverage/tree", st, type(body).__name__, list(body)[:6] if isinstance(body, dict) else body)
-        st, body = http_json(f"http://{HOST}:8787/api/v1/status", token=web_token, timeout=30)
-        if isinstance(body, dict):
-            print("lan /api/v1/status", st, "auth_enabled", body.get("auth_enabled"), "promoted", body.get("promoted"))
-        else:
-            print("lan /api/v1/status", st, body)
-        # page routes
-        for path in ("/library", "/coverage"):
-            try:
-                with urllib.request.urlopen(f"http://{HOST}:8787{path}", timeout=30) as r:
-                    print("lan", path, r.status, r.headers.get("Content-Type"), "len", r.headers.get("Content-Length"))
-            except Exception as e:  # noqa: BLE001
-                print("lan", path, "ERR", e)
+            st, body = http_json(f"http://{HOST}:8787/api/v1/status", token=web_token, timeout=30)
+            if isinstance(body, dict):
+                print(
+                    "lan /api/v1/status",
+                    st,
+                    "auth_enabled",
+                    body.get("auth_enabled"),
+                    "promoted",
+                    body.get("promoted"),
+                )
+            else:
+                print("lan /api/v1/status", st, body)
+            for path in ("/library", "/coverage"):
+                try:
+                    with urllib.request.urlopen(f"http://{HOST}:8787{path}", timeout=30) as r:
+                        print(
+                            "lan",
+                            path,
+                            r.status,
+                            r.headers.get("Content-Type"),
+                            "len",
+                            r.headers.get("Content-Length"),
+                        )
+                except Exception as e:  # noqa: BLE001
+                    print("lan", path, "ERR", e)
+
+        # Extra remote check: theme assets that this release fixes.
+        theme_smoke = r"""
+python3 - <<'PY'
+import urllib.request
+for path in (
+    '/static/shell.js',
+    '/static/styles.css',
+    '/static/styles.observatory.css',
+):
+    req = urllib.request.Request('http://127.0.0.1:8787' + path)
+    with urllib.request.urlopen(req, timeout=30) as r:
+        body = r.read()
+        text = body.decode('utf-8', 'replace')
+        print(path, r.status, 'bytes', len(body),
+              'hasIcon' if 'hasIcon' in text else '',
+              'd2i-icon' if 'data-d2i-icon' in text or 'd2i-icon' in text else '',
+              'observatory' if 'observatory' in text.lower() else '')
+print('theme_assets_ok')
+PY
+"""
+        code, out, err = run(c, theme_smoke, timeout=60)
+        print(out.strip())
+        if err.strip():
+            print("theme_smoke_err", err[:400])
+        if code != 0:
+            print("GATE_FAILED theme asset smoke rc", code)
+            rollback(c, prev_release, stamp)
+            print("DEPLOY_FAILED", stamp)
+            return 6
 
         note = DIST / f"DEPLOY-{stamp}.txt"
         note.write_text(
@@ -521,7 +658,8 @@ PY
                     f"previous_release={prev_release}",
                     f"current={REMOTE_CURRENT}",
                     f"host={HOST}",
-                    "gates=import-smoke,health,critical-api",
+                    f"via_vmiss={int(VIA_VMISS or _VMISS_HOLD is not None)}",
+                    "gates=import-smoke,health,critical-api,theme-assets",
                     f"built_at={datetime.now().isoformat(timespec='seconds')}",
                     "",
                 ]
@@ -532,7 +670,18 @@ PY
         print("DEPLOY_OK", stamp)
         return 0
     finally:
-        c.close()
+        try:
+            c.close()
+        except Exception:
+            pass
+        hold = _VMISS_HOLD
+        if hold is not None:
+            try:
+                hold.close()
+            except Exception:
+                pass
+            # clear module-level jump hold without rebinding via global in finally
+            globals()["_VMISS_HOLD"] = None
 
 
 if __name__ == "__main__":
