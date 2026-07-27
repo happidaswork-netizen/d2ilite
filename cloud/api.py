@@ -123,6 +123,14 @@ class InboxPatchBody(BaseModel):
     reason: str = ""
 
 
+class SourceProbeBody(BaseModel):
+    """P0-4: read-only source_url probe."""
+
+    person_id: str = ""
+    source_url: str = ""
+    timeout: float = 12.0
+
+
 class VisionPumpBody(BaseModel):
     max_running: int = 1
     max_claim: int = 0
@@ -467,6 +475,30 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=404, detail=f"person not found: {person_id}")
         return {"ok": True, "person": row}
 
+    @api.get("/people/search")
+    def people_search(
+        q: str = Query(default=""),
+        province: str = Query(default=""),
+        city: str = Query(default=""),
+        unit_like: str = Query(default=""),
+        workflow: str = Query(default=""),
+        source_bucket: str = Query(default=""),
+        limit: int = Query(default=50, ge=1, le=500),
+    ) -> Dict[str, Any]:
+        """P1-5 light people search (not a CRM)."""
+        try:
+            return people_workflow.search_people(
+                q=q,
+                province=province,
+                city=city,
+                unit_like=unit_like,
+                workflow=workflow,
+                source_bucket=source_bucket,
+                limit=limit,
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+
     @api.get("/people/workflow/marked")
     def people_workflow_marked(
         workflow: str = Query(default=""),
@@ -480,6 +512,25 @@ def create_app() -> FastAPI:
                 limit=limit,
                 province=province,
                 city=city,
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    @api.post("/people/probe-source")
+    def people_probe_source(body: SourceProbeBody) -> Dict[str, Any]:
+        """P0-4: read-only source_url triage. Never starts a queue."""
+        from cloud import source_probe
+
+        try:
+            if body.person_id:
+                return source_probe.probe_person(
+                    str(body.person_id or ""),
+                    source_url=str(body.source_url or ""),
+                    timeout=float(body.timeout or 12),
+                )
+            return source_probe.probe_source_url(
+                str(body.source_url or ""),
+                timeout=float(body.timeout or 12),
             )
         except Exception as exc:
             raise HTTPException(status_code=500, detail=str(exc)) from exc

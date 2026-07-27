@@ -422,6 +422,66 @@
     }
   }
 
+  async function batchMarkPersons(personIds, action) {
+    const ids = (personIds || []).map((x) => String(x || "").trim()).filter(Boolean);
+    if (!ids.length || state.busy) return;
+    const label =
+      action === "no_photo"
+        ? "确认无图"
+        : action === "unusable"
+          ? "图不可用"
+          : action === "hold"
+            ? "暂挂"
+            : action;
+    if (!window.confirm(`批量 ${label}：${ids.length} 人？`)) return;
+    state.busy = true;
+    try {
+      const data = await api("/api/v1/people/mark", {
+        method: "POST",
+        body: JSON.stringify({
+          action,
+          person_ids: ids,
+          reason: `vision-ui:batch:${action}`,
+          clear_primary_path: action === "no_photo",
+        }),
+        timeoutMs: 60000,
+      });
+      toast(`批量完成 ok=${data.count_ok || 0} err=${data.count_error || 0}`);
+      await loadRecrawlInbox({ soft: true });
+    } catch (err) {
+      toast(`批量标记失败：${err.message || err}`);
+    } finally {
+      state.busy = false;
+    }
+  }
+
+  async function probePersonSource(personId, name) {
+    if (!personId || state.busy) return;
+    state.busy = true;
+    try {
+      const data = await api("/api/v1/people/probe-source", {
+        method: "POST",
+        body: JSON.stringify({ person_id: personId, timeout: 12 }),
+        timeoutMs: 20000,
+      });
+      const act = data.suggest_action || "?";
+      const concl = data.conclusion || "?";
+      const bucket = data.source_bucket ? ` · ${data.source_bucket}` : "";
+      toast(
+        `探测 ${name || personId}：${concl} → 建议 ${act}${bucket}\n${data.reason || ""}`.slice(0, 240)
+      );
+      if (act === "no_photo" && window.confirm(`探测建议确认无图\n\n${name || personId}\n${data.reason || ""}\n\n现在标记？`)) {
+        state.busy = false;
+        await markPersonWorkflow(personId, "no_photo", name);
+        return;
+      }
+    } catch (err) {
+      toast(`探测失败：${err.message || err}`);
+    } finally {
+      state.busy = false;
+    }
+  }
+
   async function showDetail(id, { soft = false } = {}) {
     if (!id) return;
     state.selectedId = id;
@@ -954,6 +1014,7 @@
           <span class="muted-hint">${escapeHtml(data.day || "")} · open ${total} · 默认只看 open</span>
           <button type="button" class="btn sm" id="btnInboxRunSelected">跑选中视觉</button>
           <button type="button" class="btn sm ghost" id="btnInboxEnqueueSelected">入队选中</button>
+          <button type="button" class="btn sm ghost" id="btnInboxBatchNoPhoto">批量确认无图</button>
           <button type="button" class="btn ghost sm" id="btnCloseInbox">收起</button>
         </div>
         <div class="muted-hint" style="margin:0 12px 8px">${escapeHtml(top)}</div>
@@ -992,6 +1053,9 @@
                       <button type="button" class="btn sm" data-run-one="${escapeHtml(pid)}" data-name="${escapeHtml(
                         it.name || ""
                       )}" ${pid ? "" : "disabled"}>跑视觉</button>
+                      <button type="button" class="btn sm ghost" data-probe="${escapeHtml(pid)}" data-name="${escapeHtml(
+                        it.name || ""
+                      )}" ${pid ? "" : "disabled"}>探测源站</button>
                     </td>
                   </tr>`;
                 })
@@ -1012,6 +1076,9 @@
       $("btnInboxEnqueueSelected")?.addEventListener("click", () => {
         enqueueSelectedPersons(pickedIds());
       });
+      $("btnInboxBatchNoPhoto")?.addEventListener("click", () => {
+        batchMarkPersons(pickedIds(), "no_photo");
+      });
       host.querySelectorAll("[data-wf]").forEach((btn) => {
         btn.addEventListener("click", () => {
           markPersonWorkflow(
@@ -1025,6 +1092,12 @@
         btn.addEventListener("click", () => {
           const pid = btn.getAttribute("data-run-one");
           if (pid) runSelectedPersons([pid]);
+        });
+      });
+      host.querySelectorAll("[data-probe]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const pid = btn.getAttribute("data-probe");
+          if (pid) probePersonSource(pid, btn.getAttribute("data-name") || "");
         });
       });
       if (!opts.soft) host.scrollIntoView({ behavior: "smooth", block: "start" });

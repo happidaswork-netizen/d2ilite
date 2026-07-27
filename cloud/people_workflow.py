@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sqlite3
 import time
 from datetime import datetime, timezone
@@ -217,6 +218,67 @@ def sql_exclude_blocked_vision(cols: set[str], *, param_prefix: str = "") -> tup
     return " AND " + " AND ".join(parts), params
 
 
+def derive_source_bucket(row: Dict[str, Any]) -> str:
+    """P1-2: cloud_queue vs legacy_import.
+
+    Cloud queue rows usually carry queue_id in notes/raw or non-legacy path forms.
+    Legacy scrape paths still look like /data/photos/originals/… with no queue trail.
+    """
+    path = str(row.get("primary_image_path") or "").replace("\\", "/")
+    notes = str(row.get("notes") or "")
+    raw = str(row.get("raw_json") or row.get("extra_json") or "")
+    blob = f"{notes}\n{raw}"
+    if re.search(r"\bq_[0-9a-f]{6,}\b", blob) or "queue_id" in blob or "promoted_at" in blob:
+        return "cloud_queue"
+    if path.startswith("/data/photos/originals/") or "山东公开官员" in path:
+        return "legacy_import"
+    if path.startswith("/runtime/portrait/") or "/角色肖像/" in path or path.startswith("/vol1/1001/角色肖像"):
+        # could be either; prefer cloud if notes mention workflow promote
+        if "promoted" in blob.lower() or "workflow:rebind" in blob:
+            return "cloud_queue"
+        # default: path under portrait without queue trail → still treat as legacy if no visual
+        if not str(row.get("visual_gender") or "").strip() and not re.search(r"q_", blob):
+            return "legacy_import"
+        return "cloud_queue"
+    if not path:
+        return "legacy_import"
+    return "legacy_import"
+
+
+def enrich_path_info(row: Dict[str, Any]) -> Dict[str, Any]:
+    """P1-1: resolved_path / on_disk / width / height / size_bytes for API consumers."""
+    from cloud.vision_service import resolve_image_path
+
+    raw = str(row.get("primary_image_path") or "").strip()
+    info: Dict[str, Any] = {
+        "primary_image_path": raw,
+        "resolved_path": "",
+        "on_disk": False,
+        "width": 0,
+        "height": 0,
+        "min_edge": 0,
+        "size_bytes": 0,
+        "error_code": "",
+    }
+    if not raw:
+        info["error_code"] = "no_primary_path"
+        return info
+    resolved = resolve_image_path(raw)
+    if resolved is None:
+        info["error_code"] = "image_not_found"
+        return info
+    info["resolved_path"] = str(resolved).replace("\\", "/")
+    inspect = _inspect_image_file(resolved)
+    info["on_disk"] = bool(inspect.get("exists"))
+    info["width"] = int(inspect.get("width") or 0)
+    info["height"] = int(inspect.get("height") or 0)
+    info["min_edge"] = int(inspect.get("min_edge") or 0)
+    info["size_bytes"] = int(inspect.get("size_bytes") or 0)
+    if not inspect.get("ok"):
+        info["error_code"] = str(inspect.get("error_code") or "image_invalid")
+    return info
+
+
 def get_person(person_id: str, *, people_db: Optional[Path] = None) -> Optional[Dict[str, Any]]:
     pid = str(person_id or "").strip()
     if not pid:
@@ -257,6 +319,8 @@ def get_person(person_id: str, *, people_db: Optional[Path] = None) -> Optional[
             return None
         data = dict(row)
         data["workflow"] = workflow_state_from_row(data)
+        data["source_bucket"] = derive_source_bucket(data)
+        data["path_info"] = enrich_path_info(data)
         return data
     finally:
         conn.close()
@@ -619,11 +683,141 @@ def list_marked(
             data = dict(row)
             data["workflow"] = workflow_state_from_row(data)
             items.append(data)
+        # enrich lightly
+        for data in items:
+            data["source_bucket"] = derive_source_bucket(data)
         return {
             "ok": True,
             "workflow_filter": wf or "any_blocked",
             "total": len(items),
             "items": items,
+        }
+    finally:
+        conn.close()
+
+
+def search_people(
+    *,
+    q: str = "",
+    province: str = "",
+    city: str = "",
+    unit_like: str = "",
+    workflow: str = "",
+    source_bucket: str = "",
+    limit: int = 50,
+    people_db: Optional[Path] = None,
+) -> Dict[str, Any]:
+    """P1-5: light people search — not a CRM.
+
+    Returns rows + same-name collision hints + dirty unit_name flags.
+    """
+    conn = _open(people_db)
+    try:
+        cols = _cols(conn)
+        select = [
+            c
+            for c in (
+                "person_id",
+                "name",
+                "gender",
+                "unit_name",
+                "province",
+                "city",
+                "primary_image_path",
+                "source_url",
+                "image_status",
+                "source_page_image_status",
+                "source_image_status",
+                "file_status",
+                "repair_status",
+                "visual_gender",
+            )
+            if c in cols
+        ]
+        if "person_id" not in select or "name" not in select:
+            return {"ok": False, "error": "people schema incomplete", "items": [], "total": 0}
+        where = ["1=1"]
+        params: List[Any] = []
+        qq = str(q or "").strip()
+        if qq:
+            where.append("(name LIKE ? OR unit_name LIKE ? OR person_id = ?)")
+            params.extend([f"%{qq}%", f"%{qq}%", qq])
+        if province and "province" in cols:
+            where.append("province = ?")
+            params.append(province)
+        if city and "city" in cols:
+            where.append("city = ?")
+            params.append(city)
+        if unit_like and "unit_name" in cols:
+            where.append("unit_name LIKE ?")
+            params.append(f"%{unit_like}%")
+        # workflow coarse filter reuses list_marked semantics via post-filter
+        lim = max(1, min(int(limit or 50), 500))
+        sql = (
+            f"SELECT {', '.join(select)} FROM people WHERE {' AND '.join(where)} "
+            f"ORDER BY rowid DESC LIMIT ?"
+        )
+        params.append(lim * 3)  # over-fetch then filter
+        raw_items: List[Dict[str, Any]] = []
+        for row in conn.execute(sql, tuple(params)):
+            data = dict(row)
+            data["workflow"] = workflow_state_from_row(data)
+            data["source_bucket"] = derive_source_bucket(data)
+            raw_items.append(data)
+
+        wf = str(workflow or "").strip().lower()
+        sb = str(source_bucket or "").strip().lower()
+        items: List[Dict[str, Any]] = []
+        name_counts: Dict[str, int] = {}
+        for data in raw_items:
+            if wf:
+                w = str((data.get("workflow") or {}).get("workflow") or "")
+                if wf in {"no_photo", "no_photo_confirmed"} and w != "no_photo_confirmed":
+                    continue
+                if wf == "hold" and w != "hold":
+                    continue
+                if wf == "unusable" and w != "unusable_asset":
+                    continue
+                if wf == "open" and w not in {"open", "has_photo"}:
+                    continue
+            if sb and data.get("source_bucket") != sb:
+                continue
+            nm = str(data.get("name") or "")
+            name_counts[nm] = int(name_counts.get(nm) or 0) + 1
+            unit = str(data.get("unit_name") or "")
+            data["dirty_unit"] = bool(
+                unit
+                and (
+                    len(unit) > 40
+                    or re.search(r"(要闻|动态|首页|导航|菜单|undefined|null|测试)", unit)
+                    or unit in {"未知", "未命名", "(空)"}
+                )
+            )
+            items.append(data)
+            if len(items) >= lim:
+                break
+        collisions = [
+            {"name": n, "count": c}
+            for n, c in sorted(name_counts.items(), key=lambda kv: -kv[1])
+            if c >= 2 and n
+        ][:20]
+        for data in items:
+            nm = str(data.get("name") or "")
+            data["name_collision"] = int(name_counts.get(nm) or 0) >= 2
+        return {
+            "ok": True,
+            "total": len(items),
+            "items": items,
+            "name_collisions": collisions,
+            "filters": {
+                "q": qq,
+                "province": province,
+                "city": city,
+                "unit_like": unit_like,
+                "workflow": wf,
+                "source_bucket": sb,
+                "limit": lim,
+            },
         }
     finally:
         conn.close()

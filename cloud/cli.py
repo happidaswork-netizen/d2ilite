@@ -312,6 +312,34 @@ def cmd_people_rebind(args: argparse.Namespace) -> int:
     )
 
 
+def cmd_people_probe(args: argparse.Namespace) -> int:
+    body: Dict[str, Any] = {
+        "person_id": str(args.person_id or ""),
+        "source_url": str(args.source_url or ""),
+        "timeout": float(args.timeout or 12),
+    }
+    return _print(_request("POST", "/api/v1/people/probe-source", body=body, timeout=float(args.timeout or 12) + 5))
+
+
+def cmd_people_search(args: argparse.Namespace) -> int:
+    return _print(
+        _request(
+            "GET",
+            "/api/v1/people/search",
+            query={
+                "q": str(args.q or ""),
+                "province": str(args.province or ""),
+                "city": str(args.city or ""),
+                "unit_like": str(args.unit_like or ""),
+                "workflow": str(args.workflow or ""),
+                "source_bucket": str(args.source_bucket or ""),
+                "limit": int(args.limit or 50),
+            },
+            timeout=60.0,
+        )
+    )
+
+
 def cmd_vision_auto_route(args: argparse.Namespace) -> int:
     jid = str(args.job_id or "").strip()
     if not jid:
@@ -683,6 +711,27 @@ def build_parser() -> argparse.ArgumentParser:
         help="do not clear hold/no_photo repair gates on success",
     )
     p_rebind.set_defaults(func=cmd_people_rebind)
+    p_probe = p_sub.add_parser(
+        "probe-source",
+        help="read-only source_url triage (P0-4); never starts a queue",
+    )
+    p_probe.add_argument("--person-id", default="")
+    p_probe.add_argument("--source-url", default="")
+    p_probe.add_argument("--timeout", type=float, default=12.0)
+    p_probe.set_defaults(func=cmd_people_probe)
+    p_search = p_sub.add_parser("search", help="light people search (P1-5)")
+    p_search.add_argument("-q", "--q", default="", help="name / unit / person_id")
+    p_search.add_argument("--province", default="")
+    p_search.add_argument("--city", default="")
+    p_search.add_argument("--unit-like", default="")
+    p_search.add_argument("--workflow", default="", help="no_photo|hold|unusable|open")
+    p_search.add_argument(
+        "--source-bucket",
+        default="",
+        help="cloud_queue|legacy_import",
+    )
+    p_search.add_argument("--limit", type=int, default=50)
+    p_search.set_defaults(func=cmd_people_search)
 
     return parser
 

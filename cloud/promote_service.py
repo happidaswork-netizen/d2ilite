@@ -33,6 +33,17 @@ FORBIDDEN_WRITE_MARKERS = (
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp"}
 GENDER_DIRS = {"男", "女", "未知"}
 
+# P1-4: promote-time image QA (min edge; placeholder filename fingerprints)
+PROMOTE_MIN_EDGE = 40
+PROMOTE_PLACEHOLDER_MARKERS = (
+    "pub-user-portrait",
+    "default_avatar",
+    "default-avatar",
+    "noavatar",
+    "placeholder",
+    "head_default",
+)
+
 _ADMIN_LEVELS = ("国家级", "省级", "市级", "区县级", "乡镇级", "县级", "区级")
 # M12: county-level markers → task root is five-segment .../省/市/区县/级/单位
 _COUNTY_LEVELS = ("区县级", "县级", "区级")
@@ -278,6 +289,63 @@ def _same_file(a: Path, b: Path) -> bool:
         return os.path.samefile(a, b)
     except OSError:
         return False
+
+
+def inspect_promote_image(src: Path) -> Dict[str, Any]:
+    """P1-4 pre-promote QA: geometry + placeholder fingerprint. No network."""
+    info: Dict[str, Any] = {
+        "ok": False,
+        "path": str(src),
+        "width": 0,
+        "height": 0,
+        "min_edge": 0,
+        "size_bytes": 0,
+        "error_code": "",
+        "error": "",
+        "placeholder": False,
+    }
+    name_blob = str(src).replace("\\", "/").lower()
+    if any(m in name_blob for m in PROMOTE_PLACEHOLDER_MARKERS):
+        info["placeholder"] = True
+        info["error_code"] = "placeholder_avatar"
+        info["error"] = "filename/path looks like placeholder avatar"
+        return info
+    if not src.is_file():
+        info["error_code"] = "image_not_found"
+        info["error"] = "source file missing"
+        return info
+    try:
+        info["size_bytes"] = int(src.stat().st_size)
+    except OSError as exc:
+        info["error_code"] = "image_invalid"
+        info["error"] = f"stat:{exc}"
+        return info
+    if info["size_bytes"] <= 0:
+        info["error_code"] = "image_truncated"
+        info["error"] = "0 bytes"
+        return info
+    try:
+        from PIL import Image
+
+        with Image.open(src) as im:
+            im.load()
+            w, h = im.size
+        info["width"] = int(w)
+        info["height"] = int(h)
+        info["min_edge"] = min(int(w), int(h))
+    except Exception as exc:  # noqa: BLE001
+        msg = f"{type(exc).__name__}:{exc}"
+        info["error"] = msg
+        info["error_code"] = (
+            "image_truncated" if "truncated" in msg.lower() else "image_invalid"
+        )
+        return info
+    if info["min_edge"] < PROMOTE_MIN_EDGE:
+        info["error_code"] = "image_too_small"
+        info["error"] = f"min_edge {info['min_edge']} < {PROMOTE_MIN_EDGE}"
+        return info
+    info["ok"] = True
+    return info
 
 
 def place_image(src: Path, dest: Path, *, dry_run: bool = False) -> str:
@@ -642,6 +710,7 @@ def promote_queue_output(
         "no_photo": 0,
         "skipped": 0,
         "failed": 0,
+        "rejected_qa": 0,
         "people_insert": 0,
         "people_update": 0,
         "people_dry": 0,
@@ -664,6 +733,71 @@ def promote_queue_output(
             place_action = ""
             if src_text:
                 src = Path(src_text)
+                # P1-4: reject bad local assets before writing primary / people path
+                qa = inspect_promote_image(src)
+                rec["image_qa"] = {
+                    k: qa.get(k)
+                    for k in (
+                        "ok",
+                        "width",
+                        "height",
+                        "min_edge",
+                        "size_bytes",
+                        "error_code",
+                        "placeholder",
+                    )
+                }
+                if not qa.get("ok"):
+                    counts["rejected_qa"] += 1
+                    counts["skipped"] += 1
+                    rec.update(
+                        {
+                            "dest": "",
+                            "path_for_db": "",
+                            "place_action": f"rejected_qa:{qa.get('error_code') or 'invalid'}",
+                            "ok": False,
+                            "no_photo": False,
+                            "qa_rejected": True,
+                            "error": qa.get("error") or qa.get("error_code"),
+                        }
+                    )
+                    # Still optionally stamp people as unusable when writing
+                    if write_people and conn is not None and not dry_run:
+                        try:
+                            from cloud import people_workflow
+
+                            # Best-effort: locate by name+unit after upsert would run;
+                            # here we upsert as no usable primary.
+                            people_rec = upsert_person(
+                                conn,
+                                ctx=ctx,
+                                name=name,
+                                gender=str(item.get("gender") or ""),
+                                position=str(item.get("position") or ""),
+                                source_url=str(item.get("detail_url") or ""),
+                                list_url=str(item.get("list_url") or ctx.get("list_url") or ""),
+                                image_url=str(item.get("image_url") or ""),
+                                bio=str(item.get("bio") or ""),
+                                path=None,
+                                path_for_db="",
+                                no_photo=False,
+                                dry_run=False,
+                                queue_id=queue_id,
+                            )
+                            pid = str(people_rec.get("person_id") or "")
+                            if pid:
+                                people_workflow.mark_person(
+                                    person_id=pid,
+                                    action="unusable",
+                                    reason=f"promote QA: {qa.get('error_code')}",
+                                    clear_primary_path=False,
+                                    people_db=db_path,
+                                )
+                            rec["people"] = {**people_rec, "qa": "unusable"}
+                        except Exception as exc:  # noqa: BLE001
+                            rec["people_error"] = f"qa_mark:{exc}"
+                    results.append(rec)
+                    continue
                 ext = src.suffix.lower() if src.suffix.lower() in IMAGE_EXTS else ".jpg"
                 dest = final_base / gdir / f"{_safe_name(name)}{ext}"
                 place_action = place_image(src, dest, dry_run=dry_run)
@@ -677,6 +811,9 @@ def promote_queue_output(
                     path_for_db = _resolve_host_style_path(dest, portrait=por)
                 elif dest is not None and dest.is_file():
                     path_for_db = _resolve_host_style_path(dest, portrait=por)
+                # P1-1: prefer container-stable form when writing people
+                if path_for_db.startswith("/vol1/1001/角色肖像/"):
+                    path_for_db = "/runtime/portrait/" + path_for_db[len("/vol1/1001/角色肖像/") :]
                 rec.update(
                     {
                         "dest": str(dest) if dest else "",

@@ -28,6 +28,8 @@ d2i vision enqueue --person-ids a,b,c
 d2i people get <person_id>
 d2i people mark no_photo|hold|unusable|resume --person-id <id> [--reason …]
 d2i people rebind --person-id <id> --path <portrait> [--dry-run]
+d2i people probe-source --person-id <id>   # 只读源站分诊，不开队
+d2i people search -q <名|单位> [--source-bucket cloud_queue|legacy_import]
 d2i people marked [--workflow no_photo|hold|unusable]
 ```
 
@@ -69,6 +71,9 @@ d2i people marked [--workflow no_photo|hold|unusable]
 6. inventory **自动排除** 确认无图 / 暂挂 / 图不可用  
 7. **按人点修（优先于全市 enqueue）**：本地已有好图 → `people rebind` → `vision run --person-id`；多人 → `enqueue --person-ids a,b,c`  
 8. mark no_photo/unusable/hold 后该人从 open inbox **自动 resolved**；可 dismiss 手动忽略  
+9. **源站探图（只读）**：`people probe-source --person-id` → conclusion + suggest_action；**不开队**  
+10. **来源分桶**：`source_bucket=legacy_import` 默认 rebind/mark，不默认「修模板新开队」；`cloud_queue` 才进模板修复叙事  
+
 
 ### 工作流标记（确认无图 / 暂挂）
 
