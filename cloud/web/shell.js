@@ -26,6 +26,22 @@
 
   let signalRaf = 0;
   let signalCanvas = null;
+  let signalResizeBound = false;
+  let enhancing = false;
+  let enhanceTimer = 0;
+  let shellObserver = null;
+
+  function hasIcon(el) {
+    if (!el) return false;
+    return Boolean(
+      el.querySelector("[data-lucide], svg.lucide, [data-d2i-icon]") || el.dataset.d2iIcon
+    );
+  }
+
+  function markIcon(host, name) {
+    if (!host) return;
+    host.dataset.d2iIcon = name || "1";
+  }
 
   function currentThemeId() {
     try {
@@ -54,8 +70,8 @@
     let link = document.getElementById("d2iThemeStyles");
     if (link) return link;
     link =
-      document.querySelector('link[href*="styles.css"]') ||
-      document.querySelector('link[href*="styles.observatory.css"]');
+      document.querySelector('link[href*="styles.observatory.css"]') ||
+      document.querySelector('link[href*="styles.css"]');
     if (link) {
       link.id = "d2iThemeStyles";
       return link;
@@ -67,11 +83,40 @@
     return link;
   }
 
+  function normalizeHref(href) {
+    const s = String(href || "");
+    if (s.includes("styles.observatory.css")) return THEMES.observatory.href;
+    if (s.includes("styles.css")) return THEMES.classic.href;
+    return s;
+  }
+
   function applyTheme(id, { persist = true } = {}) {
     const theme = THEMES[id] || THEMES.classic;
     const link = ensureStylesheetLink();
-    if (link.getAttribute("href") !== theme.href) {
-      link.setAttribute("href", theme.href);
+    const current = normalizeHref(link.getAttribute("href"));
+    if (current !== theme.href) {
+      // Swap via a temporary link so classic/observatory never both stick partially,
+      // and so a failed load can fall back without leaving a blank page.
+      const next = document.createElement("link");
+      next.id = "d2iThemeStylesPending";
+      next.rel = "stylesheet";
+      next.href = theme.href;
+      const settle = () => {
+        if (link.parentNode) link.remove();
+        next.id = "d2iThemeStyles";
+      };
+      next.addEventListener("load", settle, { once: true });
+      next.addEventListener(
+        "error",
+        () => {
+          next.remove();
+          if (!link.getAttribute("href")) link.setAttribute("href", THEMES.classic.href);
+        },
+        { once: true }
+      );
+      link.insertAdjacentElement("afterend", next);
+      // If the sheet is already cached, load may have fired before listeners.
+      if (next.sheet) settle();
     }
     document.documentElement.dataset.theme = theme.id;
     document.documentElement.style.colorScheme = theme.scheme;
@@ -89,20 +134,21 @@
         /* ignore */
       }
     }
-    const btn = document.getElementById("btnThemeToggle");
-    if (btn) {
-      btn.dataset.theme = theme.id;
-      btn.title = theme.id === "observatory" ? "切换到经典主题" : "切换到观测台主题（实验）";
-      btn.setAttribute("aria-label", btn.title);
-      const label = btn.querySelector("[data-theme-label]");
-      if (label) label.textContent = theme.id === "observatory" ? "观测台" : "经典";
-    }
-    // Observatory-only atmosphere
+    syncThemeToggle(theme);
     if (theme.id === "observatory") startSignalField();
     else stopSignalField();
-    // Re-apply lucide after stylesheet swap (icons stay)
-    lucideCreate();
+    scheduleEnhance(true);
     return theme.id;
+  }
+
+  function syncThemeToggle(theme) {
+    const btn = document.getElementById("btnThemeToggle");
+    if (!btn) return;
+    btn.dataset.theme = theme.id;
+    btn.title = theme.id === "observatory" ? "切换到经典主题" : "切换到观测台主题（实验）";
+    btn.setAttribute("aria-label", btn.title);
+    const label = btn.querySelector("[data-theme-label]");
+    if (label) label.textContent = theme.id === "observatory" ? "观测台" : "经典";
   }
 
   function toggleTheme() {
@@ -124,7 +170,7 @@
   function startSignalField() {
     if (signalCanvas || document.getElementById("signalField")) return;
     const reduce = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    if (reduce) return; // never run canvas when user asks for less motion
+    if (reduce) return;
 
     const canvas = document.createElement("canvas");
     canvas.id = "signalField";
@@ -149,6 +195,7 @@
     }));
 
     function resize() {
+      if (!signalCanvas) return;
       const dpr = Math.min(window.devicePixelRatio || 1, dprCap);
       w = canvas.width = Math.floor(window.innerWidth * dpr);
       h = canvas.height = Math.floor(window.innerHeight * dpr);
@@ -156,11 +203,13 @@
       canvas.style.height = window.innerHeight + "px";
     }
     resize();
-    window.addEventListener("resize", resize, { passive: true });
+    if (!signalResizeBound) {
+      window.addEventListener("resize", resize, { passive: true });
+      signalResizeBound = true;
+    }
 
     function frame(now) {
       if (!signalCanvas) return;
-      // ~18fps — atmosphere only
       if (now - last < 55) {
         signalRaf = requestAnimationFrame(frame);
         return;
@@ -248,23 +297,24 @@
       { href: "/library", icon: ICONS.library },
     ];
     document.querySelectorAll(".side-nav .nav-item").forEach((a) => {
+      const ico = a.querySelector(".nav-ico");
+      if (!ico || hasIcon(ico)) return;
       const href = a.getAttribute("href") || "";
       const hit = map.find((m) => m.href === href);
-      const ico = a.querySelector(".nav-ico");
-      if (!ico) return;
+      let icon = hit?.icon;
       if (a.classList.contains("disabled")) {
         const label = (a.textContent || "").trim();
-        const icon = /模板/.test(label) ? ICONS.templates : ICONS.settings;
-        ico.innerHTML = `<i data-lucide="${icon}"></i>`;
-        return;
+        icon = /模板/.test(label) ? ICONS.templates : ICONS.settings;
       }
-      if (hit) ico.innerHTML = `<i data-lucide="${hit.icon}"></i>`;
+      if (!icon) return;
+      ico.innerHTML = `<i data-lucide="${icon}"></i>`;
+      markIcon(ico, icon);
     });
   }
 
   function enhanceEmptyStates() {
     document.querySelectorAll(".empty-illustration").forEach((el) => {
-      if (el.querySelector("[data-lucide]")) return;
+      if (hasIcon(el)) return;
       let icon = ICONS.emptyQueue;
       if (el.classList.contains("sm")) icon = ICONS.emptyItem;
       const page = location.pathname || "/";
@@ -272,6 +322,7 @@
       if (page.startsWith("/vision")) icon = ICONS.emptyVision;
       if (page.startsWith("/library")) icon = ICONS.emptyItem;
       el.innerHTML = `<i data-lucide="${icon}"></i>`;
+      markIcon(el, icon);
     });
   }
 
@@ -301,12 +352,43 @@
     ];
     for (const { sel, icon } of map) {
       document.querySelectorAll(sel).forEach((btn) => {
-        if (btn.querySelector("[data-lucide]")) return;
+        // After lucide.createIcons, <i data-lucide> becomes <svg.lucide>.
+        // Old code only checked [data-lucide], so every poll re-injected icons
+        // and the MutationObserver re-entered forever → UI freeze + theme stuck.
+        if (hasIcon(btn) || btn.dataset.d2iIcon) return;
         const i = document.createElement("i");
         i.setAttribute("data-lucide", icon);
         btn.prepend(i);
+        markIcon(btn, icon);
       });
     }
+  }
+
+  function runEnhance(forceIcons = false) {
+    if (enhancing) return;
+    enhancing = true;
+    try {
+      // Pause observer while we mutate, otherwise lucide SVG swaps re-enter us.
+      if (shellObserver) shellObserver.disconnect();
+      enhanceNav();
+      enhanceEmptyStates();
+      enhanceButtons();
+      lucideCreate();
+      if (forceIcons) lucideCreate();
+    } finally {
+      enhancing = false;
+      if (shellObserver && document.body) {
+        shellObserver.observe(document.body, { childList: true, subtree: true });
+      }
+    }
+  }
+
+  function scheduleEnhance(forceIcons = false) {
+    if (enhanceTimer) clearTimeout(enhanceTimer);
+    enhanceTimer = setTimeout(() => {
+      enhanceTimer = 0;
+      runEnhance(forceIcons);
+    }, 40);
   }
 
   function ensureThemeToggle() {
@@ -318,11 +400,15 @@
     row.id = "btnThemeToggle";
     row.className = "theme-toggle";
     row.innerHTML = `<i data-lucide="palette"></i><span data-theme-label>经典</span>`;
-    row.addEventListener("click", () => toggleTheme());
+    markIcon(row, "palette");
+    row.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      toggleTheme();
+    });
     foot.appendChild(row);
   }
 
-  // Minimal toggle styles that work on both themes
   function ensureToggleCss() {
     if (document.getElementById("d2iThemeToggleCss")) return;
     const s = document.createElement("style");
@@ -353,16 +439,34 @@
     ensureToggleCss();
     ensureThemeToggle();
     applyTheme(currentThemeId(), { persist: true });
-    enhanceNav();
-    enhanceEmptyStates();
-    enhanceButtons();
-    lucideCreate();
-    const obs = new MutationObserver(() => {
-      enhanceEmptyStates();
-      enhanceButtons();
-      lucideCreate();
-    });
-    obs.observe(document.body, { childList: true, subtree: true });
+    runEnhance(true);
+    if (!shellObserver) {
+      shellObserver = new MutationObserver((mutations) => {
+        if (enhancing) return;
+        // Ignore pure attribute/svg swaps from lucide; only react to real node inserts
+        // that may need icons (queue cards, action buttons, empty states).
+        let interesting = false;
+        for (const m of mutations) {
+          if (m.type !== "childList" || !m.addedNodes.length) continue;
+          for (const node of m.addedNodes) {
+            if (node.nodeType !== 1) continue;
+            if (node.id === "signalField" || node.id === "d2iThemeStylesPending") continue;
+            if (node.matches?.("svg.lucide, [data-lucide], [data-d2i-icon]")) continue;
+            if (node.querySelector?.("button, .empty-illustration, .nav-ico, [data-action]")) {
+              interesting = true;
+              break;
+            }
+            if (node.matches?.("button, .empty-illustration, .queue-card, .nav-item")) {
+              interesting = true;
+              break;
+            }
+          }
+          if (interesting) break;
+        }
+        if (interesting) scheduleEnhance(false);
+      });
+      shellObserver.observe(document.body, { childList: true, subtree: true });
+    }
   }
 
   if (document.readyState === "loading") {
@@ -372,7 +476,7 @@
   }
 
   window.D2I = window.D2I || {};
-  window.D2I.refreshIcons = lucideCreate;
+  window.D2I.refreshIcons = () => scheduleEnhance(true);
   window.D2I.bootShell = bootShell;
   window.D2I.getTheme = currentThemeId;
   window.D2I.setTheme = applyTheme;
