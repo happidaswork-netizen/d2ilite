@@ -487,13 +487,8 @@ def create_app() -> FastAPI:
         return library_index.index_all_queues()
 
     # --- People photo workflow (确认无图 / 暂挂 / 恢复 / 图不可用) ---
-
-    @api.get("/people/{person_id}")
-    def people_get(person_id: str) -> Dict[str, Any]:
-        row = people_workflow.get_person(person_id)
-        if not row:
-            raise HTTPException(status_code=404, detail=f"person not found: {person_id}")
-        return {"ok": True, "person": row}
+    # Static paths (/search, /workflow/*, /mark, /probe-source) MUST be registered
+    # before /people/{person_id}, or FastAPI treats "search" as a person_id.
 
     @api.get("/people/search")
     def people_search(
@@ -592,6 +587,13 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except Exception as exc:
             raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    @api.get("/people/{person_id}")
+    def people_get(person_id: str) -> Dict[str, Any]:
+        row = people_workflow.get_person(person_id)
+        if not row:
+            raise HTTPException(status_code=404, detail=f"person not found: {person_id}")
+        return {"ok": True, "person": row}
 
     @api.post("/people/{person_id}/rebind-primary")
     def people_rebind_primary(person_id: str, body: PeopleRebindBody) -> Dict[str, Any]:
