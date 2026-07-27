@@ -71,7 +71,8 @@
           <button type="button" id="btnEnqueue" class="btn primary" title="按省/市拆批入 vision_jobs">入队</button>
           <button type="button" id="btnPump" class="btn" title="后台串行排空 queued">启动泵</button>
           <button type="button" id="btnPumpOne" class="btn" title="同步只跑 1 个 queued">跑 1 批</button>
-          <button type="button" id="btnRequeueAll" class="btn danger ghost" title="所有失败/缺图条目重新入队（已识别自动跳过）">重跑全部失败</button>
+          <button type="button" id="btnRequeueAll" class="btn" title="只重跑可恢复失败（限流/超时等）；图太小/损坏会扣下">重跑可恢复失败</button>
+          <button type="button" id="btnRequeueRecrawl" class="btn danger ghost" title="只汇总需重抓条目，不建视觉队列">汇总需重抓</button>
         </div>
       </header>
 
@@ -192,7 +193,9 @@
               </div>
               <div class="detail-actions" id="detailActions">
                 <button type="button" data-action="run" class="btn primary">运行本批</button>
-                <button type="button" data-action="requeue" class="btn">重跑失败项</button>
+                <button type="button" data-action="requeue" class="btn">重跑可恢复</button>
+                <button type="button" data-action="requeue-recrawl" class="btn ghost">汇总需重抓</button>
+                <button type="button" data-action="requeue-all" class="btn danger ghost">强制全量</button>
                 <button type="button" data-action="cancel" class="btn danger ghost">取消</button>
               </div>
             </div>

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sqlite3
 import threading
 import time
@@ -1780,19 +1781,115 @@ def _job_status_from_counts(counts: Dict[str, Any], report: Dict[str, Any]) -> s
     return "completed"
 
 
+# Failure classes for requeue policy (keep in sync with cloud/web/common.js).
+_RETRYABLE_CODES = frozenset(
+    {
+        "rate_limited",
+        "timeout",
+        "upstream_5xx",
+        "vision_runtime_unavailable",
+        "classify_failed",
+    }
+)
+_MUST_RECRAWL_CODES = frozenset(
+    {
+        "image_too_small",
+        "image_truncated",
+        "image_not_found",
+        "image_invalid",
+        "no_person",
+        "multi_person",
+        "无图",
+    }
+)
+_REVIEW_CODES = frozenset(
+    {
+        "ambiguous_name_match",
+        "gender_conflict",
+        "uncertain_visual",
+        "upstream_4xx",
+    }
+)
+
+
+def classify_vision_error(raw: Any) -> Dict[str, str]:
+    """Map free-text vision exceptions onto stable codes + bucket.
+
+    Buckets:
+      retryable   — safe to re-bill / requeue vision (limit, timeout, 5xx…)
+      must_recrawl — bad local asset; requeueing vision wastes money
+      review      — needs a human; default not auto-requeued
+    """
+    text = str(raw or "").strip()
+    low = text.lower()
+    code = "classify_failed"
+    if re.search(r"truncated|0 bytes not processed|cannot identify image|unidentifiedimageerror", low):
+        code = "image_truncated"
+    elif re.search(
+        r"too small|below the minimum|total pixels|dimensions?\s+\d+\s*[x×]\s*\d+|width and height must be at least",
+        low,
+    ):
+        code = "image_too_small"
+    elif re.search(r"image_not_found|image not found|no such file|filenotfounderror", low):
+        code = "image_not_found"
+    elif re.search(r"http_429|rate.?limit|too many requests", low):
+        code = "rate_limited"
+    elif re.search(r"timed? ?out|read timeout|connecttimeout", low):
+        code = "timeout"
+    elif re.search(r"vision_runtime_unavailable|api_key|runtime.?unavail", low):
+        code = "vision_runtime_unavailable"
+    elif re.search(r"http_5\d\d|internal server error|bad gateway|service unavailable", low):
+        code = "upstream_5xx"
+    elif re.search(r"invalid-argument|invalid.?image|unsupported.?image|bad image", low):
+        code = "image_invalid"
+    elif re.search(r"http_4\d\d|unauthorized|forbidden|invalid.?api.?key", low):
+        code = "upstream_4xx"
+    elif "ambiguous_name_match" in low:
+        code = "ambiguous_name_match"
+    elif re.search(r"no_person|person_count.?0|无可辨认人物", low):
+        code = "no_person"
+    elif re.search(r"multi_person|多人图|person_count.?[2-9]", low):
+        code = "multi_person"
+    elif text in {"image_not_found", "vision_runtime_unavailable", "classify_failed", "无图"}:
+        code = text
+
+    if code in _MUST_RECRAWL_CODES:
+        bucket = "must_recrawl"
+    elif code in _RETRYABLE_CODES:
+        bucket = "retryable"
+    elif code in _REVIEW_CODES:
+        bucket = "review"
+    else:
+        # Unknown free text: do not auto-spend; operator can force policy=all.
+        bucket = "review"
+    return {"code": code, "bucket": bucket, "raw": text[:240]}
+
+
 def requeue_failed_vision_items(
     *,
     job_id: str = "",
     batch_size: int = 20,
     start: bool = False,
     max_running: int = 1,
+    policy: str = "retryable",
+    include_review: bool = False,
 ) -> Dict[str, Any]:
     """Create retry vision_jobs from failed/missing items only (never rescrapes).
+
+    policy:
+      retryable (default) — only transient failures (limit/timeout/5xx/runtime…)
+      all                 — old behaviour: every failed/missing item
+      must_recrawl        — do NOT create vision jobs; only return the held list
+                            (bad local assets that need a new download)
 
     Re-checks people.sqlite first: anyone who has since gained a visual_gender
     is dropped instead of re-billed against the Grok relay.
     """
     from cloud import jobs_db
+
+    pol = str(policy or "retryable").strip().lower() or "retryable"
+    if pol not in {"retryable", "all", "must_recrawl"}:
+        pol = "retryable"
 
     if job_id:
         sources = [j for j in [jobs_db.get_vision_job(job_id)] if j]
@@ -1817,6 +1914,10 @@ def requeue_failed_vision_items(
             if key in seen:
                 continue
             seen.add(key)
+            err = str(it.get("error") or "")
+            if str(it.get("status") or "") == "missing" and not err:
+                err = "image_not_found"
+            cls = classify_vision_error(err)
             candidates.append(
                 {
                     "person_id": str(it.get("person_id") or ""),
@@ -1827,7 +1928,9 @@ def requeue_failed_vision_items(
                     "city": str(it.get("city") or ""),
                     "unit_name": str(it.get("unit_name") or ""),
                     "source_job": str(job.get("id") or ""),
-                    "last_error": str(it.get("error") or "")[:200],
+                    "last_error": err[:200],
+                    "error_code": cls["code"],
+                    "error_bucket": cls["bucket"],
                 }
             )
 
@@ -1836,54 +1939,116 @@ def requeue_failed_vision_items(
         [c["person_id"] for c in candidates if c["person_id"]],
         names=[c["name"] for c in candidates if not c["person_id"] and c["name"]],
     )
-    todo: List[Dict[str, Any]] = []
     already = 0
+    after_people: List[Dict[str, Any]] = []
     for cand in candidates:
         row = lookup.get(cand["person_id"]) or lookup.get(f"name:{cand['name']}")
         existing = str((row or {}).get("visual_gender") or "").strip()
         if existing and existing not in {"不确定", "不适用"}:
             already += 1
             continue
-        todo.append(cand)
+        after_people.append(cand)
+
+    # Split by bucket / policy.
+    todo: List[Dict[str, Any]] = []
+    held: List[Dict[str, Any]] = []
+    held_counts: Dict[str, int] = {}
+    retry_counts: Dict[str, int] = {}
+
+    def _bump(store: Dict[str, int], code: str) -> None:
+        store[code] = int(store.get(code) or 0) + 1
+
+    for cand in after_people:
+        bucket = str(cand.get("error_bucket") or "review")
+        code = str(cand.get("error_code") or "classify_failed")
+        take = False
+        if pol == "all":
+            take = True
+        elif pol == "must_recrawl":
+            take = False  # report only
+        else:  # retryable
+            if bucket == "retryable":
+                take = True
+            elif bucket == "review" and include_review:
+                take = True
+            else:
+                take = False
+        if take:
+            todo.append(cand)
+            _bump(retry_counts, code)
+        else:
+            held.append(
+                {
+                    "person_id": cand.get("person_id") or "",
+                    "name": cand.get("name") or "",
+                    "path": cand.get("path") or "",
+                    "error_code": code,
+                    "error_bucket": bucket,
+                    "last_error": cand.get("last_error") or "",
+                    "source_job": cand.get("source_job") or "",
+                    "province": cand.get("province") or "",
+                    "city": cand.get("city") or "",
+                }
+            )
+            _bump(held_counts, code)
 
     size = max(5, min(int(batch_size or 20), 100))
     created: List[Dict[str, Any]] = []
-    for offset in range(0, len(todo), size):
-        chunk = todo[offset : offset + size]
-        label = f"{chunk[0].get('province') or '?'}/{chunk[0].get('city') or '?'}"
-        job = jobs_db.create_vision_job(
-            name=f"retry {label} #{offset}",
-            batch_key=f"retry::{label}",
-            province=str(chunk[0].get("province") or ""),
-            city=str(chunk[0].get("city") or ""),
-            items=chunk,
-            priority=50 + offset // size,
-            force=False,
-            write_people=True,
-            dry_run=False,
-        )
-        created.append(
-            {
-                "id": job.get("id"),
-                "name": job.get("name"),
-                "total": job.get("total"),
-                "priority": job.get("priority"),
-            }
-        )
+    # must_recrawl policy: never create vision jobs (would just fail again).
+    if pol != "must_recrawl":
+        for offset in range(0, len(todo), size):
+            chunk = todo[offset : offset + size]
+            label = f"{chunk[0].get('province') or '?'}/{chunk[0].get('city') or '?'}"
+            prefix = "retry-auto" if pol == "retryable" else "retry"
+            job = jobs_db.create_vision_job(
+                name=f"{prefix} {label} #{offset}",
+                batch_key=f"{prefix}::{label}",
+                province=str(chunk[0].get("province") or ""),
+                city=str(chunk[0].get("city") or ""),
+                items=chunk,
+                priority=40 + offset // size,  # slightly ahead of fresh inventory
+                force=False,
+                write_people=True,
+                dry_run=False,
+            )
+            created.append(
+                {
+                    "id": job.get("id"),
+                    "name": job.get("name"),
+                    "total": job.get("total"),
+                    "priority": job.get("priority"),
+                }
+            )
 
     pump = None
     if start and created:
         pump = pump_vision_jobs(max_running=max_running, background=True)
     return {
         "ok": True,
+        "policy": pol,
+        "include_review": bool(include_review),
         "source_jobs": len(sources),
         "failed_items_seen": len(candidates),
         "skipped_already_visioned": already,
-        "requeued_items": len(todo),
+        "requeued_items": len(todo) if pol != "must_recrawl" else 0,
+        "held_items": len(held),
+        "retry_reason_counts": retry_counts,
+        "held_reason_counts": held_counts,
+        # Cap payload: UI only needs a sample of held paths for operators.
+        "held_sample": held[:40],
         "created_jobs": len(created),
         "jobs": created,
         "pump": pump,
         "counts": jobs_db.vision_job_counts(),
+        "hint": (
+            "已按「可恢复失败」建重跑队列；图太小/损坏等已扣下，请先重抓原图再入视觉。"
+            if pol == "retryable"
+            else (
+                "仅汇总需重抓条目，未建视觉队列。"
+                if pol == "must_recrawl"
+                else "已按旧策略把全部失败项重新入视觉队。"
+            )
+        ),
     }
 
 

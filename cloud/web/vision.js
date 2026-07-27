@@ -327,7 +327,13 @@
       $("detailActions").querySelectorAll("button[data-action]").forEach((btn) => {
         if (btn.dataset.action === "run") btn.disabled = state.busy || !canRun;
         if (btn.dataset.action === "cancel") btn.disabled = state.busy || !canCancel;
-        if (btn.dataset.action === "requeue") btn.disabled = state.busy || !canRequeue;
+        if (
+          btn.dataset.action === "requeue" ||
+          btn.dataset.action === "requeue-all" ||
+          btn.dataset.action === "requeue-recrawl"
+        ) {
+          btn.disabled = state.busy || !canRequeue;
+        }
       });
 
       const cards = [
@@ -747,23 +753,57 @@
     }
   }
 
-  async function requeueFailed(jobId) {
+  async function requeueFailed(jobId, { policy = "retryable", includeReview = false } = {}) {
     if (state.busy) return;
     state.busy = true;
     try {
-      const body = { job_id: jobId || "", batch_size: 20, start: true, max_running: 1 };
+      const body = {
+        job_id: jobId || "",
+        batch_size: 20,
+        start: policy !== "must_recrawl",
+        max_running: 1,
+        policy,
+        include_review: Boolean(includeReview),
+      };
       const data = await api("/api/v1/ai/vision/requeue-failed", {
         method: "POST",
         body: JSON.stringify(body),
         timeoutMs: 120000,
       });
-      toast(
-        `失败重跑：新建 ${data.created_jobs || 0} 批 / ${data.requeued_items || 0} 人` +
-          (data.skipped_already_visioned ? ` · 已识别跳过 ${data.skipped_already_visioned}` : "")
-      );
+      const held = Number(data.held_items || 0);
+      const requeued = Number(data.requeued_items || 0);
+      const created = Number(data.created_jobs || 0);
+      const already = Number(data.skipped_already_visioned || 0);
+      const heldTop = Object.entries(data.held_reason_counts || {})
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 3)
+        .map(([k, n]) => `${k}×${n}`)
+        .join(" · ");
+      const retryTop = Object.entries(data.retry_reason_counts || {})
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 3)
+        .map(([k, n]) => `${k}×${n}`)
+        .join(" · ");
+      let msg = data.hint || "";
+      if (!msg) {
+        if (policy === "must_recrawl") {
+          msg = `需重抓 ${held} 人（未建视觉队列）`;
+        } else {
+          msg = `可恢复重跑：新建 ${created} 批 / ${requeued} 人`;
+          if (held) msg += ` · 扣下需重抓 ${held}`;
+        }
+      } else {
+        msg = `${msg}（入队 ${created} 批/${requeued} 人` + (held ? `，扣下 ${held}` : "") + "）";
+      }
+      if (already) msg += ` · 已识别跳过 ${already}`;
+      if (retryTop) msg += ` · 重跑:${retryTop}`;
+      if (heldTop) msg += ` · 扣下:${heldTop}`;
+      toast(msg);
+      // Stash last split on state so the evidence panel / console can inspect.
+      state.lastRequeue = data;
       await refreshAll({ softDetail: true });
     } catch (err) {
-      toast(`重跑失败项出错：${err.message || err}`);
+      toast(`分流重跑出错：${err.message || err}`);
     } finally {
       state.busy = false;
     }
@@ -794,8 +834,24 @@
     $("btnPlan")?.addEventListener("click", () => runPlan());
     $("btnEnqueue")?.addEventListener("click", () => runEnqueue());
     $("btnRequeueAll")?.addEventListener("click", () => {
-      if (window.confirm("把所有批次的失败/缺图条目重新入队并启动泵？（已识别的人会自动跳过）")) {
-        requeueFailed("");
+      if (
+        window.confirm(
+          "只重跑「可恢复」失败（限流/超时/上游 5xx 等），并启动泵。\n\n" +
+            "图太小 / 图片损坏 / 缺图 会扣下，不进视觉队列（避免白烧 Grok）。\n" +
+            "需要强制全量重跑请用详情里的「强制全量」。"
+        )
+      ) {
+        requeueFailed("", { policy: "retryable" });
+      }
+    });
+    $("btnRequeueRecrawl")?.addEventListener("click", () => {
+      if (
+        window.confirm(
+          "只汇总「需重抓」条目（图太小/损坏/缺图），不建视觉队列、不计费。\n\n" +
+            "结果会 toast 数量；详细 sample 在控制台 state.lastRequeue.held_sample。"
+        )
+      ) {
+        requeueFailed("", { policy: "must_recrawl" });
       }
     });
 
@@ -829,10 +885,30 @@
       if (btn.dataset.action === "requeue") {
         if (
           window.confirm(
-            "把本批失败/缺图条目重新入队并启动泵？\n\n将调用 Grok 产生真实计费；已识别的人会自动跳过。"
+            "本批：只把「可恢复」失败（限流/超时等）重新入队并启动泵。\n\n" +
+              "图太小/损坏/缺图会扣下，不进视觉（避免白烧 Grok）。"
           )
         ) {
-          requeueFailed(state.selectedId);
+          requeueFailed(state.selectedId, { policy: "retryable" });
+        }
+      }
+      if (btn.dataset.action === "requeue-all") {
+        if (
+          window.confirm(
+            "本批：强制把全部失败/缺图重新入视觉队并启动泵？\n\n" +
+              "图太小/损坏的也会再跑一遍（大概率再失败，仍会产生调用）。"
+          )
+        ) {
+          requeueFailed(state.selectedId, { policy: "all" });
+        }
+      }
+      if (btn.dataset.action === "requeue-recrawl") {
+        if (
+          window.confirm(
+            "本批：只汇总「需重抓」条目，不建视觉队列、不计费。"
+          )
+        ) {
+          requeueFailed(state.selectedId, { policy: "must_recrawl" });
         }
       }
     });

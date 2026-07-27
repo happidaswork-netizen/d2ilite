@@ -103,6 +103,9 @@ class VisionRequeueBody(BaseModel):
     batch_size: int = 20
     start: bool = False
     max_running: int = 1
+    # retryable (default) | all | must_recrawl
+    policy: str = "retryable"
+    include_review: bool = False
 
 
 class QueueVisionBody(BaseModel):
@@ -546,6 +549,8 @@ def create_app() -> FastAPI:
                 batch_size=int(payload.batch_size or 20),
                 start=bool(payload.start),
                 max_running=int(payload.max_running or 1),
+                policy=str(payload.policy or "retryable"),
+                include_review=bool(payload.include_review),
             )
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
