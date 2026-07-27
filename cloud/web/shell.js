@@ -1,15 +1,26 @@
-/* Theme switcher + Lucide chrome. Classic is default; Observatory is opt-in. */
+/* Theme switcher + Lucide chrome.
+   classic (default) → observatory-day → observatory (dark) → classic … */
 (() => {
   const KEY = "d2i_cloud_theme";
   const THEMES = {
     classic: { id: "classic", label: "经典", href: "/static/styles.css", scheme: "light" },
+    "observatory-day": {
+      id: "observatory-day",
+      label: "日间观测台",
+      href: "/static/styles.observatory-day.css",
+      scheme: "light",
+      signal: "day",
+    },
     observatory: {
       id: "observatory",
       label: "观测台",
       href: "/static/styles.observatory.css",
       scheme: "dark",
+      signal: "dark",
     },
   };
+  // Cycle order for the side-foot toggle button.
+  const THEME_ORDER = ["classic", "observatory-day", "observatory"];
 
   const ICONS = {
     queues: "list-ordered",
@@ -70,6 +81,7 @@
     let link = document.getElementById("d2iThemeStyles");
     if (link) return link;
     link =
+      document.querySelector('link[href*="styles.observatory-day.css"]') ||
       document.querySelector('link[href*="styles.observatory.css"]') ||
       document.querySelector('link[href*="styles.css"]');
     if (link) {
@@ -85,9 +97,16 @@
 
   function normalizeHref(href) {
     const s = String(href || "");
+    // More specific first: day sheet also contains "styles.observatory".
+    if (s.includes("styles.observatory-day.css")) return THEMES["observatory-day"].href;
     if (s.includes("styles.observatory.css")) return THEMES.observatory.href;
     if (s.includes("styles.css")) return THEMES.classic.href;
     return s;
+  }
+
+  function nextThemeId(current) {
+    const i = THEME_ORDER.indexOf(current);
+    return THEME_ORDER[(i < 0 ? 0 : i + 1) % THEME_ORDER.length];
   }
 
   function applyTheme(id, { persist = true } = {}) {
@@ -95,13 +114,20 @@
     const link = ensureStylesheetLink();
     const current = normalizeHref(link.getAttribute("href"));
     if (current !== theme.href) {
-      // Swap via a temporary link so classic/observatory never both stick partially,
-      // and so a failed load can fall back without leaving a blank page.
+      // Atomic-ish swap: insert the next sheet, then drop the old one once it
+      // is ready. Also settle on a short timer — some engines delay `load`
+      // when the sheet starts with @import (Google Fonts), which left a
+      // permanent d2iThemeStylesPending and made the toggle look stuck.
+      const stale = document.getElementById("d2iThemeStylesPending");
+      if (stale) stale.remove();
       const next = document.createElement("link");
       next.id = "d2iThemeStylesPending";
       next.rel = "stylesheet";
       next.href = theme.href;
+      let settled = false;
       const settle = () => {
+        if (settled) return;
+        settled = true;
         if (link.parentNode) link.remove();
         next.id = "d2iThemeStyles";
       };
@@ -110,13 +136,16 @@
         "error",
         () => {
           next.remove();
-          if (!link.getAttribute("href")) link.setAttribute("href", THEMES.classic.href);
+          if (!document.getElementById("d2iThemeStyles") && link.parentNode) {
+            link.id = "d2iThemeStyles";
+            if (!link.getAttribute("href")) link.setAttribute("href", THEMES.classic.href);
+          }
         },
         { once: true }
       );
       link.insertAdjacentElement("afterend", next);
-      // If the sheet is already cached, load may have fired before listeners.
       if (next.sheet) settle();
+      else setTimeout(settle, 80);
     }
     document.documentElement.dataset.theme = theme.id;
     document.documentElement.style.colorScheme = theme.scheme;
@@ -135,7 +164,8 @@
       }
     }
     syncThemeToggle(theme);
-    if (theme.id === "observatory") startSignalField();
+    // Both observatory skins share the signal-field atmosphere (palette differs).
+    if (theme.signal) startSignalField(theme.signal);
     else stopSignalField();
     scheduleEnhance(true);
     return theme.id;
@@ -144,16 +174,16 @@
   function syncThemeToggle(theme) {
     const btn = document.getElementById("btnThemeToggle");
     if (!btn) return;
+    const nxt = THEMES[nextThemeId(theme.id)] || THEMES.classic;
     btn.dataset.theme = theme.id;
-    btn.title = theme.id === "observatory" ? "切换到经典主题" : "切换到观测台主题（实验）";
+    btn.title = `当前：${theme.label} · 点击切换到「${nxt.label}」`;
     btn.setAttribute("aria-label", btn.title);
     const label = btn.querySelector("[data-theme-label]");
-    if (label) label.textContent = theme.id === "observatory" ? "观测台" : "经典";
+    if (label) label.textContent = theme.label;
   }
 
   function toggleTheme() {
-    const next = currentThemeId() === "observatory" ? "classic" : "observatory";
-    return applyTheme(next);
+    return applyTheme(nextThemeId(currentThemeId()));
   }
 
   function stopSignalField() {
@@ -167,13 +197,19 @@
     }
   }
 
-  function startSignalField() {
-    if (signalCanvas || document.getElementById("signalField")) return;
+  function startSignalField(mode = "dark") {
+    // Re-skin existing canvas when toggling between day/dark observatory.
+    if (signalCanvas) {
+      signalCanvas.dataset.mode = mode;
+      return;
+    }
+    if (document.getElementById("signalField")) return;
     const reduce = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     if (reduce) return;
 
     const canvas = document.createElement("canvas");
     canvas.id = "signalField";
+    canvas.dataset.mode = mode;
     canvas.setAttribute("aria-hidden", "true");
     document.body.prepend(canvas);
     signalCanvas = canvas;
@@ -208,6 +244,27 @@
       signalResizeBound = true;
     }
 
+    function palette() {
+      const day = (signalCanvas?.dataset.mode || mode) === "day";
+      return day
+        ? {
+            grid: "rgba(58,45,32,0.035)",
+            link: (a) => `rgba(196,92,38,${a * 0.9})`,
+            node: (a) => `rgba(15,143,132,${a * 0.85})`,
+            linkMax: 0.10,
+            nodeBase: 0.12,
+            nodeAmp: 0.18,
+          }
+        : {
+            grid: "rgba(232,224,208,0.02)",
+            link: (a) => `rgba(196,92,38,${a})`,
+            node: (a) => `rgba(61,214,198,${a})`,
+            linkMax: 0.08,
+            nodeBase: 0.18,
+            nodeAmp: 0.25,
+          };
+    }
+
     function frame(now) {
       if (!signalCanvas) return;
       if (now - last < 55) {
@@ -217,8 +274,9 @@
       last = now;
       const t = (now - t0) / 1000;
       const dpr = Math.min(window.devicePixelRatio || 1, dprCap);
+      const pal = palette();
       ctx.clearRect(0, 0, w, h);
-      ctx.strokeStyle = "rgba(232,224,208,0.02)";
+      ctx.strokeStyle = pal.grid;
       ctx.lineWidth = 1;
       const step = 110 * dpr;
       for (let x = 0; x < w; x += step) {
@@ -240,7 +298,7 @@
           x: n.x * w,
           y: n.y * h,
           r: n.r * dpr,
-          a: 0.18 + 0.25 * Math.sin(t + n.phase),
+          a: pal.nodeBase + pal.nodeAmp * Math.sin(t + n.phase),
         };
       });
       for (let i = 0; i < pts.length; i++) {
@@ -250,8 +308,8 @@
           const d2 = dx * dx + dy * dy;
           const max = 100 * dpr;
           if (d2 < max * max) {
-            const alpha = (1 - Math.sqrt(d2) / max) * 0.08;
-            ctx.strokeStyle = `rgba(196,92,38,${alpha})`;
+            const alpha = (1 - Math.sqrt(d2) / max) * pal.linkMax;
+            ctx.strokeStyle = pal.link(alpha);
             ctx.beginPath();
             ctx.moveTo(pts[i].x, pts[i].y);
             ctx.lineTo(pts[j].x, pts[j].y);
@@ -260,7 +318,7 @@
         }
       }
       for (const p of pts) {
-        ctx.fillStyle = `rgba(61,214,198,${p.a})`;
+        ctx.fillStyle = pal.node(p.a);
         ctx.beginPath();
         ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
         ctx.fill();
@@ -429,8 +487,16 @@
       html[data-theme="observatory"] .theme-toggle:hover{
         color:#e8e0d0;background:rgba(255,255,255,0.04)
       }
+      html[data-theme="observatory-day"] .theme-toggle{
+        border-color:rgba(58,45,32,0.14);color:#6a5d50
+      }
+      html[data-theme="observatory-day"] .theme-toggle:hover{
+        color:#1c1712;background:rgba(196,92,38,0.06)
+      }
       #signalField{position:fixed;inset:0;z-index:0;pointer-events:none;opacity:.45}
-      html[data-theme="observatory"] .app-shell{position:relative;z-index:1}
+      html[data-theme="observatory"] .app-shell,
+      html[data-theme="observatory-day"] .app-shell{position:relative;z-index:1}
+      html[data-theme="observatory-day"] #signalField{opacity:.28}
     `;
     document.head.appendChild(s);
   }
