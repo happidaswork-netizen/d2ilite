@@ -169,6 +169,20 @@ def cmd_vision_status(_args: argparse.Namespace) -> int:
 def cmd_vision_run(args: argparse.Namespace) -> int:
     path = str(args.path or "").strip()
     qid = str(args.queue_id or "").strip()
+    person_id = str(args.person_id or "").strip()
+    person_ids = [x.strip() for x in str(getattr(args, "person_ids", "") or "").split(",") if x.strip()]
+    # P0-3: person-only run (auto-resolve path; no city expansion)
+    if (person_id or person_ids) and not path and not qid:
+        body: Dict[str, Any] = {
+            "person_id": person_id,
+            "person_ids": person_ids,
+            "force": bool(args.force),
+            "write_people": not bool(args.skip_people),
+            "dry_run": bool(args.dry_run),
+        }
+        return _print(
+            _request("POST", "/api/v1/ai/vision/run-persons", body=body, timeout=float(args.timeout or 600))
+        )
     if qid:
         body = {
             "dry_run": bool(args.dry_run),
@@ -184,11 +198,11 @@ def cmd_vision_run(args: argparse.Namespace) -> int:
             _request("POST", f"/api/v1/queues/{q}/ai/run", body=body, timeout=float(args.timeout or 600))
         )
     if not path:
-        return _fail("provide --path or --queue-id")
+        return _fail("provide --path, --queue-id, or --person-id / --person-ids")
     body = {
         "path": path,
         "name": str(args.name or ""),
-        "person_id": str(args.person_id or ""),
+        "person_id": person_id,
         "write_people": not bool(args.skip_people),
         "dry_run": bool(args.dry_run),
         "force": bool(args.force),
@@ -247,13 +261,54 @@ def cmd_vision_requeue(args: argparse.Namespace) -> int:
 
 
 def cmd_vision_recrawl_inbox(args: argparse.Namespace) -> int:
+    status = str(getattr(args, "status", "") or "open")
+    # Convenience: --resolve / --dismiss patch then optionally re-list
+    resolve_pid = str(getattr(args, "resolve_person_id", "") or "").strip()
+    dismiss_pid = str(getattr(args, "dismiss_person_id", "") or "").strip()
+    entry_id = str(getattr(args, "entry_id", "") or "").strip()
+    if resolve_pid or dismiss_pid or (entry_id and str(getattr(args, "set_status", "") or "").strip()):
+        st = "resolved" if resolve_pid else ("dismissed" if dismiss_pid else str(args.set_status))
+        body = {
+            "status": st,
+            "person_id": resolve_pid or dismiss_pid,
+            "entry_id": entry_id,
+            "action": str(getattr(args, "action", "") or st),
+            "reason": str(getattr(args, "reason", "") or ""),
+        }
+        patched = _request("PATCH", "/api/v1/ai/vision/recrawl-inbox", body=body, timeout=30.0)
+        if getattr(args, "patch_only", False):
+            return _print(patched)
     return _print(
         _request(
             "GET",
             "/api/v1/ai/vision/recrawl-inbox",
-            query={"day": str(args.day or ""), "limit": int(args.limit or 200)},
+            query={
+                "day": str(args.day or ""),
+                "limit": int(args.limit or 200),
+                "status": status,
+                "include_all_days": "true" if getattr(args, "all_days", False) else "false",
+            },
             timeout=60.0,
         )
+    )
+
+
+def cmd_people_rebind(args: argparse.Namespace) -> int:
+    pid = str(args.person_id or "").strip()
+    path = str(args.path or "").strip()
+    if not pid:
+        return _fail("person_id required")
+    if not path:
+        return _fail("--path required")
+    q = urllib.parse.quote(pid, safe="")
+    body = {
+        "path": path,
+        "dry_run": bool(args.dry_run),
+        "reason": str(args.reason or ""),
+        "clear_gates": not bool(getattr(args, "keep_gates", False)),
+    }
+    return _print(
+        _request("POST", f"/api/v1/people/{q}/rebind-primary", body=body, timeout=60.0)
     )
 
 
@@ -300,7 +355,7 @@ def cmd_vision_plan(args: argparse.Namespace) -> int:
 
 
 def cmd_vision_enqueue(args: argparse.Namespace) -> int:
-    body = {
+    body: Dict[str, Any] = {
         "batch_size": int(args.batch_size or 40),
         "province": str(args.province or ""),
         "city": str(args.city or ""),
@@ -313,6 +368,9 @@ def cmd_vision_enqueue(args: argparse.Namespace) -> int:
         "start": bool(args.start),
         "max_running": int(args.max_running or 1),
     }
+    ids = [x.strip() for x in str(getattr(args, "person_ids", "") or "").split(",") if x.strip()]
+    if ids:
+        body["person_ids"] = ids
     return _print(_request("POST", "/api/v1/ai/vision/enqueue", body=body, timeout=float(args.timeout or 600)))
 
 
@@ -462,7 +520,10 @@ def build_parser() -> argparse.ArgumentParser:
     v_plan.add_argument("--unit-like", default="")
     v_plan.add_argument("--limit", type=int, default=20000)
     v_plan.set_defaults(func=cmd_vision_plan)
-    v_enq = v_sub.add_parser("enqueue", help="enqueue unvisioned as many vision_jobs")
+    v_enq = v_sub.add_parser(
+        "enqueue",
+        help="enqueue unvisioned as many vision_jobs (or --person-ids only)",
+    )
     v_enq.add_argument("--batch-size", type=int, default=40)
     v_enq.add_argument("--province", default="")
     v_enq.add_argument("--city", default="")
@@ -471,6 +532,11 @@ def build_parser() -> argparse.ArgumentParser:
     v_enq.add_argument("--max-batches", type=int, default=0)
     v_enq.add_argument("--force", action="store_true")
     v_enq.add_argument("--skip-people", action="store_true")
+    v_enq.add_argument(
+        "--person-ids",
+        default="",
+        help="comma-separated person_id list (P0-3: ONLY these people, no city spill)",
+    )
     v_enq.add_argument("--dry-run", action="store_true")
     v_enq.add_argument("--start", action="store_true", help="pump after enqueue")
     v_enq.add_argument("--max-running", type=int, default=1)
@@ -493,11 +559,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     v_pump.add_argument("--timeout", type=float, default=3600.0)
     v_pump.set_defaults(func=cmd_vision_pump)
-    v_run = v_sub.add_parser("run", help="stage-2 classify + write vision_report.json")
+    v_run = v_sub.add_parser(
+        "run",
+        help="classify path / queue / person_id (P0-3: --person-id alone auto-resolves path)",
+    )
     v_run.add_argument("--path", default="", help="image path (host or container)")
     v_run.add_argument("--queue-id", default="", help="classify portraits for queue")
     v_run.add_argument("--name", default="")
-    v_run.add_argument("--person-id", default="")
+    v_run.add_argument("--person-id", default="", help="single person (auto-resolve primary path)")
+    v_run.add_argument("--person-ids", default="", help="comma-separated person_ids")
     v_run.add_argument("--dry-run", action="store_true")
     v_run.add_argument("--force", action="store_true", help="re-classify even if visual_gender set")
     v_run.add_argument("--skip-people", action="store_true")
@@ -541,9 +611,26 @@ def build_parser() -> argparse.ArgumentParser:
     v_requeue.add_argument("--timeout", type=float, default=180.0)
     v_requeue.set_defaults(func=cmd_vision_requeue)
 
-    v_inbox = v_sub.add_parser("recrawl-inbox", help="read 建议重抓 inbox from auto-route")
+    v_inbox = v_sub.add_parser(
+        "recrawl-inbox",
+        help="read/patch 建议重抓 inbox (default --status open)",
+    )
     v_inbox.add_argument("--day", default="", help="YYYYMMDD; default today")
     v_inbox.add_argument("--limit", type=int, default=200)
+    v_inbox.add_argument(
+        "--status",
+        default="open",
+        choices=["open", "resolved", "dismissed", "all"],
+        help="lifecycle filter (P0-1); default open",
+    )
+    v_inbox.add_argument("--all-days", action="store_true", help="scan all recrawl_*.jsonl")
+    v_inbox.add_argument("--resolve-person-id", default="", help="mark person resolved then list")
+    v_inbox.add_argument("--dismiss-person-id", default="", help="mark person dismissed then list")
+    v_inbox.add_argument("--entry-id", default="", help="patch by entry_id")
+    v_inbox.add_argument("--set-status", default="", help="with --entry-id: open|resolved|dismissed")
+    v_inbox.add_argument("--action", default="")
+    v_inbox.add_argument("--reason", default="")
+    v_inbox.add_argument("--patch-only", action="store_true", help="only PATCH, do not re-list")
     v_inbox.set_defaults(func=cmd_vision_recrawl_inbox)
 
     v_ar = v_sub.add_parser(
@@ -582,6 +669,20 @@ def build_parser() -> argparse.ArgumentParser:
     p_list.add_argument("--province", default="")
     p_list.add_argument("--city", default="")
     p_list.set_defaults(func=cmd_people_marked)
+    p_rebind = p_sub.add_parser(
+        "rebind",
+        help="rebind primary_image_path to a verified local portrait (P0-2)",
+    )
+    p_rebind.add_argument("--person-id", required=True)
+    p_rebind.add_argument("--path", required=True, help="container or host portrait path")
+    p_rebind.add_argument("--dry-run", action="store_true")
+    p_rebind.add_argument("--reason", default="")
+    p_rebind.add_argument(
+        "--keep-gates",
+        action="store_true",
+        help="do not clear hold/no_photo repair gates on success",
+    )
+    p_rebind.set_defaults(func=cmd_people_rebind)
 
     return parser
 

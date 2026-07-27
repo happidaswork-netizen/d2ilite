@@ -90,6 +90,37 @@ class VisionEnqueueBody(BaseModel):
     dry_run: bool = False
     start: bool = False
     max_running: int = 1
+    # P0-3: when set, ONLY these people are enqueued (no city expansion).
+    person_ids: list[str] = Field(default_factory=list)
+
+
+class VisionPersonRunBody(BaseModel):
+    """P0-3: run vision for one/more person_ids (auto-resolve path)."""
+
+    person_id: str = ""
+    person_ids: list[str] = Field(default_factory=list)
+    force: bool = False
+    write_people: bool = True
+    dry_run: bool = False
+
+
+class PeopleRebindBody(BaseModel):
+    """P0-2: rebind primary_image_path to a verified local portrait."""
+
+    path: str
+    dry_run: bool = False
+    reason: str = ""
+    clear_gates: bool = True
+
+
+class InboxPatchBody(BaseModel):
+    """P0-1: patch recrawl-inbox lifecycle status."""
+
+    status: str  # open | resolved | dismissed
+    entry_id: str = ""
+    person_id: str = ""
+    action: str = ""
+    reason: str = ""
 
 
 class VisionPumpBody(BaseModel):
@@ -459,6 +490,7 @@ def create_app() -> FastAPI:
 
         Gates vision inventory / enqueue. no_photo is terminal for crawl+vision
         until resume; hold is temporary; unusable keeps recrawl eligibility.
+        Successful mark auto-resolves open recrawl-inbox entries (P0-1).
         """
         payload = body
         act = str(payload.action or "").strip().lower()
@@ -482,6 +514,24 @@ def create_app() -> FastAPI:
                 hold_until=str(payload.hold_until or ""),
                 clear_primary_path=bool(payload.clear_primary_path),
                 dry_run=bool(payload.dry_run),
+            )
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    @api.post("/people/{person_id}/rebind-primary")
+    def people_rebind_primary(person_id: str, body: PeopleRebindBody) -> Dict[str, Any]:
+        """P0-2: rebind primary to a verified local portrait path."""
+        try:
+            return people_workflow.rebind_primary(
+                person_id=person_id,
+                path=str(body.path or ""),
+                dry_run=bool(body.dry_run),
+                reason=str(body.reason or ""),
+                clear_gates=bool(body.clear_gates),
             )
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -560,6 +610,7 @@ def create_app() -> FastAPI:
                 dry_run=bool(payload.dry_run),
                 start=bool(payload.start),
                 max_running=int(payload.max_running or 1),
+                person_ids=list(payload.person_ids or []),
             )
         except Exception as exc:
             raise HTTPException(status_code=500, detail=str(exc)) from exc
@@ -639,10 +690,47 @@ def create_app() -> FastAPI:
     def vision_recrawl_inbox(
         day: str = Query(default=""),
         limit: int = Query(default=200, ge=1, le=2000),
+        status: str = Query(default="open"),
+        include_all_days: bool = Query(default=False),
     ) -> Dict[str, Any]:
-        """建议重抓 inbox produced by auto-route after vision jobs finish."""
+        """建议重抓 inbox (P0-1 lifecycle). Default status=open hides resolved."""
         try:
-            return vision_service.list_recrawl_inbox(day=day, limit=limit)
+            return vision_service.list_recrawl_inbox(
+                day=day,
+                limit=limit,
+                status=status,
+                include_all_days=bool(include_all_days),
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    @api.patch("/ai/vision/recrawl-inbox")
+    def vision_recrawl_inbox_patch(body: InboxPatchBody) -> Dict[str, Any]:
+        """P0-1: set inbox entry status open|resolved|dismissed."""
+        try:
+            return vision_service.set_recrawl_inbox_status(
+                entry_id=str(body.entry_id or ""),
+                person_id=str(body.person_id or ""),
+                status=str(body.status or ""),
+                action=str(body.action or ""),
+                reason=str(body.reason or ""),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    @api.post("/ai/vision/run-persons")
+    def vision_run_persons(body: VisionPersonRunBody) -> Dict[str, Any]:
+        """P0-3: run vision for specific person_id(s); auto-resolve path; no city spill."""
+        try:
+            return vision_service.run_person_vision(
+                person_id=str(body.person_id or ""),
+                person_ids=list(body.person_ids or []),
+                force=bool(body.force),
+                write_people=bool(body.write_people),
+                dry_run=bool(body.dry_run),
+            )
         except Exception as exc:
             raise HTTPException(status_code=500, detail=str(exc)) from exc
 

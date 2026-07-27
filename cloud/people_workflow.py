@@ -436,7 +436,7 @@ def mark_person(
         conn.commit()
         after_row = conn.execute("SELECT * FROM people WHERE person_id = ?", (pid,)).fetchone()
         after = dict(after_row) if after_row else {**before, **updates}
-        return {
+        result = {
             "ok": True,
             "dry_run": False,
             "action": act,
@@ -467,6 +467,20 @@ def mark_person(
             },
             "workflow": workflow_state_from_row(after),
         }
+        # P0-1: mark no_photo/unusable/hold auto-resolves open recrawl-inbox entries.
+        if act in {"no_photo", "unusable", "hold"}:
+            try:
+                from cloud import vision_service
+
+                result["inbox"] = vision_service.resolve_inbox_for_person(
+                    pid,
+                    action=act,
+                    reason=reason_s,
+                    status="resolved",
+                )
+            except Exception as exc:  # noqa: BLE001
+                result["inbox_error"] = f"{type(exc).__name__}:{exc}"
+        return result
     finally:
         conn.close()
 
@@ -611,5 +625,220 @@ def list_marked(
             "total": len(items),
             "items": items,
         }
+    finally:
+        conn.close()
+
+
+# Minimum edge length for a usable primary (20×20 placeholders must fail).
+REBIND_MIN_EDGE = 40
+
+
+def _inspect_image_file(path: Path) -> Dict[str, Any]:
+    """Read basic geometry; reject truncated / unreadable images."""
+    from PIL import Image
+
+    info: Dict[str, Any] = {
+        "path": str(path),
+        "exists": path.is_file(),
+        "size_bytes": 0,
+        "width": 0,
+        "height": 0,
+        "min_edge": 0,
+        "ok": False,
+        "error": "",
+        "error_code": "",
+    }
+    if not path.is_file():
+        info["error"] = "image_not_found"
+        info["error_code"] = "image_not_found"
+        return info
+    try:
+        info["size_bytes"] = int(path.stat().st_size)
+    except OSError as exc:
+        info["error"] = f"stat_failed:{exc}"
+        info["error_code"] = "image_invalid"
+        return info
+    if info["size_bytes"] <= 0:
+        info["error"] = "0 bytes not processed"
+        info["error_code"] = "image_truncated"
+        return info
+    try:
+        with Image.open(path) as im:
+            im.load()  # force full decode → catch truncated
+            w, h = im.size
+        info["width"] = int(w)
+        info["height"] = int(h)
+        info["min_edge"] = min(int(w), int(h))
+    except Exception as exc:  # noqa: BLE001
+        msg = f"{type(exc).__name__}:{exc}"
+        low = msg.lower()
+        info["error"] = msg
+        if "truncated" in low or "oserror" in low:
+            info["error_code"] = "image_truncated"
+        else:
+            info["error_code"] = "image_invalid"
+        return info
+    if info["min_edge"] < REBIND_MIN_EDGE:
+        info["error"] = f"too small: {info['width']}x{info['height']} (min_edge>={REBIND_MIN_EDGE})"
+        info["error_code"] = "image_too_small"
+        return info
+    info["ok"] = True
+    return info
+
+
+def rebind_primary(
+    *,
+    person_id: str,
+    path: str,
+    dry_run: bool = False,
+    reason: str = "",
+    people_db: Optional[Path] = None,
+    clear_gates: bool = True,
+) -> Dict[str, Any]:
+    """Point primary_image_path at a verified local portrait and reopen vision gates.
+
+    P0-2: server validates file exists, min edge, non-truncated, not protected path.
+    """
+    from cloud.vision_service import resolve_image_path, resolve_inbox_for_person
+
+    pid = str(person_id or "").strip()
+    raw_path = str(path or "").strip()
+    if not pid:
+        raise ValueError("person_id required")
+    if not raw_path:
+        raise ValueError("path required")
+
+    resolved = resolve_image_path(raw_path)
+    if resolved is None:
+        raise ValueError(
+            f"path rejected or not found under portrait/task roots (protected paths blocked): {raw_path}"
+        )
+    inspect = _inspect_image_file(resolved)
+    if not inspect.get("ok"):
+        raise ValueError(
+            f"rebind rejected ({inspect.get('error_code') or 'invalid'}): {inspect.get('error')}"
+        )
+
+    # Prefer container-stable portrait form when under host portrait.
+    store_path = str(resolved).replace("\\", "/")
+    try:
+        from cloud.paths import portrait_root
+
+        root = portrait_root().resolve()
+        try:
+            rel = resolved.resolve().relative_to(root)
+            store_path = f"/runtime/portrait/{rel.as_posix()}"
+        except ValueError:
+            host = Path("/vol1/1001/角色肖像")
+            try:
+                rel = resolved.resolve().relative_to(host)
+                store_path = f"/runtime/portrait/{rel.as_posix()}"
+            except ValueError:
+                pass
+    except Exception:
+        pass
+
+    conn = _open(people_db)
+    try:
+        cols = _cols(conn)
+        if "person_id" not in cols:
+            raise RuntimeError("people.person_id column missing")
+        row = conn.execute("SELECT * FROM people WHERE person_id = ?", (pid,)).fetchone()
+        if row is None:
+            raise KeyError(f"person not found: {pid}")
+        before = dict(row)
+        updates: Dict[str, Any] = {}
+        if "primary_image_path" in cols:
+            updates["primary_image_path"] = store_path
+        if "source_page_image_status" in cols:
+            updates["source_page_image_status"] = "has_photo"
+        if "image_status" in cols:
+            # keep official_photo if already set; otherwise has_photo
+            cur_img = str(before.get("image_status") or "").strip()
+            if cur_img in {"", NO_PHOTO_IMAGE, "no_image"}:
+                updates["image_status"] = "has_photo"
+        if "file_status" in cols:
+            updates["file_status"] = "available"
+        if "source_image_status" in cols:
+            updates["source_image_status"] = "ok"
+        if "has_official_photo" in cols:
+            updates["has_official_photo"] = 1
+        if clear_gates:
+            if "repair_status" in cols:
+                cur = str(before.get("repair_status") or "")
+                if cur in {HOLD_REPAIR, ABANDONED_REPAIR, "deferred"}:
+                    updates["repair_status"] = ""
+        reason_s = str(reason or "").strip() or "rebind-primary"
+        if "notes" in cols:
+            updates["notes"] = _append_note(
+                before.get("notes"),
+                f"workflow:rebind · {reason_s} · {store_path}",
+            )
+
+        if dry_run:
+            after = dict(before)
+            after.update(updates)
+            return {
+                "ok": True,
+                "dry_run": True,
+                "action": "rebind",
+                "person_id": pid,
+                "name": before.get("name"),
+                "path_requested": raw_path,
+                "path_resolved": str(resolved),
+                "path_stored": store_path,
+                "inspect": inspect,
+                "before": {"primary_image_path": before.get("primary_image_path")},
+                "after": {"primary_image_path": store_path},
+                "workflow": workflow_state_from_row(after),
+            }
+
+        sets = ", ".join(f"{k} = ?" for k in updates.keys())
+        conn.execute(f"UPDATE people SET {sets} WHERE person_id = ?", (*updates.values(), pid))
+        conn.commit()
+        after_row = conn.execute("SELECT * FROM people WHERE person_id = ?", (pid,)).fetchone()
+        after = dict(after_row) if after_row else {**before, **updates}
+        result = {
+            "ok": True,
+            "dry_run": False,
+            "action": "rebind",
+            "person_id": pid,
+            "name": after.get("name") or before.get("name"),
+            "path_requested": raw_path,
+            "path_resolved": str(resolved),
+            "path_stored": store_path,
+            "inspect": inspect,
+            "updated_fields": sorted(updates.keys()),
+            "before": {
+                k: before.get(k)
+                for k in (
+                    "primary_image_path",
+                    "image_status",
+                    "source_page_image_status",
+                    "repair_status",
+                    "file_status",
+                    "source_image_status",
+                )
+            },
+            "after": {
+                k: after.get(k)
+                for k in (
+                    "primary_image_path",
+                    "image_status",
+                    "source_page_image_status",
+                    "repair_status",
+                    "file_status",
+                    "source_image_status",
+                )
+            },
+            "workflow": workflow_state_from_row(after),
+        }
+        try:
+            result["inbox"] = resolve_inbox_for_person(
+                pid, action="rebound", reason=reason_s, status="resolved"
+            )
+        except Exception as exc:  # noqa: BLE001
+            result["inbox_error"] = f"{type(exc).__name__}:{exc}"
+        return result
     finally:
         conn.close()

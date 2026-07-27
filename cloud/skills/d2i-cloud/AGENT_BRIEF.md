@@ -20,10 +20,14 @@ d2i templates list
 d2i queues list | show | create | start | pause | logs | items | finalize
 d2i vision status | inventory | plan | enqueue | jobs | job | pump
 d2i vision requeue --policy retryable|must_recrawl|all
-d2i vision recrawl-inbox
+d2i vision recrawl-inbox [--status open|resolved|dismissed|all]
+d2i vision recrawl-inbox --resolve-person-id <id>
 d2i vision auto-route <vj_id>
+d2i vision run --person-id <id> [--force]
+d2i vision enqueue --person-ids a,b,c
 d2i people get <person_id>
 d2i people mark no_photo|hold|unusable|resume --person-id <id> [--reason …]
+d2i people rebind --person-id <id> --path <portrait> [--dry-run]
 d2i people marked [--workflow no_photo|hold|unusable]
 ```
 
@@ -60,9 +64,11 @@ d2i people marked [--workflow no_photo|hold|unusable]
 3. 跑完看 job 的 `result.followup` 或详情「跑完分流」  
 4. 失败分流：  
    - **可恢复**（限流/超时/5xx）→ `requeue --policy retryable` 或等 auto-route 建 `retry-auto`  
-   - **需重抓**（图太小/损坏/缺图）→ `recrawl-inbox`；**先补图** 再入视觉  
+   - **需重抓**（图太小/损坏/缺图）→ `recrawl-inbox`（默认只列 **open**）；**先补图** 再入视觉  
 5. 存量失败批可：`d2i vision auto-route <vj_id>`  
 6. inventory **自动排除** 确认无图 / 暂挂 / 图不可用  
+7. **按人点修（优先于全市 enqueue）**：本地已有好图 → `people rebind` → `vision run --person-id`；多人 → `enqueue --person-ids a,b,c`  
+8. mark no_photo/unusable/hold 后该人从 open inbox **自动 resolved**；可 dismiss 手动忽略  
 
 ### 工作流标记（确认无图 / 暂挂）
 
@@ -72,6 +78,7 @@ d2i people marked [--workflow no_photo|hold|unusable]
 | 暂挂 | `d2i people mark hold --person-id …` | 临时不入队；可 `--hold-until` 记在 notes |
 | 图不可用 | `d2i people mark unusable --person-id …` | 本地坏图/过小；不入 vision，可再抓（auto-route 会自动戳） |
 | 恢复 | `d2i people mark resume --person-id …` | 清闸门，重新进入开放流 |
+| 回绑主图 | `d2i people rebind --person-id … --path …` | 校验边长/完整性后写 primary；拒绝 20×20/截断 |
 | 列表 | `d2i people marked [--workflow no_photo\|hold\|unusable]` | 查看已标记 |
 
 UI：视觉页证据板 / 收件箱有按钮；顶栏「工作流标记」。

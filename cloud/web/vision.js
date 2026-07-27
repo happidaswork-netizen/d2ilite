@@ -317,7 +317,31 @@
       hold: "暂挂（暂不入 vision/补采）",
       unusable: "图不可用（不入 vision，可再抓）",
       resume: "恢复（重新进入开放工作流）",
+      dismiss: "忽略本条收件箱",
     };
+    if (action === "dismiss") {
+      if (!window.confirm(`忽略收件箱条目\n\n${name || personId}`)) return;
+      state.busy = true;
+      try {
+        await api("/api/v1/ai/vision/recrawl-inbox", {
+          method: "PATCH",
+          body: JSON.stringify({
+            person_id: personId,
+            status: "dismissed",
+            action: "dismiss",
+            reason: "vision-ui:dismiss",
+          }),
+          timeoutMs: 15000,
+        });
+        toast(`已忽略 ${name || personId}`);
+        await loadRecrawlInbox({ soft: true });
+      } catch (err) {
+        toast(`忽略失败：${err.message || err}`);
+      } finally {
+        state.busy = false;
+      }
+      return;
+    }
     if (!window.confirm(`${labels[action] || action}\n\n${name || personId}`)) return;
     state.busy = true;
     try {
@@ -333,8 +357,66 @@
       });
       const wf = (data.workflow && data.workflow.label) || action;
       toast(`已标记 ${name || personId} → ${wf}`);
+      // P0-1: mark auto-resolves inbox; refresh open list so row disappears.
+      if (action === "no_photo" || action === "unusable" || action === "hold") {
+        await loadRecrawlInbox({ soft: true });
+      }
     } catch (err) {
       toast(`标记失败：${err.message || err}`);
+    } finally {
+      state.busy = false;
+    }
+  }
+
+  async function runSelectedPersons(personIds, { force = false } = {}) {
+    const ids = (personIds || []).map((x) => String(x || "").trim()).filter(Boolean);
+    if (!ids.length || state.busy) return;
+    if (
+      !window.confirm(
+        `对选中 ${ids.length} 人跑视觉（只跑这些人，不卷全市）\n\n调用 Grok 产生真实计费`
+      )
+    ) {
+      return;
+    }
+    state.busy = true;
+    try {
+      const data = await api("/api/v1/ai/vision/run-persons", {
+        method: "POST",
+        body: JSON.stringify({
+          person_ids: ids,
+          force: !!force,
+          write_people: true,
+        }),
+        timeoutMs: 600000,
+      });
+      toast(
+        `按人视觉完成：ok ${data.ok_count || 0} / 失败 ${data.failed_count || 0}（请求 ${data.requested || ids.length}）`
+      );
+      await loadRecrawlInbox({ soft: true });
+    } catch (err) {
+      toast(`按人视觉失败：${err.message || err}`);
+    } finally {
+      state.busy = false;
+    }
+  }
+
+  async function enqueueSelectedPersons(personIds) {
+    const ids = (personIds || []).map((x) => String(x || "").trim()).filter(Boolean);
+    if (!ids.length || state.busy) return;
+    if (!window.confirm(`入队视觉作业：仅 ${ids.length} 人（不卷全市）`)) return;
+    state.busy = true;
+    try {
+      const data = await api("/api/v1/ai/vision/enqueue", {
+        method: "POST",
+        body: JSON.stringify({ person_ids: ids, start: false, force: false }),
+        timeoutMs: 60000,
+      });
+      toast(
+        `已入队 ${data.created || 0} 批 · total_items=${data.total_items || 0} · 可解析 ${data.resolvable || 0}`
+      );
+      await refreshAll({ softDetail: true });
+    } catch (err) {
+      toast(`入队失败：${err.message || err}`);
     } finally {
       state.busy = false;
     }
@@ -830,22 +912,27 @@
     }
   }
 
-  async function loadRecrawlInbox() {
+  async function loadRecrawlInbox(opts = {}) {
     try {
-      const data = await api("/api/v1/ai/vision/recrawl-inbox?limit=100", { timeoutMs: 20000 });
+      const data = await api(
+        "/api/v1/ai/vision/recrawl-inbox?limit=100&status=open",
+        { timeoutMs: 20000 }
+      );
       state.recrawlInbox = data;
       const total = Number(data.total || 0);
+      const statusCounts = data.status_counts || {};
       const top = Object.entries(data.reason_counts || {})
         .sort((a, b) => b[1] - a[1])
         .slice(0, 5)
         .map(([k, n]) => `${k}×${n}`)
         .join(" · ");
-      toast(
-        total
-          ? `建议重抓收件箱 ${data.day || ""}：${total} 人${top ? `（${top}）` : ""}`
-          : `建议重抓收件箱 ${data.day || ""} 为空（跑完有失败时会自动写入）`
-      );
-      // Render into inventory/side panel if present, else a simple overlay list in itemsHint area.
+      if (!opts.soft) {
+        toast(
+          total
+            ? `建议重抓收件箱 ${data.day || ""}：open ${total}（resolved ${statusCounts.resolved || 0} / dismissed ${statusCounts.dismissed || 0}）${top ? ` · ${top}` : ""}`
+            : `建议重抓收件箱 ${data.day || ""} open 为空（resolved ${statusCounts.resolved || 0}）`
+        );
+      }
       let host = $("recrawlInboxPanel");
       if (!host) {
         host = document.createElement("section");
@@ -857,26 +944,29 @@
       if (!total) {
         host.innerHTML = `<div class="section-bar tight"><h2>建议重抓收件箱</h2><span class="muted-hint">${escapeHtml(
           data.day || ""
-        )} · 空</span></div><div class="empty-state">暂无自动分流写入的需重抓条目。</div>`;
+        )} · open 空 · resolved ${statusCounts.resolved || 0}</span></div><div class="empty-state">暂无 open 条目（已处理的不会再出现在默认视图）。</div>`;
         return;
       }
       const rows = (data.items || []).slice(0, 80);
       host.innerHTML = `
         <div class="section-bar tight">
           <h2>建议重抓收件箱</h2>
-          <span class="muted-hint">${escapeHtml(data.day || "")} · ${total} 人 · 来自跑完自动分流</span>
+          <span class="muted-hint">${escapeHtml(data.day || "")} · open ${total} · 默认只看 open</span>
+          <button type="button" class="btn sm" id="btnInboxRunSelected">跑选中视觉</button>
+          <button type="button" class="btn sm ghost" id="btnInboxEnqueueSelected">入队选中</button>
           <button type="button" class="btn ghost sm" id="btnCloseInbox">收起</button>
         </div>
         <div class="muted-hint" style="margin:0 12px 8px">${escapeHtml(top)}</div>
         <div class="table-wrap">
           <table class="vision-table">
-            <thead><tr><th>姓名</th><th>原因</th><th>路径</th><th>来源批</th><th>时间</th><th>工作流</th></tr></thead>
+            <thead><tr><th></th><th>姓名</th><th>原因</th><th>路径</th><th>来源批</th><th>时间</th><th>工作流</th></tr></thead>
             <tbody>
               ${rows
                 .map((it) => {
                   const exp = explainError(it.error_code || it.last_error || "");
                   const pid = it.person_id || "";
                   return `<tr data-person-id="${escapeHtml(pid)}">
+                    <td><input type="checkbox" class="inbox-pick" data-pid="${escapeHtml(pid)}" ${pid ? "" : "disabled"} /></td>
                     <td>${escapeHtml(it.name || "—")}</td>
                     <td title="${escapeHtml(exp.hint || it.last_error || "")}">${escapeHtml(
                       exp.label || it.error_code || "—"
@@ -890,9 +980,18 @@
                       <button type="button" class="btn sm" data-wf="no_photo" data-pid="${escapeHtml(
                         pid
                       )}" data-name="${escapeHtml(it.name || "")}" ${pid ? "" : "disabled"}>确认无图</button>
+                      <button type="button" class="btn sm ghost" data-wf="unusable" data-pid="${escapeHtml(
+                        pid
+                      )}" data-name="${escapeHtml(it.name || "")}" ${pid ? "" : "disabled"}>图不可用</button>
                       <button type="button" class="btn sm ghost" data-wf="hold" data-pid="${escapeHtml(
                         pid
                       )}" data-name="${escapeHtml(it.name || "")}" ${pid ? "" : "disabled"}>暂挂</button>
+                      <button type="button" class="btn sm ghost" data-wf="dismiss" data-pid="${escapeHtml(
+                        pid
+                      )}" data-name="${escapeHtml(it.name || "")}" ${pid ? "" : "disabled"}>忽略</button>
+                      <button type="button" class="btn sm" data-run-one="${escapeHtml(pid)}" data-name="${escapeHtml(
+                        it.name || ""
+                      )}" ${pid ? "" : "disabled"}>跑视觉</button>
                     </td>
                   </tr>`;
                 })
@@ -903,12 +1002,32 @@
       $("btnCloseInbox")?.addEventListener("click", () => {
         host.innerHTML = "";
       });
+      const pickedIds = () =>
+        Array.from(host.querySelectorAll(".inbox-pick:checked"))
+          .map((el) => el.getAttribute("data-pid") || "")
+          .filter(Boolean);
+      $("btnInboxRunSelected")?.addEventListener("click", () => {
+        runSelectedPersons(pickedIds());
+      });
+      $("btnInboxEnqueueSelected")?.addEventListener("click", () => {
+        enqueueSelectedPersons(pickedIds());
+      });
       host.querySelectorAll("[data-wf]").forEach((btn) => {
         btn.addEventListener("click", () => {
-          markPersonWorkflow(btn.getAttribute("data-pid"), btn.getAttribute("data-wf"), btn.getAttribute("data-name") || "");
+          markPersonWorkflow(
+            btn.getAttribute("data-pid"),
+            btn.getAttribute("data-wf"),
+            btn.getAttribute("data-name") || ""
+          );
         });
       });
-      host.scrollIntoView({ behavior: "smooth", block: "start" });
+      host.querySelectorAll("[data-run-one]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const pid = btn.getAttribute("data-run-one");
+          if (pid) runSelectedPersons([pid]);
+        });
+      });
+      if (!opts.soft) host.scrollIntoView({ behavior: "smooth", block: "start" });
     } catch (err) {
       toast(`读取建议重抓收件箱失败：${err.message || err}`);
     }

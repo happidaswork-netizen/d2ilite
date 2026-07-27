@@ -1484,9 +1484,26 @@ def enqueue_unvisioned_batches(
     dry_run: bool = False,
     start: bool = False,
     max_running: int = 1,
+    person_ids: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
-    """Split unvisioned portraits into multiple vision_jobs (not scrape queues)."""
+    """Split unvisioned portraits into multiple vision_jobs (not scrape queues).
+
+    P0-3: when person_ids is non-empty, ONLY those people are enqueued — never
+    expand to a whole city inventory under a "fix these people" action.
+    """
     from cloud import jobs_db
+
+    ids = [str(x).strip() for x in (person_ids or []) if str(x or "").strip()]
+    if ids:
+        return enqueue_person_ids(
+            person_ids=ids,
+            force=force,
+            write_people=write_people,
+            dry_run=dry_run,
+            start=start,
+            max_running=max_running,
+            batch_size=batch_size,
+        )
 
     plan = plan_vision_batches(
         batch_size=batch_size,
@@ -1539,6 +1556,187 @@ def enqueue_unvisioned_batches(
         },
         "pump": pump,
         "counts": jobs_db.vision_job_counts(),
+    }
+
+
+def _person_vision_seed(person_id: str, *, people_db: Optional[Path] = None) -> Dict[str, Any]:
+    """Build one vision job item for a person_id (resolve path, no city expansion)."""
+    from cloud import people_workflow
+
+    pid = str(person_id or "").strip()
+    row = people_workflow.get_person(pid, people_db=people_db)
+    if not row:
+        return {
+            "person_id": pid,
+            "ok": False,
+            "error": "person_not_found",
+            "on_disk": False,
+        }
+    wf = row.get("workflow") if isinstance(row.get("workflow"), dict) else {}
+    if wf.get("blocks_vision") and not str(row.get("primary_image_path") or "").strip():
+        # gated with no path — still report
+        pass
+    db_path = _norm(row.get("primary_image_path"))
+    resolved = resolve_image_path(db_path) if db_path else None
+    return {
+        "person_id": pid,
+        "name": str(row.get("name") or ""),
+        "gender": str(row.get("gender") or ""),
+        "province": str(row.get("province") or ""),
+        "city": str(row.get("city") or ""),
+        "unit_name": str(row.get("unit_name") or ""),
+        "primary_image_path": db_path,
+        "path": str(resolved) if resolved else db_path,
+        "resolved_path": str(resolved) if resolved else "",
+        "on_disk": bool(resolved),
+        "workflow": wf,
+        "ok": bool(resolved),
+        "error": "" if resolved else ("image_not_found" if db_path else "no_primary_path"),
+    }
+
+
+def enqueue_person_ids(
+    *,
+    person_ids: List[str],
+    force: bool = False,
+    write_people: bool = True,
+    dry_run: bool = False,
+    start: bool = False,
+    max_running: int = 1,
+    batch_size: int = 40,
+    people_db: Optional[Path] = None,
+) -> Dict[str, Any]:
+    """P0-3: enqueue ONLY the given person_ids (jobs.total == resolvable selected)."""
+    from cloud import jobs_db
+
+    ids: List[str] = []
+    seen: set = set()
+    for raw in person_ids:
+        pid = str(raw or "").strip()
+        if not pid or pid in seen:
+            continue
+        seen.add(pid)
+        ids.append(pid)
+    if not ids:
+        return {"ok": False, "error": "person_ids required", "created": 0, "enqueued": []}
+
+    seeds = [_person_vision_seed(pid, people_db=people_db) for pid in ids]
+    resolvable = [s for s in seeds if s.get("on_disk")]
+    missing = [s for s in seeds if not s.get("on_disk")]
+    created: List[Dict[str, Any]] = []
+    bs = max(1, min(int(batch_size or 40), 200))
+    for idx in range(0, len(resolvable), bs):
+        chunk = resolvable[idx : idx + bs]
+        names = ",".join(str(x.get("name") or x.get("person_id") or "") for x in chunk[:3])
+        job = jobs_db.create_vision_job(
+            name=f"vision persons {names}" + ("…" if len(chunk) > 3 else ""),
+            batch_key=f"persons::{idx // bs}::{len(chunk)}",
+            province="",
+            city="",
+            items=chunk,
+            priority=50 + idx // bs,
+            force=force,
+            write_people=write_people,
+            dry_run=dry_run,
+        )
+        created.append(
+            {
+                "id": job.get("id"),
+                "name": job.get("name"),
+                "status": job.get("status"),
+                "total": job.get("total"),
+                "batch_key": job.get("batch_key"),
+                "priority": job.get("priority"),
+            }
+        )
+    pump = None
+    if start and created:
+        pump = pump_vision_jobs(max_running=max_running, background=True)
+    return {
+        "ok": True,
+        "mode": "person_ids",
+        "requested": len(ids),
+        "resolvable": len(resolvable),
+        "missing_on_disk": len(missing),
+        "created": len(created),
+        "enqueued": created,
+        "missing": [
+            {"person_id": m.get("person_id"), "name": m.get("name"), "error": m.get("error")}
+            for m in missing
+        ],
+        "pump": pump,
+        "counts": jobs_db.vision_job_counts(),
+        # Acceptance: jobs.total equals selected resolvable people, no city spill.
+        "total_items": sum(int(c.get("total") or 0) for c in created),
+    }
+
+
+def run_person_vision(
+    *,
+    person_id: str = "",
+    person_ids: Optional[List[str]] = None,
+    force: bool = False,
+    write_people: bool = True,
+    dry_run: bool = False,
+    people_db: Optional[Path] = None,
+) -> Dict[str, Any]:
+    """P0-3: classify one or more people by id (auto-resolve path; no city batch)."""
+    ids: List[str] = []
+    if person_id:
+        ids.append(str(person_id).strip())
+    for raw in person_ids or []:
+        pid = str(raw or "").strip()
+        if pid and pid not in ids:
+            ids.append(pid)
+    if not ids:
+        return {"ok": False, "error": "person_id or person_ids required"}
+
+    results: List[Dict[str, Any]] = []
+    for pid in ids:
+        seed = _person_vision_seed(pid, people_db=people_db)
+        if not seed.get("on_disk"):
+            results.append(
+                {
+                    "ok": False,
+                    "person_id": pid,
+                    "name": seed.get("name") or "",
+                    "error": seed.get("error") or "image_not_found",
+                    "path": seed.get("primary_image_path") or "",
+                }
+            )
+            continue
+        out = classify_and_write_person(
+            image_path=str(seed.get("resolved_path") or ""),
+            person_id=pid,
+            name=str(seed.get("name") or ""),
+            primary_image_path=str(seed.get("primary_image_path") or ""),
+            write_people=write_people,
+            dry_run=dry_run,
+            force=force,
+            people_db=people_db,
+            unit_name=str(seed.get("unit_name") or ""),
+            city=str(seed.get("city") or ""),
+            province=str(seed.get("province") or ""),
+        )
+        compact = _compact_vision_item_outcome(out, seed)
+        if compact.get("ok") and not compact.get("skipped"):
+            try:
+                resolve_inbox_for_person(
+                    pid, action="vision_ok", reason="per-person vision ok", status="resolved"
+                )
+                compact["inbox_resolved"] = True
+            except Exception:
+                compact["inbox_resolved"] = False
+        results.append(compact)
+
+    ok_n = sum(1 for r in results if r.get("ok"))
+    return {
+        "ok": ok_n == len(results) and len(results) > 0,
+        "mode": "person_ids",
+        "requested": len(ids),
+        "ok_count": ok_n,
+        "failed_count": len(results) - ok_n,
+        "results": results,
     }
 
 
@@ -1806,6 +2004,135 @@ def vision_followup_inbox_dir() -> Path:
     return root
 
 
+# Inbox lifecycle (P0-1): open | resolved | dismissed. JSONL stays append-only;
+# status lives in a sidecar state map keyed by stable entry id.
+INBOX_STATUSES = frozenset({"open", "resolved", "dismissed"})
+INBOX_RESOLVE_ACTIONS = frozenset(
+    {
+        "no_photo",
+        "unusable",
+        "rebound",  # primary rebind succeeded
+        "vision_ok",  # per-person vision succeeded
+        "dismiss",
+        "ignore",
+        "hold",
+    }
+)
+
+
+def _inbox_state_path() -> Path:
+    return vision_followup_inbox_dir() / "lifecycle_state.json"
+
+
+def _inbox_entry_id(row: Dict[str, Any]) -> str:
+    """Stable id for an inbox row (person preferred; fallback path+day+source)."""
+    pid = str(row.get("person_id") or "").strip()
+    if pid:
+        return f"person:{pid}"
+    day = str(row.get("day") or row.get("at") or "")[:10].replace("-", "")
+    path = _norm(row.get("path") or "")
+    src = str(row.get("source_job") or "")
+    name = str(row.get("name") or "")
+    raw = f"{day}|{src}|{path}|{name}"
+    return "row:" + hashlib_sha1(raw)
+
+
+def hashlib_sha1(text: str) -> str:
+    import hashlib
+
+    return hashlib.sha1(text.encode("utf-8", errors="replace")).hexdigest()[:16]
+
+
+def _load_inbox_state() -> Dict[str, Dict[str, Any]]:
+    path = _inbox_state_path()
+    if not path.is_file():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    # normalize
+    out: Dict[str, Dict[str, Any]] = {}
+    for key, val in data.items():
+        if not isinstance(val, dict):
+            continue
+        st = str(val.get("status") or "open").strip().lower()
+        if st not in INBOX_STATUSES:
+            st = "open"
+        out[str(key)] = {
+            "status": st,
+            "action": str(val.get("action") or ""),
+            "reason": str(val.get("reason") or ""),
+            "at": str(val.get("at") or ""),
+            "person_id": str(val.get("person_id") or ""),
+        }
+    return out
+
+
+def _save_inbox_state(state: Dict[str, Dict[str, Any]]) -> Path:
+    path = _inbox_state_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(
+        json.dumps(state, ensure_ascii=False, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    tmp.replace(path)
+    return path
+
+
+def set_recrawl_inbox_status(
+    *,
+    entry_id: str = "",
+    person_id: str = "",
+    status: str,
+    action: str = "",
+    reason: str = "",
+) -> Dict[str, Any]:
+    """Patch one inbox entry lifecycle status (open|resolved|dismissed)."""
+    st = str(status or "").strip().lower()
+    if st not in INBOX_STATUSES:
+        raise ValueError(f"status must be one of {sorted(INBOX_STATUSES)}, got {status!r}")
+    eid = str(entry_id or "").strip()
+    pid = str(person_id or "").strip()
+    if not eid and pid:
+        eid = f"person:{pid}"
+    if not eid:
+        raise ValueError("entry_id or person_id required")
+    state = _load_inbox_state()
+    prev = dict(state.get(eid) or {})
+    state[eid] = {
+        "status": st,
+        "action": str(action or prev.get("action") or ""),
+        "reason": str(reason or prev.get("reason") or ""),
+        "at": _utc_stamp(),
+        "person_id": pid or str(prev.get("person_id") or ""),
+    }
+    path = _save_inbox_state(state)
+    return {"ok": True, "entry_id": eid, "before": prev or None, "after": state[eid], "state_path": str(path)}
+
+
+def resolve_inbox_for_person(
+    person_id: str,
+    *,
+    action: str = "",
+    reason: str = "",
+    status: str = "resolved",
+) -> Dict[str, Any]:
+    """Mark a person's inbox entries resolved/dismissed (called after people mark / rebind)."""
+    pid = str(person_id or "").strip()
+    if not pid:
+        return {"ok": False, "error": "person_id required", "updated": 0}
+    return set_recrawl_inbox_status(
+        person_id=pid,
+        status=status,
+        action=action,
+        reason=reason,
+    )
+
+
 def _is_auto_followup_source(job: Dict[str, Any]) -> bool:
     """retry-auto / followup descendants must not auto-spawn more children (loop guard)."""
     key = str(job.get("batch_key") or "")
@@ -1976,18 +2303,49 @@ def auto_route_vision_job_outcomes(
     }
 
 
-def list_recrawl_inbox(*, day: str = "", limit: int = 200) -> Dict[str, Any]:
-    """Read today's (or given YYYYMMDD) 建议重抓 inbox for the UI."""
+def list_recrawl_inbox(
+    *,
+    day: str = "",
+    limit: int = 200,
+    status: str = "open",
+    include_all_days: bool = False,
+) -> Dict[str, Any]:
+    """Read 建议重抓 inbox with lifecycle filter.
+
+    status:
+      - open (default): only unresolved
+      - resolved | dismissed: only that status
+      - all: every row (still de-duped by entry_id, newest wins)
+    Historical JSONL is never rewritten; lifecycle lives in lifecycle_state.json.
+    """
     day_key = str(day or "").strip() or datetime.now().strftime("%Y%m%d")
-    path = vision_followup_inbox_dir() / f"recrawl_{day_key}.jsonl"
+    status_filter = str(status or "open").strip().lower() or "open"
+    if status_filter not in {"open", "resolved", "dismissed", "all"}:
+        status_filter = "open"
+
+    state = _load_inbox_state()
+    files: List[Path] = []
+    root = vision_followup_inbox_dir()
+    if include_all_days:
+        files = sorted(root.glob("recrawl_*.jsonl"), reverse=True)
+    else:
+        files = [root / f"recrawl_{day_key}.jsonl"]
+
+    # newest-first across files; de-dupe by entry_id so re-appends don't spam
+    seen: set[str] = set()
     items: List[Dict[str, Any]] = []
-    counts: Dict[str, int] = {}
-    if path.is_file():
+    reason_counts: Dict[str, int] = {}
+    status_counts: Dict[str, int] = {"open": 0, "resolved": 0, "dismissed": 0}
+    raw_total = 0
+
+    for path in files:
+        if not path.is_file():
+            continue
         try:
             lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
         except OSError:
-            lines = []
-        # newest last in file; show newest first
+            continue
+        file_day = path.stem.replace("recrawl_", "", 1)
         for line in reversed(lines):
             line = line.strip()
             if not line:
@@ -1998,16 +2356,47 @@ def list_recrawl_inbox(*, day: str = "", limit: int = 200) -> Dict[str, Any]:
                 continue
             if not isinstance(row, dict):
                 continue
+            raw_total += 1
+            row = dict(row)
+            row.setdefault("day", file_day)
+            eid = _inbox_entry_id(row)
+            if eid in seen:
+                continue
+            seen.add(eid)
+            st_info = state.get(eid) or {}
+            # Also honour person-level state even if entry_id was path-based historically
+            pid = str(row.get("person_id") or "").strip()
+            if not st_info and pid:
+                st_info = state.get(f"person:{pid}") or {}
+            cur_status = str(st_info.get("status") or "open").strip().lower()
+            if cur_status not in INBOX_STATUSES:
+                cur_status = "open"
+            row["entry_id"] = eid
+            row["inbox_status"] = cur_status
+            row["inbox_action"] = str(st_info.get("action") or "")
+            row["inbox_reason"] = str(st_info.get("reason") or "")
+            row["inbox_resolved_at"] = str(st_info.get("at") or "")
+            status_counts[cur_status] = int(status_counts.get(cur_status) or 0) + 1
+            if status_filter != "all" and cur_status != status_filter:
+                continue
             code = str(row.get("error_code") or "unknown")
-            counts[code] = int(counts.get(code) or 0) + 1
+            reason_counts[code] = int(reason_counts.get(code) or 0) + 1
             if len(items) < max(1, min(int(limit or 200), 2000)):
                 items.append(row)
+
+    primary_path = root / f"recrawl_{day_key}.jsonl"
     return {
         "ok": True,
         "day": day_key,
-        "path": str(path) if path.is_file() else "",
-        "total": sum(counts.values()) if counts else len(items),
-        "reason_counts": counts,
+        "path": str(primary_path) if primary_path.is_file() else "",
+        "state_path": str(_inbox_state_path()),
+        "status_filter": status_filter,
+        "include_all_days": bool(include_all_days),
+        "raw_lines": raw_total,
+        "unique_entries": sum(status_counts.values()),
+        "total": len(items),
+        "status_counts": status_counts,
+        "reason_counts": reason_counts,
         "items": items,
     }
 
