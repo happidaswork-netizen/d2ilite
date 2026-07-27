@@ -54,14 +54,16 @@ Canonical field contract: `docs/d2i_cloud_template_extract_contract.md`
 | Vision enqueue | `POST /api/v1/ai/vision/enqueue` | create many **vision_jobs** (not scrape queues); optional `start` |
 | Vision jobs | `GET /api/v1/ai/vision/jobs` · `.../jobs/{id}` | list/show; detail items include per-person `visual_*` / status (from job snapshot + people DB) |
 | Vision pump | `POST /api/v1/ai/vision/pump` | drain queued vision jobs; `max_running=1` serial 排队; `background=true` for full backfill |
-| Vision requeue failed | `POST /api/v1/ai/vision/requeue-failed` | `{ "job_id"?, "start" }` → 只把失败/缺图条目重新入队（已识别的人自动跳过）；never rescrapes |
+| Vision requeue failed | `POST /api/v1/ai/vision/requeue-failed` | `{ "job_id"?, "policy":"retryable\|must_recrawl\|all", "start" }` → **默认只入可恢复失败**；坏图扣下；CLI: `d2i vision requeue` |
+| Vision recrawl inbox | `GET /api/v1/ai/vision/recrawl-inbox` | 建议重抓收件箱（auto-route 写入）；CLI: `d2i vision recrawl-inbox` |
+| Vision auto-route | `POST /api/v1/ai/vision/jobs/{id}/auto-route` | 单批跑完分流：retry-auto + 收件箱；CLI: `d2i vision auto-route <id>` |
 | Vision normalize status | `POST /api/v1/ai/vision/normalize-status` | repair legacy rows: all-fail→`failed`, partial→`completed_with_errors` |
 | Vision one/batch paths | `POST /api/v1/ai/vision` | `{ "path"|"paths", "names", "person_ids", "write_people", "force" }` |
 | Vision scrape-queue stage 2 | `POST /api/v1/queues/{id}/ai/run` | `{ "steps": ["vision"] }` → classify + `vision_report.json` |
 | Vision report | `GET /api/v1/queues/{id}/ai/vision/report` | 漏图/错图/冲突 buckets + counts |
 | Recrawl plan | `GET /api/v1/queues/{id}/ai/vision/recrawl-plan` | problem names only; `?include_review=true` optional |
 | Recrawl draft | `POST /api/v1/queues/{id}/ai/vision/recrawl` | plan only by default; `create_draft` needs `confirm=true`; **never starts** |
-| CLI | `d2i vision status\|inventory\|plan\|enqueue\|jobs\|pump\|run\|report\|recrawl-plan\|recrawl` | |
+| CLI | `d2i vision status\|inventory\|plan\|enqueue\|jobs\|job\|pump\|run\|report\|recrawl-plan\|recrawl\|requeue\|recrawl-inbox\|auto-route` | |
 
 Auto-finalize: list may promote **at most one** eligible completed queue per call; single-queue GET promotes when completed and no successful `meta.last_promote`. Opt out with queue meta `auto_finalize: false` / `skip_auto_finalize`.
 
@@ -78,8 +80,11 @@ Auto-finalize: list may promote **at most one** eligible completed queue per cal
 - Fail-open: API/model errors leave portraits and promote results intact.
 - Default skip rows that already have a non-empty `visual_gender` unless `force=true`.
 - Prefer **post-promote** on durable `角色肖像` paths, not download-time sync vision.
-- Severity: `must_recrawl` = missing image / no person / multi person / classify fail; `review` = gender conflict / uncertain; `ok` = pass or already classified.
-- Artifacts: `{output_root}/reports/vision_report.json`, `vision_recrawl_candidates.json`, queue `meta.last_vision`.
+- Severity: `must_recrawl` = missing image / no person / multi person / classify fail **+ image_too_small / image_truncated**; `review` = gender conflict / uncertain; `ok` = pass or already classified; **retryable** = rate limit / timeout / 5xx / runtime blip.
+- **Auto-route on job finish:** retryable → `retry-auto` vision jobs; must_recrawl/review → daily JSONL inbox under `d2i-cloud-data/vision_followup/recrawl_inbox/`. `retry-auto` sources never spawn more vision children (loop guard).
+- **Do not** requeue vision for 20×20 placeholders or truncated files — fix/recrawl the image first (`d2i vision recrawl-inbox`).
+- Artifacts: `{output_root}/reports/vision_report.json`, `vision_recrawl_candidates.json`, queue `meta.last_vision`, job `result.followup`.
+- Operator one-pager: `skills/d2i-cloud/AGENT_BRIEF.md` (same directory as this skill).
 
 ## Quality gate (before trusting promote)
 

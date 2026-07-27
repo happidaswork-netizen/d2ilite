@@ -232,6 +232,38 @@ def cmd_vision_recrawl(args: argparse.Namespace) -> int:
     )
 
 
+def cmd_vision_requeue(args: argparse.Namespace) -> int:
+    body = {
+        "job_id": str(args.job_id or ""),
+        "batch_size": int(args.batch_size or 20),
+        "start": bool(args.start),
+        "max_running": int(args.max_running or 1),
+        "policy": str(args.policy or "retryable"),
+        "include_review": bool(args.include_review),
+    }
+    return _print(
+        _request("POST", "/api/v1/ai/vision/requeue-failed", body=body, timeout=float(args.timeout or 180))
+    )
+
+
+def cmd_vision_recrawl_inbox(args: argparse.Namespace) -> int:
+    return _print(
+        _request(
+            "GET",
+            "/api/v1/ai/vision/recrawl-inbox",
+            query={"day": str(args.day or ""), "limit": int(args.limit or 200)},
+            timeout=60.0,
+        )
+    )
+
+
+def cmd_vision_auto_route(args: argparse.Namespace) -> int:
+    jid = str(args.job_id or "").strip()
+    if not jid:
+        return _fail("job_id required")
+    q = urllib.parse.quote(jid, safe="")
+    return _print(_request("POST", f"/api/v1/ai/vision/jobs/{q}/auto-route", timeout=180.0))
+
 
 def cmd_vision_inventory(args: argparse.Namespace) -> int:
     return _print(
@@ -449,6 +481,36 @@ def build_parser() -> argparse.ArgumentParser:
     v_recrawl.add_argument("--name", default="", help="draft queue name")
     v_recrawl.add_argument("--notes", default="")
     v_recrawl.set_defaults(func=cmd_vision_recrawl)
+
+    v_requeue = v_sub.add_parser(
+        "requeue",
+        help="split failed vision items: retryable|must_recrawl|all",
+    )
+    v_requeue.add_argument("--job-id", default="", help="limit to one vision job; empty=all failed")
+    v_requeue.add_argument("--batch-size", type=int, default=20)
+    v_requeue.add_argument(
+        "--policy",
+        default="retryable",
+        choices=["retryable", "must_recrawl", "all"],
+        help="retryable=transient only (default); must_recrawl=list only; all=old behaviour",
+    )
+    v_requeue.add_argument("--include-review", action="store_true")
+    v_requeue.add_argument("--start", action="store_true", help="pump after creating retry jobs")
+    v_requeue.add_argument("--max-running", type=int, default=1)
+    v_requeue.add_argument("--timeout", type=float, default=180.0)
+    v_requeue.set_defaults(func=cmd_vision_requeue)
+
+    v_inbox = v_sub.add_parser("recrawl-inbox", help="read 建议重抓 inbox from auto-route")
+    v_inbox.add_argument("--day", default="", help="YYYYMMDD; default today")
+    v_inbox.add_argument("--limit", type=int, default=200)
+    v_inbox.set_defaults(func=cmd_vision_recrawl_inbox)
+
+    v_ar = v_sub.add_parser(
+        "auto-route",
+        help="route one finished vision job into retry-auto + recrawl inbox",
+    )
+    v_ar.add_argument("job_id")
+    v_ar.set_defaults(func=cmd_vision_auto_route)
 
     return parser
 
