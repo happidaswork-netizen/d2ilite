@@ -162,6 +162,18 @@ def cmd_queues_finalize(args: argparse.Namespace) -> int:
     return _print(_request("POST", f"/api/v1/queues/{qid}/finalize", body=body, timeout=120.0))
 
 
+def cmd_queues_images_audit(args: argparse.Namespace) -> int:
+    qid = urllib.parse.quote(str(args.queue_id), safe="")
+    query = {
+        "limit": int(args.limit or 500),
+        "rehash": "false" if bool(args.no_rehash) else "true",
+        "re_read_exif": "false" if bool(args.no_exif) else "true",
+    }
+    return _print(
+        _request("GET", f"/api/v1/queues/{qid}/images/audit", query=query, timeout=120.0)
+    )
+
+
 def cmd_vision_status(_args: argparse.Namespace) -> int:
     return _print(_request("GET", "/api/v1/ai/vision/status"))
 
@@ -535,6 +547,16 @@ def build_parser() -> argparse.ArgumentParser:
     q_fin.add_argument("--limit", type=int, default=0)
     q_fin.add_argument("--skip-people", action="store_true")
     q_fin.set_defaults(func=cmd_queues_finalize)
+
+    q_img = q_sub.add_parser(
+        "images-audit",
+        help="audit original warehouse: sha256/path/EXIF provenance (Hermes P0)",
+    )
+    q_img.add_argument("queue_id")
+    q_img.add_argument("--limit", type=int, default=500)
+    q_img.add_argument("--no-rehash", action="store_true", help="skip on-disk sha256 recompute")
+    q_img.add_argument("--no-exif", action="store_true", help="skip re-reading EXIF from files")
+    q_img.set_defaults(func=cmd_queues_images_audit)
 
     vision = sub.add_parser("vision", help="Grok vision stage (classify + report + recrawl plan)")
     v_sub = vision.add_subparsers(dest="vision_cmd", required=True)

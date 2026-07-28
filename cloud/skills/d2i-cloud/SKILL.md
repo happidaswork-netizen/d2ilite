@@ -48,6 +48,7 @@ Canonical field contract: `docs/d2i_cloud_template_extract_contract.md`
 | Create queue | `POST /api/v1/queues` | body: `template_id` or `template_path`, optional `start_url`, `speed_tier` (`safe` default), `start` |
 | Start / pause / resume / retry / cancel | `POST /api/v1/queues/{id}/{action}` | |
 | Finalize | `POST /api/v1/queues/{id}/finalize` | `{ "dry_run": false, "write_people": true }` → 角色肖像 + people.sqlite |
+| Images audit | `GET /api/v1/queues/{id}/images/audit` | Original warehouse self-check: sha256 + path on disk + EXIF provenance (`exif_present` / `source_photo_taken_at`); CLI: `d2i queues images-audit` |
 | Vision status | `GET /api/v1/ai/vision/status` | Grok runtime + `jobs` counts (queued/running/…) |
 | Vision inventory | `GET /api/v1/ai/vision/inventory` | people with photo but empty `visual_gender`; path resolve |
 | Vision plan | `GET /api/v1/ai/vision/plan` | split unvisioned into multi batches by 省/市 |

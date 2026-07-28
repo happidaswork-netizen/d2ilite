@@ -18,6 +18,7 @@
 d2i status                          # 先看 auth_enabled / running / promoted
 d2i templates list
 d2i queues list | show | create | start | pause | logs | items | finalize
+d2i queues images-audit <q_id>          # 原件仓 sha/path/EXIF 自检（不编造拍摄时间）
 d2i vision status | inventory | plan | enqueue | jobs | job | pump
 d2i vision requeue --policy retryable|must_recrawl|all
 d2i vision recrawl-inbox [--status open|resolved|dismissed|all]
@@ -55,9 +56,12 @@ d2i people marked [--workflow no_photo|hold|unusable]
 1. `d2i status` → `d2i templates list`  
 2. `d2i queues create --template <id> --speed-tier safe`（需要再 `--start`）  
 3. `d2i queues items <id>`：拒导航名（`个人简历`/`要闻`/裸`市长`…）  
-4. `d2i queues finalize <id> --dry-run` → 确认 → 去掉 dry-run  
-5. 坏模板：修 `scraper/templates/` 后 **新开队列**，别指望旧 profiles 自愈  
-6. **人少也按 1 模板 1 队**（1–6 人常见）；不要 1 人 1 个下载队列  
+4. **原件契约**：`downloads/images/<sha>` + `image_downloads.jsonl` 含 `sha256`/`saved_path`/`named_path`；默认 **cleanup 不删原件**（`rules.cleanup_delete_originals=true` 才允许擦除）  
+5. **拍摄时间**：只认源 EXIF/XMP（`source_photo_taken_at`）；无 EXIF → 空 + `exif_present=false` + `photo_taken_at_source=unknown`，**禁止**用抓取时刻冒充  
+6. 自检：`d2i queues images-audit <id>`（缺 sha/路径/磁盘不一致/有 EXIF 日期却未入账 → 非 complete）  
+7. `d2i queues finalize <id> --dry-run` → 确认 → 去掉 dry-run  
+8. 坏模板：修 `scraper/templates/` 后 **新开队列**，别指望旧 profiles 自愈  
+9. **人少也按 1 模板 1 队**（1–6 人常见）；不要 1 人 1 个下载队列  
 
 ### 视觉
 

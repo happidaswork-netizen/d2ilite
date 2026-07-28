@@ -30,6 +30,7 @@ INCLUDE_FILES = [
     "downloader.py",
     "excel_reader.py",
     "image_asset_safety.py",
+    "image_source_meta.py",
     "titi_metadata_schema.py",
     "visual_classifier.py",
     "requirements.txt",

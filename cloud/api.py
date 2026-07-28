@@ -398,6 +398,30 @@ def create_app() -> FastAPI:
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
+    @api.get("/queues/{queue_id}/images/audit")
+    def queue_images_audit(
+        queue_id: str,
+        limit: int = Query(default=500, ge=1, le=5000),
+        rehash: bool = Query(default=True),
+        re_read_exif: bool = Query(default=True),
+    ) -> Dict[str, Any]:
+        """Original warehouse + EXIF provenance self-check (Hermes P0)."""
+        from cloud import image_audit
+
+        try:
+            return image_audit.audit_queue_images(
+                queue_id=queue_id,
+                limit=int(limit or 500),
+                rehash=bool(rehash),
+                re_read_exif=bool(re_read_exif),
+            )
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+
     @api.get("/queues/{queue_id}/items")
     def queue_items(
         queue_id: str,

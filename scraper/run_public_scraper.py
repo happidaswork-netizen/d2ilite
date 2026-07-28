@@ -886,10 +886,23 @@ def extract_birth_date_from_texts(*texts: Any) -> Tuple[str, Optional[datetime]]
 
 
 def extract_photo_taken_date_from_image(image_path: str) -> Tuple[str, Optional[datetime]]:
-    if not HAS_PIL_IMAGE:
-        return "", None
+    """Read shooting time from original image EXIF/XMP only — never invent."""
     source = norm_abs_path(image_path)
     if (not source) or (not Path(source).exists()):
+        return "", None
+    try:
+        # Shared helper (no scrapy deps) — same contract as Cloud image audit.
+        from image_source_meta import inspect_source_image, parse_date_token  # type: ignore
+
+        info = inspect_source_image(source)
+        taken = str(info.get("source_photo_taken_at") or "").strip()
+        if not taken:
+            return "", None
+        _, dt = parse_date_token(taken)
+        return taken, dt
+    except Exception:
+        pass
+    if not HAS_PIL_IMAGE:
         return "", None
     try:
         with Image.open(source) as img:  # type: ignore[attr-defined]
@@ -900,30 +913,81 @@ def extract_photo_taken_date_from_image(image_path: str) -> Tuple[str, Optional[
                     normalized, dt = _parse_date_token(value)
                     if normalized:
                         return normalized, dt
-
             info_map = getattr(img, "info", {}) if isinstance(getattr(img, "info", {}), dict) else {}
             for key in ("date:create", "date:modify", "creation_time", "Creation Time", "DateTimeOriginal", "DateTime"):
                 if key in info_map:
                     normalized, dt = _parse_date_token(info_map.get(key))
                     if normalized:
                         return normalized, dt
-
-            # Some formats expose XMP payload as bytes/string in info.
-            for xmp_key in ("xmp", "XML:com.adobe.xmp", "Raw profile type xmp"):
-                if xmp_key not in info_map:
-                    continue
-                payload = info_map.get(xmp_key)
-                if isinstance(payload, bytes):
-                    payload = payload.decode("utf-8", errors="ignore")
-                payload_text = str(payload or "").strip()
-                if not payload_text:
-                    continue
-                normalized, dt = _parse_date_token(payload_text)
-                if normalized:
-                    return normalized, dt
     except Exception:
         return "", None
     return "", None
+
+
+def inspect_photo_source_meta(image_path: str) -> Dict[str, Any]:
+    """Full source EXIF audit dict for manifest / d2i_profile (never invents dates)."""
+    source = norm_abs_path(image_path)
+    empty = {
+        "exif_present": False,
+        "source_photo_taken_at": "",
+        "photo_taken_at_source": "unknown",
+        "source_exif": {},
+    }
+    if (not source) or (not Path(source).exists()):
+        return empty
+    try:
+        from image_source_meta import inspect_source_image  # type: ignore
+
+        info = inspect_source_image(source)
+        return {
+            "exif_present": bool(info.get("exif_present")),
+            "source_photo_taken_at": str(info.get("source_photo_taken_at") or ""),
+            "photo_taken_at_source": str(info.get("photo_taken_at_source") or "unknown"),
+            "source_exif": dict(info.get("source_exif") or {}),
+            "width": int(info.get("width") or 0),
+            "height": int(info.get("height") or 0),
+        }
+    except Exception:
+        taken, _ = extract_photo_taken_date_from_image(source)
+        return {
+            "exif_present": bool(taken),
+            "source_photo_taken_at": taken,
+            "photo_taken_at_source": "source_exif" if taken else "unknown",
+            "source_exif": {},
+        }
+
+
+def _manifest_source_meta_fields(image_path: str, *, payload: Optional[bytes] = None) -> Dict[str, Any]:
+    """Compact EXIF audit fields for image_downloads.jsonl rows."""
+    try:
+        from image_source_meta import inspect_source_image  # type: ignore
+
+        if payload is not None:
+            info = inspect_source_image(payload)
+        else:
+            info = inspect_source_image(image_path)
+        out: Dict[str, Any] = {
+            "exif_present": bool(info.get("exif_present")),
+            "source_photo_taken_at": str(info.get("source_photo_taken_at") or ""),
+            "photo_taken_at_source": str(info.get("photo_taken_at_source") or "unknown"),
+        }
+        if info.get("source_exif"):
+            out["source_exif"] = dict(info.get("source_exif") or {})
+        if info.get("width"):
+            out["width"] = int(info["width"])
+        if info.get("height"):
+            out["height"] = int(info["height"])
+        if info.get("format"):
+            out["image_format"] = str(info["format"])
+        return out
+    except Exception:
+        meta = inspect_photo_source_meta(image_path)
+        return {
+            "exif_present": bool(meta.get("exif_present")),
+            "source_photo_taken_at": str(meta.get("source_photo_taken_at") or ""),
+            "photo_taken_at_source": str(meta.get("photo_taken_at_source") or "unknown"),
+            "source_exif": dict(meta.get("source_exif") or {}),
+        }
 
 
 def compute_age_at_photo(
@@ -1364,7 +1428,11 @@ def write_metadata_for_queue_row(
         summary,
         full_content,
     )
-    photo_taken_at, photo_taken_obj = extract_photo_taken_date_from_image(source_path)
+    source_meta = inspect_photo_source_meta(source_path)
+    photo_taken_at = str(source_meta.get("source_photo_taken_at") or "").strip()
+    photo_taken_obj = None
+    if photo_taken_at:
+        _, photo_taken_obj = _parse_date_token(photo_taken_at)
     age_at_photo = compute_age_at_photo(
         birth_date_obj,
         photo_taken_obj,
@@ -1585,6 +1653,14 @@ def write_metadata_for_queue_row(
         d2i_profile_payload["birth_date"] = birth_date_norm
     if photo_taken_at:
         d2i_profile_payload["photo_taken_at"] = photo_taken_at
+    # Explicit source EXIF audit (empty is correct when government JPEGs have no EXIF).
+    d2i_profile_payload["exif_present"] = bool(source_meta.get("exif_present"))
+    d2i_profile_payload["source_photo_taken_at"] = str(source_meta.get("source_photo_taken_at") or "")
+    d2i_profile_payload["photo_taken_at_source"] = str(
+        source_meta.get("photo_taken_at_source") or ("source_exif" if photo_taken_at else "unknown")
+    )
+    if source_meta.get("source_exif"):
+        d2i_profile_payload["source_exif"] = dict(source_meta.get("source_exif") or {})
     if age_at_photo:
         d2i_profile_payload["age_at_photo"] = age_at_photo
     if profession_tags:
@@ -1620,6 +1696,11 @@ def write_metadata_for_queue_row(
         "gender": gender,
         "birth_date": birth_date_norm,
         "photo_taken_at": photo_taken_at,
+        "exif_present": bool(source_meta.get("exif_present")),
+        "source_photo_taken_at": str(source_meta.get("source_photo_taken_at") or ""),
+        "photo_taken_at_source": str(
+            source_meta.get("photo_taken_at_source") or ("source_exif" if photo_taken_at else "unknown")
+        ),
         "age_at_photo": age_at_photo,
         "position": position,
         "city": city_value,
@@ -3590,19 +3671,18 @@ def run_crawl_browser_mode(config: Dict[str, Any], output_root: Path) -> None:
                             inline_named_path = _inline_write_for_profile(record, sha, str(target_named.resolve()))
                             saved_path = str(target_named.resolve())
                             named_path = norm_abs_path(inline_named_path) or saved_path
-                            append_jsonl(
-                                download_manifest,
-                                {
-                                    "downloaded_at": utc_now_iso(),
-                                    "detail_url": detail_url,
-                                    "image_url": image_url,
-                                    "name": name,
-                                    "sha256": sha,
-                                    "saved_path": saved_path,
-                                    "named_path": named_path,
-                                    "route": "browser_inline_direct",
-                                },
-                            )
+                            row_manifest = {
+                                "downloaded_at": utc_now_iso(),
+                                "detail_url": detail_url,
+                                "image_url": image_url,
+                                "name": name,
+                                "sha256": sha,
+                                "saved_path": saved_path,
+                                "named_path": named_path,
+                                "route": "browser_inline_direct",
+                            }
+                            row_manifest.update(_manifest_source_meta_fields(saved_path, payload=payload_img))
+                            append_jsonl(download_manifest, row_manifest)
                             if detail_url:
                                 direct_manifest_by_detail[detail_url] = {"sha": sha, "path": named_path}
 
@@ -3743,19 +3823,21 @@ def run_crawl_browser_mode(config: Dict[str, Any], output_root: Path) -> None:
                                 sha=sha[:12],
                             )
                             inline_named_path = _inline_write_for_profile(record, sha, str(target.resolve()))
-                            append_jsonl(
-                                download_manifest,
-                                {
-                                    "downloaded_at": utc_now_iso(),
-                                    "detail_url": detail_url,
-                                    "image_url": image_url,
-                                    "name": name,
-                                    "sha256": sha,
-                                    "saved_path": str(target.resolve()),
-                                    "route": "browser_inline",
-                                    **({"named_path": inline_named_path} if inline_named_path else {}),
-                                },
+                            row_manifest = {
+                                "downloaded_at": utc_now_iso(),
+                                "detail_url": detail_url,
+                                "image_url": image_url,
+                                "name": name,
+                                "sha256": sha,
+                                "saved_path": str(target.resolve()),
+                                "route": "browser_inline",
+                            }
+                            if inline_named_path:
+                                row_manifest["named_path"] = inline_named_path
+                            row_manifest.update(
+                                _manifest_source_meta_fields(str(target.resolve()), payload=payload_img)
                             )
+                            append_jsonl(download_manifest, row_manifest)
 
             missing_fields = [field for field in required_fields if not record.get(field)]
             if missing_fields:
@@ -4650,22 +4732,21 @@ def download_images(config: Dict[str, Any], output_root: Path) -> Dict[str, Any]
 
                 saved_path = str(target_named.resolve())
                 named_path = norm_abs_path(inline_named_path) or saved_path
-                append_jsonl(
-                    download_manifest,
-                    {
-                        "downloaded_at": utc_now_iso(),
-                        "detail_url": detail_url,
-                        "image_url": image_url,
-                        "name": profile.get("name", ""),
-                        "image_role": profile.get("image_role", ""),
-                        "image_index": profile.get("image_index", ""),
-                        "image_total": profile.get("image_total", ""),
-                        "sha256": sha,
-                        "saved_path": saved_path,
-                        "named_path": named_path,
-                        "route": f"{route_used}_direct",
-                    },
-                )
+                row_manifest = {
+                    "downloaded_at": utc_now_iso(),
+                    "detail_url": detail_url,
+                    "image_url": image_url,
+                    "name": profile.get("name", ""),
+                    "image_role": profile.get("image_role", ""),
+                    "image_index": profile.get("image_index", ""),
+                    "image_total": profile.get("image_total", ""),
+                    "sha256": sha,
+                    "saved_path": saved_path,
+                    "named_path": named_path,
+                    "route": f"{route_used}_direct",
+                }
+                row_manifest.update(_manifest_source_meta_fields(saved_path, payload=payload))
+                append_jsonl(download_manifest, row_manifest)
                 if image_url:
                     manifest_by_image[image_url] = {"sha": sha, "path": named_path}
                 if detail_url and (not image_multi):
@@ -4727,6 +4808,8 @@ def download_images(config: Dict[str, Any], output_root: Path) -> Dict[str, Any]
             }
             if inline_named_path:
                 manifest_row["named_path"] = inline_named_path
+            # Prefer payload EXIF (pre-named-copy) so metadata write cannot erase provenance.
+            manifest_row.update(_manifest_source_meta_fields(str(target.resolve()), payload=payload))
             append_jsonl(download_manifest, manifest_row)
     finally:
         if browser_downloader is not None:
@@ -5715,6 +5798,11 @@ def cleanup_intermediate_outputs(output_root: Path, config: Dict[str, Any], reco
             "hint": "wait for Cloud finalize/auto-promote before images_only cleanup",
         }
 
+    # Original warehouse contract (Hermes EXIF/P0): keep downloads/images +
+    # image_downloads.jsonl by default so sha256 / source EXIF remain auditable
+    # after promote. Opt-in wipe only: rules.cleanup_delete_originals=true.
+    keep_originals = not _parse_bool_rule(rules.get("cleanup_delete_originals", False), default=False)
+
     named_dir = resolve_named_output_dir(output_root, rules)
     keep_record = mode == "images_only_with_record"
     removed: List[str] = []
@@ -5745,9 +5833,21 @@ def cleanup_intermediate_outputs(output_root: Path, config: Dict[str, Any], reco
 
     _safe_remove_path(output_root / "raw")
     _safe_remove_path(output_root / "state")
-    _safe_remove_path(output_root / "reports")
-    _safe_remove_path(output_root / "downloads" / "images")
-    _safe_remove_path(output_root / "downloads" / "image_downloads.jsonl")
+    # Keep promote_report + metadata_audit under reports/ when originals retained.
+    if keep_originals:
+        # Still drop bulky non-audit report dumps if present, but leave reports dir.
+        for bulky in ("vision_report.json", "vision_recrawl_candidates.json"):
+            candidate = output_root / "reports" / bulky
+            if candidate.is_file():
+                _safe_remove_path(candidate)
+    else:
+        _safe_remove_path(output_root / "reports")
+    if keep_originals:
+        skipped.append(str((output_root / "downloads" / "images").resolve()))
+        skipped.append(str((output_root / "downloads" / "image_downloads.jsonl").resolve()))
+    else:
+        _safe_remove_path(output_root / "downloads" / "images")
+        _safe_remove_path(output_root / "downloads" / "image_downloads.jsonl")
     _safe_remove_path(output_root / "crawl_run_summary.json")
 
     if (not keep_record) and record_path.exists():
@@ -5762,6 +5862,17 @@ def cleanup_intermediate_outputs(output_root: Path, config: Dict[str, Any], reco
             extra = Path(path_text)
             if not extra.is_absolute():
                 extra = (output_root / extra).resolve()
+            # Never let custom cleanup_paths wipe the original warehouse by accident.
+            if keep_originals:
+                try:
+                    extra_res = extra.resolve()
+                    images_dir = (output_root / "downloads" / "images").resolve()
+                    manifest = (output_root / "downloads" / "image_downloads.jsonl").resolve()
+                    if extra_res == images_dir or extra_res == manifest or _is_parent(images_dir, extra_res):
+                        skipped.append(str(extra_res))
+                        continue
+                except Exception:
+                    pass
             _safe_remove_path(extra)
 
     # Keep output root clean if downloads directory is now empty.
@@ -5779,6 +5890,7 @@ def cleanup_intermediate_outputs(output_root: Path, config: Dict[str, Any], reco
         "cleaned": True,
         "removed": removed,
         "skipped": skipped,
+        "keep_originals": keep_originals,
         "named_output_dir": str(named_dir),
         "record_path": str(record_path.resolve()) if keep_record else "",
     }
