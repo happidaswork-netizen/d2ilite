@@ -143,11 +143,7 @@ def connect_via_vmiss() -> paramiko.SSHClient:
 def connect() -> paramiko.SSHClient:
     if VIA_VMISS:
         return connect_via_vmiss()
-    try:
-        return connect_direct()
-    except Exception as exc:  # noqa: BLE001
-        print(f"direct connect failed ({exc!r}); falling back to VMISS tunnel")
-        return connect_via_vmiss()
+    return connect_direct()
 
 
 def run(c: paramiko.SSHClient, cmd: str, timeout: int = 300) -> tuple[int, str, str]:
