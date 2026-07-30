@@ -467,6 +467,10 @@ try:
     print('auth_enabled', auth_on)
     st, body = get('/api/v1/queues?limit=1')
     assert st == 200 and isinstance(body.get('queues'), list), ('queues', st)
+    st, body = get('/api/v1/templates?limit=1')
+    assert st == 200 and isinstance(body.get('templates'), list), ('templates', st)
+    st, body = get('/api/v1/templates/search?url=https%3A%2F%2Fexample.com&limit=1')
+    assert st == 200 and isinstance(body.get('templates'), list), ('template_search', st)
     st, body = get('/api/v1/ai/vision/status')
     assert st == 200 and isinstance(body.get('jobs'), dict), ('vision_status', st)
     if auth_on:
@@ -648,6 +652,26 @@ PY
             print("DEPLOY_FAILED", stamp)
             return 6
 
+        # Keep Hermes' CLI and both D2I skills on the exact same release as the API.
+        # This is a local profile sync only; it does not start a crawl.
+        install_cmd = f"""
+set -e
+D2I_HERMES_ARCHIVE_IMAGE_WORKER=0 \
+D2I_HERMES_CLEAN_BROKEN_LINKS=0 \
+python3 '{REMOTE_CURRENT}/deploy/nas/install_d2i_cloud_cli_on_nas.py'
+test -f /vol1/1001/hermes/profiles/nas-main/skills/d2i-cloud/SKILL.md
+test -f /vol1/1001/hermes/profiles/nas-main/skills/d2i-lite-template-builder/SKILL.md
+test -x /vol1/1001/hermes/profiles/nas-main/bin/d2i
+"""
+        code, out, err = run(c, install_cmd, timeout=90)
+        print("profile_sync", out.strip()[-1600:])
+        if err.strip():
+            print("profile_sync_err", err[:600])
+        if code != 0:
+            print("GATE_FAILED Hermes CLI/skill sync rc", code)
+            print("DEPLOY_FAILED", stamp)
+            return 7
+
         note = DIST / f"DEPLOY-{stamp}.txt"
         note.write_text(
             "\n".join(
@@ -659,7 +683,7 @@ PY
                     f"current={REMOTE_CURRENT}",
                     f"host={HOST}",
                     f"via_vmiss={int(VIA_VMISS or _VMISS_HOLD is not None)}",
-                    "gates=import-smoke,health,critical-api,theme-assets",
+                    "gates=import-smoke,health,critical-api,theme-assets,hermes-profile-sync",
                     f"built_at={datetime.now().isoformat(timespec='seconds')}",
                     "",
                 ]
