@@ -141,6 +141,17 @@ def _workspace_task_row(
     )
     detail = workspace.get("detail") if isinstance(workspace.get("detail"), dict) else {}
     selected = workspace.get("selected_task") if isinstance(workspace.get("selected_task"), dict) else {}
+    expected_root = normalize_public_task_root(output_root)
+    actual_root = normalize_public_task_root(
+        detail.get("root") or selected.get("root") or workspace.get("selected_root")
+    )
+    if expected_root and actual_root != expected_root:
+        # Workspace discovery may fall back to its first visible row when this
+        # durable queue lives outside the current scan root. Never attach that
+        # unrelated task's KPI/path to this queue; enrich_queue will use the
+        # exact on-disk summary below.
+        detail = {}
+        selected = {}
     return {
         "workspace": workspace,
         "detail": detail,
@@ -572,6 +583,44 @@ def enrich_queue(
                             str(selected.get("status") or ""),
                             session_running=bool(selected.get("session_running")),
                             manual_paused=bool(selected.get("manual_paused")),
+                        ),
+                    }
+                )
+            else:
+                live.update(
+                    {
+                        "profiles": int(summary.get("profiles") or 0),
+                        "images": int(summary.get("images") or 0),
+                        "metadata_ok": int(summary.get("metadata_ok") or 0),
+                        "pending": int(summary.get("pending") or 0),
+                        "review": int(summary.get("review") or 0),
+                        "failures": int(summary.get("failures") or 0),
+                        "discovered": max(
+                            int(summary.get("profiles") or 0),
+                            int(summary.get("images") or 0),
+                        ),
+                        "downloaded": int(summary.get("images") or 0),
+                        "completed": max(
+                            0,
+                            int(summary.get("profiles") or 0)
+                            - int(summary.get("pending") or 0),
+                        ),
+                        "progress_text": (
+                            "精确目录磁盘统计 "
+                            f"图片:{int(summary.get('images') or 0)} "
+                            f"人物:{int(summary.get('profiles') or 0)} "
+                            f"元数据:{int(summary.get('metadata_ok') or 0)}"
+                        ),
+                        "log_path": os.path.join(root, "reports", "gui_public_scraper.log"),
+                        "output_path": root,
+                        "can_continue": str(summary.get("status") or "") != "已完成",
+                        "can_retry": int(summary.get("failures") or 0) > 0,
+                        "runtime_state": str(summary.get("status") or ""),
+                        "updated_at_disk": str(summary.get("updated_at") or ""),
+                        "status": _map_status_to_api(
+                            str(summary.get("status") or ""),
+                            session_running=False,
+                            manual_paused=False,
                         ),
                     }
                 )

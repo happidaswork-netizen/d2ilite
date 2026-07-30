@@ -28,6 +28,7 @@ os.environ["D2I_CLOUD_TASKS_ROOT"] = os.path.join(_TMP, "tasks")
 atexit.register(shutil.rmtree, _TMP, ignore_errors=True)
 
 from cloud import queue_service as qs  # noqa: E402
+from services import desktop_scraper_backend_service as backend  # noqa: E402
 
 LEGACY_KEYS = {"total", "offset", "limit", "previewable", "queue_count", "queues", "items", "filters", "errors"}
 
@@ -126,6 +127,36 @@ def test_per_queue_limit_clamped():
     assert payload["per_queue_limit"] == 2000
 
 
+def test_selected_existing_queue_never_falls_through_to_another_queue():
+    base = os.path.join(_TMP, "tasks")
+    selected = os.path.join(base, "older", "exact-queue")
+    other = os.path.join(base, "latest", "other-queue")
+    os.makedirs(selected, exist_ok=True)
+    os.makedirs(other, exist_ok=True)
+    rows = [{"root": os.path.abspath(other)}]
+    actual = backend._resolve_selected_root(base, selected, rows)
+    assert actual == os.path.abspath(selected)
+
+
+def test_queue_workspace_rejects_another_queues_detail():
+    selected = os.path.join(_TMP, "outside", "selected")
+    other = os.path.join(_TMP, "tasks", "other")
+    os.makedirs(selected, exist_ok=True)
+    os.makedirs(other, exist_ok=True)
+    original = qs.build_scraper_workspace_payload
+    qs.build_scraper_workspace_payload = lambda *_args, **_kwargs: {
+        "selected_root": os.path.abspath(other),
+        "selected_task": {"root": os.path.abspath(other), "profiles": 99},
+        "detail": {"root": os.path.abspath(other), "profile_rows": 99},
+    }
+    try:
+        bundle = qs._workspace_task_row(selected, os.path.join(_TMP, "tasks"))
+    finally:
+        qs.build_scraper_workspace_payload = original
+    assert bundle["detail"] == {}
+    assert bundle["selected_task"] == {}
+
+
 if __name__ == "__main__":
     for fn in (
         test_response_keeps_legacy_fields_and_adds_truncation,
@@ -133,6 +164,8 @@ if __name__ == "__main__":
         test_only_queue_filters_items_but_keeps_all_summaries,
         test_page_cap_truncation_detected,
         test_per_queue_limit_clamped,
+        test_selected_existing_queue_never_falls_through_to_another_queue,
+        test_queue_workspace_rejects_another_queues_detail,
     ):
         fn()
         print(f"PASS {fn.__name__}")

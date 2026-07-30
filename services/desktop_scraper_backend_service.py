@@ -382,10 +382,25 @@ def _serialize_review_rows(root: str, progress_rows: Iterable[Dict[str, Any]], l
 
 
 def _resolve_selected_root(base_root: str, selected_root: str, rows: List[Dict[str, Any]]) -> str:
+    normalized_base = normalize_public_task_root(base_root)
     normalized_selected = normalize_public_task_root(selected_root)
     row_roots = {str(item.get("root", "") or "").strip() for item in rows if isinstance(item, dict)}
     if normalized_selected and normalized_selected in row_roots:
         return normalized_selected
+    # Queue records are durable, while the workspace discovery list can be
+    # truncated or temporarily miss an older nested task. Keep the caller's
+    # exact existing task instead of silently substituting rows[0], which makes
+    # unrelated queues display another queue's paths and KPI.
+    if normalized_selected and os.path.isdir(normalized_selected):
+        try:
+            if (
+                normalized_base
+                and os.path.commonpath([normalized_base, normalized_selected])
+                == normalized_base
+            ):
+                return normalized_selected
+        except (OSError, ValueError):
+            pass
     if rows:
         return str(rows[0].get("root", "") or "").strip()
     return ""
