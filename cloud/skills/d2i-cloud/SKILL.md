@@ -33,13 +33,14 @@ Canonical field contract: `docs/d2i_cloud_template_extract_contract.md`
 ## Read-first workflow
 
 1. `GET /api/v1/status` — `running`, `completed`, `promoted`, `desired_running` (stale desired should stay ~0).
-2. New URL first calls `GET /api/v1/templates/search?url=...`; known template may use `GET /api/v1/templates`.
-3. `GET /api/v1/queues?limit=50` — **download/scrape** queues only (`q_*`); live runtime + `runtime.promoted` / `can_finalize`.
-4. `GET /api/v1/queues/{id}` — detail; opening a completed queue may **auto-finalize once**.
-5. `GET /api/v1/queues/{id}/items?limit=100` — check names, preview flags, garbage rows.
-6. `GET /api/v1/library?limit=60` — cross-queue browse.
-7. Coverage: `GET /api/v1/coverage/tree` then node detail / enqueue only with a known good template.
-8. Vision jobs UI: open `/vision` (not scrape queue list). Page supports inventory → plan → enqueue + pump. API: `GET /api/v1/ai/vision/jobs` (`vj_*`).
+2. Site discovery belongs to the calling model's own web-search/browser tools, not D2I. Coverage may guide the model's queries, but the model may also search broadly. Once it selects a candidate URL, call `GET /api/v1/templates/search?url=...`.
+3. Never treat template-library search as public-web search.
+4. `GET /api/v1/queues?limit=50` — **download/scrape** queues only (`q_*`); live runtime + `runtime.promoted` / `can_finalize`.
+5. `GET /api/v1/queues/{id}` — detail; opening a completed queue may **auto-finalize once**.
+6. `GET /api/v1/queues/{id}/items?limit=100` — check names, preview flags, garbage rows.
+7. `GET /api/v1/library?limit=60` — cross-queue browse.
+8. Coverage: `GET /api/v1/coverage/tree`; its scout proposal is only a direction hint, not internet search.
+9. Vision jobs UI: open `/vision` (not scrape queue list). Page supports inventory → plan → enqueue + pump. API: `GET /api/v1/ai/vision/jobs` (`vj_*`).
 
 ## Write / control
 

@@ -9,6 +9,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -455,7 +456,15 @@ def norm_abs_path(path_value: str) -> str:
 
 
 def scoped_temp_dir(base_name: str, scope_hint: str = "") -> Path:
-    base = SCRIPT_DIR / str(base_name or "_tmp")
+    runtime_temp_root = str(
+        os.environ.get("D2I_SCRAPER_TEMP_ROOT")
+        or os.environ.get("TMPDIR")
+        or ""
+    ).strip()
+    if runtime_temp_root:
+        base = Path(runtime_temp_root).expanduser() / "d2i-public-scraper" / str(base_name or "_tmp")
+    else:
+        base = Path(tempfile.gettempdir()) / "d2i-public-scraper" / str(base_name or "_tmp")
     hint = norm_abs_path(scope_hint)
     if not hint:
         base.mkdir(parents=True, exist_ok=True)
@@ -4003,11 +4012,12 @@ def _request_with_optional_jsl(
     timeout_seconds: int,
     enable_jsl: bool,
     jsl_max_retries: int,
+    verify_tls: bool = True,
 ) -> requests.Response:
     max_attempts = max(1, int(jsl_max_retries)) + 1
     last_response: Optional[requests.Response] = None
     for _ in range(max_attempts):
-        response = session.get(url, timeout=timeout_seconds, headers=headers)
+        response = session.get(url, timeout=timeout_seconds, headers=headers, verify=verify_tls)
         last_response = response
         if (not enable_jsl) or (not _is_probable_jsl_challenge(response)):
             return response
@@ -4015,7 +4025,11 @@ def _request_with_optional_jsl(
         if not cookie_pair:
             return response
         _apply_cookie_pair_to_session(session, url, cookie_pair)
-    return last_response if last_response is not None else session.get(url, timeout=timeout_seconds, headers=headers)
+    return (
+        last_response
+        if last_response is not None
+        else session.get(url, timeout=timeout_seconds, headers=headers, verify=verify_tls)
+    )
 
 
 def _looks_like_image_payload(content_type: str, payload: bytes) -> bool:
@@ -4209,6 +4223,7 @@ def download_images(config: Dict[str, Any], output_root: Path) -> Dict[str, Any]
     image_referer_from_detail = bool(rules.get("image_referer_from_detail_url", False))
     jsl_clearance_enabled = bool(rules.get("jsl_clearance_enabled", False))
     jsl_max_retries = max(1, int(rules.get("jsl_max_retries", 3)))
+    verify_tls = _parse_bool_rule(rules.get("tls_verify", True), default=True)
     image_download_mode = str(rules.get("image_download_mode", "requests_jsl")).strip().lower()
     browser_mode_selected = image_download_mode in {"browser", "d2i_browser"}
     browser_max_retries = max(1, int(rules.get("browser_max_retries", crawl_cfg.get("retry_times", 3))))
@@ -4567,6 +4582,7 @@ def download_images(config: Dict[str, Any], output_root: Path) -> Dict[str, Any]
                         headers=headers,
                         enable_jsl=jsl_clearance_enabled,
                         jsl_max_retries=jsl_max_retries,
+                        verify_tls=verify_tls,
                     )
                 except requests.RequestException as exc:
                     consecutive_download_failures += 1
