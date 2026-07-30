@@ -16,7 +16,7 @@
 
 ```bash
 d2i status                          # 先看 auth_enabled / running / promoted
-d2i templates list
+d2i templates list|search|show|validate|import|outcome
 d2i queues list | show | create | start | pause | logs | items | finalize
 d2i queues images-audit <q_id>          # 原件仓 sha/path/EXIF 自检（不编造拍摄时间）
 d2i vision status | inventory | plan | enqueue | jobs | job | pump
@@ -53,14 +53,14 @@ d2i people marked [--workflow no_photo|hold|unusable]
 
 ### 下载 / 落盘
 
-1. `d2i status` → `d2i templates list`  
+1. `d2i status` → 新 URL 先 `d2i templates search --url …`
 2. `d2i queues create --template <id> --speed-tier safe`（需要再 `--start`）  
 3. `d2i queues items <id>`：拒导航名（`个人简历`/`要闻`/裸`市长`…）  
 4. **原件契约**：`downloads/images/<sha>` + `image_downloads.jsonl` 含 `sha256`/`saved_path`/`named_path`；默认 **cleanup 不删原件**（`rules.cleanup_delete_originals=true` 才允许擦除）  
 5. **拍摄时间**：只认源 EXIF/XMP（`source_photo_taken_at`）；无 EXIF → 空 + `exif_present=false` + `photo_taken_at_source=unknown`，**禁止**用抓取时刻冒充  
 6. 自检：`d2i queues images-audit <id>`（缺 sha/路径/磁盘不一致/有 EXIF 日期却未入账 → 非 complete）  
 7. `d2i queues finalize <id> --dry-run` → 确认 → 去掉 dry-run  
-8. 坏模板：修 `scraper/templates/` 后 **新开队列**，别指望旧 profiles 自愈  
+8. 坏模板：本地修正后 `templates validate` → `templates import --overwrite`，再开新队列；别指望旧 profiles 自愈  
 9. **人少也按 1 模板 1 队**（1–6 人常见）；不要 1 人 1 个下载队列  
 
 ### 视觉
@@ -101,8 +101,9 @@ UI：视觉页证据板 / 收件箱有按钮；顶栏「工作流标记」。
 ### 模板新站
 
 1. 读 `docs/d2i_cloud_template_extract_contract.md`  
-2. 用 `d2i-lite-template-builder` 出模板  
-3. 小样 T0（常 1–6 人，safe）过再扩  
+2. 用 `d2i-lite-template-builder` 出模板 → `validate` → `import`
+3. 默认只跑一次小样（常 5–10 人；页面本来只有 1–6 人就直接全跑），抓错可修后重抓
+4. 跑完用 `templates outcome` 写回真实计数和失败类型
 
 ## 失败中文标签（UI/你汇报时用）
 

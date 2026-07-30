@@ -12,6 +12,7 @@ from pathlib import Path
 PROFILE = Path("/vol1/1001/hermes/profiles/nas-main")
 BIN = PROFILE / "bin"
 SKILL = PROFILE / "skills" / "d2i-cloud"
+TEMPLATE_SKILL = PROFILE / "skills" / "d2i-lite-template-builder"
 BACKUPS = Path("/vol1/1001/hermes/backups")
 CODE = Path(os.environ.get("D2I_CLOUD_CODE_HOST", "/vol1/1001/d2i-cloud/current"))
 API = os.environ.get("D2I_CLOUD_API", "http://127.0.0.1:8787")
@@ -109,6 +110,24 @@ Run `d2i status` then see `/vol1/1001/d2i-cloud/current/cloud/skills/d2i-cloud/S
     return notes
 
 
+def _copy_template_skill_from_release(stamp: str) -> list[str]:
+    """Install the template builder from the same Cloud release as the CLI/API."""
+    notes: list[str] = []
+    src_dir = CODE / "cloud" / "skills" / "d2i-lite-template-builder"
+    if not src_dir.is_dir() or not (src_dir / "SKILL.md").is_file():
+        return ["WARN: release template-builder skill missing; kept existing copy"]
+    if TEMPLATE_SKILL.exists():
+        backup = BACKUPS / f"d2i-lite-template-builder-before-{stamp}"
+        if backup.exists():
+            shutil.rmtree(backup)
+        shutil.copytree(TEMPLATE_SKILL, backup)
+        shutil.rmtree(TEMPLATE_SKILL)
+        notes.append(f"backup template builder -> {backup}")
+    shutil.copytree(src_dir, TEMPLATE_SKILL)
+    notes.append(f"installed d2i-lite-template-builder ({(TEMPLATE_SKILL / 'SKILL.md').stat().st_size}B)")
+    return notes
+
+
 def _clean_profile() -> list[str]:
     """Safe cleanup only. Ambiguous skills are listed, not deleted."""
     actions: list[str] = []
@@ -199,6 +218,7 @@ def main() -> None:
         print(f"backup={backup}")
 
     skill_notes = _copy_skill_from_release()
+    skill_notes.extend(_copy_template_skill_from_release(stamp))
     for line in skill_notes:
         print("skill:", line)
 
@@ -219,7 +239,7 @@ def main() -> None:
     for line in clean_notes:
         print("clean:", line)
 
-    for path in [BIN / "d2i", BIN / "d2i-cloud", http_cli_dst, SKILL]:
+    for path in [BIN / "d2i", BIN / "d2i-cloud", http_cli_dst, SKILL, TEMPLATE_SKILL]:
         if path.exists():
             _chown_like_profile(path)
 
@@ -228,6 +248,11 @@ def main() -> None:
     print(f"skill={SKILL}")
     print(f"skill_md_bytes={(SKILL / 'SKILL.md').stat().st_size if (SKILL / 'SKILL.md').is_file() else 0}")
     print(f"brief_bytes={(SKILL / 'AGENT_BRIEF.md').stat().st_size if (SKILL / 'AGENT_BRIEF.md').is_file() else 0}")
+    print(f"template_skill={TEMPLATE_SKILL}")
+    print(
+        "template_skill_md_bytes="
+        f"{(TEMPLATE_SKILL / 'SKILL.md').stat().st_size if (TEMPLATE_SKILL / 'SKILL.md').is_file() else 0}"
+    )
     print(f"api={API}")
     print(f"code={CODE}")
 

@@ -28,12 +28,12 @@ Canonical field contract: `docs/d2i_cloud_template_extract_contract.md`
 - **App-layer Bearer is conditional, not absent**: `cloud/api.py` requires `Authorization: Bearer <D2I_WEB_TOKEN>` on all `/api/v1` routes **whenever env `D2I_WEB_TOKEN` is set**; only an unset token (local dev) opens the API. Check live state via `GET /api/v1/status` → `auth_enabled`. Product contract (`docs/D2I_Cloud产品契约_2026-07-25.md` §鉴权) requires the token to be **on** for any NAS/public exposure.
 - Token sources when enabled: env `D2I_WEB_TOKEN`, file `/runtime/d2i-cloud-data/web_token.txt`, Web `?token=` bootstrap (stored in localStorage `d2i_cloud_token`).
 - Public: `https://d2i.517411.xyz/` still sits behind **Cloudflare Access / Zero Trust** (team login). Unauthenticated browser hits get Access HTML (HTTP 200), not API JSON — finish Access sign-in once per browser, or use LAN. Passing Access does **not** waive the app-layer Bearer when `auth_enabled=true`.
-- Prefer HTTP CLI on LAN/host: `d2i status|templates list|queues …`
+- Prefer HTTP CLI on LAN/host: `d2i status|templates search|show|validate|import|outcome|queues …`
 
 ## Read-first workflow
 
 1. `GET /api/v1/status` — `running`, `completed`, `promoted`, `desired_running` (stale desired should stay ~0).
-2. `GET /api/v1/templates` — pick `id` / `path` (e.g. `河北省沧州市人民政府_市政府领导`).
+2. New URL first calls `GET /api/v1/templates/search?url=...`; known template may use `GET /api/v1/templates`.
 3. `GET /api/v1/queues?limit=50` — **download/scrape** queues only (`q_*`); live runtime + `runtime.promoted` / `can_finalize`.
 4. `GET /api/v1/queues/{id}` — detail; opening a completed queue may **auto-finalize once**.
 5. `GET /api/v1/queues/{id}/items?limit=100` — check names, preview flags, garbage rows.
@@ -45,6 +45,9 @@ Canonical field contract: `docs/d2i_cloud_template_extract_contract.md`
 
 | Action | Endpoint | Notes |
 | --- | --- | --- |
+| Search/show templates | `GET /api/v1/templates/search` · `GET /api/v1/templates/{id}` | Always search before making a new template |
+| Validate/import template | `POST /api/v1/templates/validate` · `POST /api/v1/templates` | Imported templates persist under Cloud data, not the read-only release |
+| Update/write outcome | `PATCH /api/v1/templates/{id}` · `POST /api/v1/templates/{id}/outcomes` | Record real counts and failure types; skip ceremonial test rounds |
 | Create queue | `POST /api/v1/queues` | body: `template_id` or `template_path`, optional `start_url`, `speed_tier` (`safe` default), `start` |
 | Start / pause / resume / retry / cancel | `POST /api/v1/queues/{id}/{action}` | |
 | Finalize | `POST /api/v1/queues/{id}/finalize` | `{ "dry_run": false, "write_people": true }` → 角色肖像 + people.sqlite |
@@ -116,7 +119,7 @@ Good person rows: 2–4 Chinese characters (after space collapse), real detail U
 
 If quality is bad:
 
-1. Fix template under `scraper/templates/` (tighten `list_item`, drop broad `detail_image` site-wide `/images/` fallbacks).
+1. Fix a local candidate, run `d2i templates validate`, then `d2i templates import --overwrite`; do not edit the read-only NAS release.
 2. Create a **new** queue with the fixed template (do not assume old profiles.jsonl self-heals).
 3. `finalize` only after items look clean.
 4. Portrait path form: `角色肖像/政府/{省}/{市}/{级}/{单位}/{性别}/{姓名}.ext`.

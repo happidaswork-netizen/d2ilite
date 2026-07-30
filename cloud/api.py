@@ -19,6 +19,7 @@ from cloud import coverage_service
 from cloud import jobs_db
 from cloud import people_workflow
 from cloud import queue_service
+from cloud import template_service
 from cloud import vision_service
 from cloud.paths import cloud_data_root, jobs_db_path
 
@@ -71,6 +72,30 @@ class CreateQueueBody(BaseModel):
     notes: str = ""
     start: bool = False
     allow_turbo: bool = False
+
+
+class TemplateValidateBody(BaseModel):
+    template: Dict[str, Any]
+
+
+class TemplateImportBody(TemplateValidateBody):
+    template_id: str = ""
+    notes: str = ""
+    overwrite: bool = False
+
+
+class TemplatePatchBody(BaseModel):
+    template: Optional[Dict[str, Any]] = None
+    notes: Optional[str] = None
+
+
+class TemplateOutcomeBody(BaseModel):
+    stats: Dict[str, Any] = Field(default_factory=dict)
+    mode: str = ""
+    speed_tier: str = ""
+    failure_types: Dict[str, Any] = Field(default_factory=dict)
+    recommended: Optional[bool] = None
+    notes: str = ""
 
 
 class ControlBody(BaseModel):
@@ -294,8 +319,104 @@ def create_app() -> FastAPI:
 
     @api.get("/templates")
     def templates() -> Dict[str, Any]:
-        items = queue_service.list_template_files()
+        items = template_service.list_template_files()
         return {"count": len(items), "templates": items}
+
+    @api.get("/templates/search")
+    def search_templates(
+        q: str = "",
+        url: str = "",
+        domain: str = "",
+        limit: int = Query(default=10, ge=1, le=50),
+    ) -> Dict[str, Any]:
+        return template_service.search_templates(
+            q=q,
+            url=url,
+            domain=domain,
+            limit=limit,
+        )
+
+    @api.post("/templates/validate")
+    def validate_template(body: TemplateValidateBody) -> Dict[str, Any]:
+        return template_service.validate_template(body.template)
+
+    @api.post("/templates")
+    def import_template(body: TemplateImportBody) -> Dict[str, Any]:
+        try:
+            return template_service.import_template(
+                body.template,
+                template_id=body.template_id,
+                notes=body.notes,
+                overwrite=body.overwrite,
+            )
+        except FileExistsError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @api.get("/templates/{template_id}")
+    def show_template(template_id: str) -> Dict[str, Any]:
+        try:
+            return template_service.get_template(template_id)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @api.patch("/templates/{template_id}")
+    def patch_template(template_id: str, body: TemplatePatchBody) -> Dict[str, Any]:
+        try:
+            return template_service.update_template(
+                template_id,
+                template=body.template,
+                notes=body.notes,
+            )
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @api.post("/templates/{template_id}/outcomes")
+    def write_template_outcome(template_id: str, body: TemplateOutcomeBody) -> Dict[str, Any]:
+        try:
+            return template_service.record_outcome(
+                template_id,
+                {
+                    "stats": dict(body.stats or {}),
+                    "mode": body.mode,
+                    "speed_tier": body.speed_tier,
+                    "failure_types": dict(body.failure_types or {}),
+                    "recommended": body.recommended,
+                    "notes": body.notes,
+                },
+            )
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @api.post("/templates/{template_id}/queues")
+    def create_queue_from_template(template_id: str, body: CreateQueueBody) -> Dict[str, Any]:
+        try:
+            queue = queue_service.create_queue(
+                start_url=body.start_url,
+                template_id=template_id,
+                template_path="",
+                name=body.name,
+                output_root=body.output_root,
+                speed_tier=body.speed_tier,
+                speed_tier_reason=body.speed_tier_reason,
+                notes=body.notes,
+                start=body.start,
+                allow_turbo=body.allow_turbo,
+            )
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+        return {"ok": True, "queue": queue}
 
     @api.get("/queues")
     def list_queues(

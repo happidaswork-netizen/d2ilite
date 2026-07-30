@@ -15,7 +15,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from cloud import jobs_db
-from cloud.paths import APP_FILE, PROJECT_ROOT, SCRAPER_SCRIPT, TEMPLATES_DIR, default_tasks_base_root
+from cloud import template_service
+from cloud.paths import APP_FILE, PROJECT_ROOT, SCRAPER_SCRIPT, default_tasks_base_root
 from cloud.speed_tiers import apply_speed_tier_to_crawl, normalize_speed_tier
 from services.desktop_scraper_backend_service import (
     build_scraper_workspace_payload,
@@ -98,80 +99,15 @@ def reconciler_state() -> Dict[str, Any]:
         return dict(_RECONCILE_STATE)
 
 
-def _templates_search_roots() -> List[Path]:
-    roots = [TEMPLATES_DIR, PROJECT_ROOT / "scraper"]
-    return [path for path in roots if path.is_dir()]
-
-
 def list_template_files() -> List[Dict[str, Any]]:
-    items: List[Dict[str, Any]] = []
-    seen: set[str] = set()
-    for root in _templates_search_roots():
-        for path in sorted(root.glob("*.json")):
-            name = path.name
-            # Prefer scraper/templates over loose config samples when same stem collides by path
-            key = str(path.resolve())
-            if key in seen:
-                continue
-            if name.startswith("config.") and "templates" not in str(path.parent).replace("\\", "/"):
-                # keep config.*.json as templates too (common in this repo)
-                pass
-            try:
-                payload = json.loads(path.read_text(encoding="utf-8"))
-            except Exception:
-                payload = {}
-            if not isinstance(payload, dict):
-                payload = {}
-            site_name = str(payload.get("site_name", "") or path.stem).strip()
-            crawl = payload.get("crawl") if isinstance(payload.get("crawl"), dict) else {}
-            items.append(
-                {
-                    "id": path.stem,
-                    "path": str(path.resolve()),
-                    "name": site_name or path.stem,
-                    "filename": path.name,
-                    "speed_tier": normalize_speed_tier(crawl.get("speed_tier"), default="safe"),
-                    "start_urls": list(payload.get("start_urls") or [])[:5],
-                }
-            )
-            seen.add(key)
-    # de-dupe by id preferring templates/ dir
-    by_id: Dict[str, Dict[str, Any]] = {}
-    for item in items:
-        existing = by_id.get(item["id"])
-        if existing is None:
-            by_id[item["id"]] = item
-            continue
-        if "templates" in item["path"].replace("\\", "/") and "templates" not in existing["path"].replace("\\", "/"):
-            by_id[item["id"]] = item
-    return sorted(by_id.values(), key=lambda x: x["id"])
+    return template_service.list_template_files()
 
 
 def resolve_template_path(template_id: str = "", template_path: str = "") -> Tuple[str, str]:
-    explicit = str(template_path or "").strip()
-    if explicit:
-        path = Path(explicit).expanduser()
-        if not path.is_absolute():
-            path = (PROJECT_ROOT / path).resolve()
-        else:
-            path = path.resolve()
-        if not path.is_file():
-            raise FileNotFoundError(f"template not found: {path}")
-        return path.stem, str(path)
-
-    tid = str(template_id or "").strip()
-    if not tid:
-        return "", ""
-
-    for item in list_template_files():
-        if item["id"] == tid or item["filename"] == tid or item["filename"] == f"{tid}.json":
-            return item["id"], item["path"]
-
-    # direct path under templates
-    candidate = TEMPLATES_DIR / (tid if tid.endswith(".json") else f"{tid}.json")
-    if candidate.is_file():
-        return candidate.stem, str(candidate.resolve())
-    raise FileNotFoundError(f"template id not found: {tid}")
+    return template_service.resolve_template_path(
+        template_id=template_id,
+        template_path=template_path,
+    )
 
 
 def _map_status_to_api(status: str, *, session_running: bool, manual_paused: bool) -> str:

@@ -52,6 +52,29 @@ def _fail(message: str, code: int = 1) -> int:
     return code
 
 
+def _load_json_file(path_text: str) -> Dict[str, Any]:
+    path = Path(str(path_text or "")).expanduser()
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise RuntimeError(f"JSON root must be an object: {path}")
+    return payload
+
+
+def _load_json_argument(value: str, *, label: str) -> Dict[str, Any]:
+    text = str(value or "").strip()
+    if not text:
+        return {}
+    if text.startswith("@"):
+        return _load_json_file(text[1:])
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"{label} must be JSON or @file.json: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise RuntimeError(f"{label} JSON root must be an object")
+    return payload
+
+
 def _request(
     method: str,
     path: str,
@@ -103,6 +126,67 @@ def cmd_templates_list(_args: argparse.Namespace) -> int:
     return _print(_request("GET", "/api/v1/templates"))
 
 
+def cmd_templates_search(args: argparse.Namespace) -> int:
+    return _print(
+        _request(
+            "GET",
+            "/api/v1/templates/search",
+            query={
+                "q": str(args.query or ""),
+                "url": str(args.url or ""),
+                "domain": str(args.domain or ""),
+                "limit": int(args.limit or 10),
+            },
+        )
+    )
+
+
+def cmd_templates_show(args: argparse.Namespace) -> int:
+    template_id = urllib.parse.quote(str(args.template_id), safe="")
+    return _print(_request("GET", f"/api/v1/templates/{template_id}"))
+
+
+def cmd_templates_validate(args: argparse.Namespace) -> int:
+    payload = _load_json_file(args.template_file)
+    result = _request("POST", "/api/v1/templates/validate", body={"template": payload})
+    _print(result)
+    return 0 if bool(result.get("ok")) else 2
+
+
+def cmd_templates_import(args: argparse.Namespace) -> int:
+    path = Path(str(args.template_file)).expanduser()
+    payload = _load_json_file(str(path))
+    body = {
+        "template": payload,
+        "template_id": str(args.template_id or path.stem),
+        "notes": str(args.notes or ""),
+        "overwrite": bool(args.overwrite),
+    }
+    return _print(_request("POST", "/api/v1/templates", body=body))
+
+
+def cmd_templates_outcome(args: argparse.Namespace) -> int:
+    template_id = urllib.parse.quote(str(args.template_id), safe="")
+    body = {
+        "stats": _load_json_argument(str(args.stats or ""), label="stats"),
+        "mode": str(args.mode or ""),
+        "speed_tier": str(args.speed_tier or ""),
+        "failure_types": _load_json_argument(
+            str(args.failure_types or ""),
+            label="failure_types",
+        ),
+        "recommended": args.recommended,
+        "notes": str(args.notes or ""),
+    }
+    return _print(
+        _request(
+            "POST",
+            f"/api/v1/templates/{template_id}/outcomes",
+            body=body,
+        )
+    )
+
+
 def cmd_queues_list(args: argparse.Namespace) -> int:
     return _print(_request("GET", "/api/v1/queues", query={"limit": int(args.limit or 200)}))
 
@@ -119,7 +203,7 @@ def cmd_queues_create(args: argparse.Namespace) -> int:
         "template_path": str(args.template_path or ""),
         "name": str(args.name or ""),
         "output_root": str(args.output_root or ""),
-        "speed_tier": str(args.speed_tier or "safe"),
+        "speed_tier": str(args.speed_tier or ""),
         "speed_tier_reason": str(args.speed_tier_reason or ""),
         "notes": str(args.notes or ""),
         "start": bool(args.start),
@@ -500,6 +584,36 @@ def build_parser() -> argparse.ArgumentParser:
     t_sub = templates.add_subparsers(dest="templates_cmd", required=True)
     t_list = t_sub.add_parser("list", help="list known templates")
     t_list.set_defaults(func=cmd_templates_list)
+    t_search = t_sub.add_parser("search", help="find similar templates before creating a new one")
+    t_search.add_argument("-q", "--query", default="")
+    t_search.add_argument("--url", default="")
+    t_search.add_argument("--domain", default="")
+    t_search.add_argument("--limit", type=int, default=10)
+    t_search.set_defaults(func=cmd_templates_search)
+    t_show = t_sub.add_parser("show", help="show template JSON, notes, and outcomes")
+    t_show.add_argument("template_id")
+    t_show.set_defaults(func=cmd_templates_show)
+    t_validate = t_sub.add_parser("validate", help="validate a local template JSON")
+    t_validate.add_argument("template_file")
+    t_validate.set_defaults(func=cmd_templates_validate)
+    t_import = t_sub.add_parser("import", help="validate and import a local template JSON")
+    t_import.add_argument("template_file")
+    t_import.add_argument("--id", dest="template_id", default="")
+    t_import.add_argument("--notes", default="")
+    t_import.add_argument("--overwrite", action="store_true")
+    t_import.set_defaults(func=cmd_templates_import)
+    t_outcome = t_sub.add_parser("outcome", help="write one real run result back to template memory")
+    t_outcome.add_argument("template_id")
+    t_outcome.add_argument("--stats", default="{}", help='JSON or @file, e.g. {"completed":6}')
+    t_outcome.add_argument("--mode", default="")
+    t_outcome.add_argument("--speed-tier", default="")
+    t_outcome.add_argument("--failure-types", default="{}", help="JSON or @file")
+    recommendation = t_outcome.add_mutually_exclusive_group()
+    recommendation.add_argument("--recommended", dest="recommended", action="store_true")
+    recommendation.add_argument("--not-recommended", dest="recommended", action="store_false")
+    t_outcome.set_defaults(recommended=None)
+    t_outcome.add_argument("--notes", default="")
+    t_outcome.set_defaults(func=cmd_templates_outcome)
 
     queues = sub.add_parser("queues", help="queue management")
     q_sub = queues.add_subparsers(dest="queues_cmd", required=True)
@@ -518,7 +632,12 @@ def build_parser() -> argparse.ArgumentParser:
     q_create.add_argument("--template-path", default="")
     q_create.add_argument("--name", default="")
     q_create.add_argument("--output-root", default="")
-    q_create.add_argument("--speed-tier", default="safe", choices=["safe", "standard", "turbo"])
+    q_create.add_argument(
+        "--speed-tier",
+        default="",
+        choices=["safe", "standard", "turbo"],
+        help="omit to inherit the template; final fallback is safe",
+    )
     q_create.add_argument("--speed-tier-reason", default="")
     q_create.add_argument("--notes", default="")
     q_create.add_argument("--start", action="store_true")

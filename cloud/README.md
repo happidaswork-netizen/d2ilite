@@ -33,8 +33,12 @@ Optional:
 ```bash
 python scripts/d2i_cloud_cli.py status
 python scripts/d2i_cloud_cli.py templates list
+python scripts/d2i_cloud_cli.py templates search --url <url>
+python scripts/d2i_cloud_cli.py templates validate <template.json>
+python scripts/d2i_cloud_cli.py templates import <template.json> --notes "site notes"
+python scripts/d2i_cloud_cli.py templates outcome <id> --stats '{"completed":6}' --recommended
 python scripts/d2i_cloud_cli.py queues list
-python scripts/d2i_cloud_cli.py queues create --template <id> --start-url <url> --speed-tier safe
+python scripts/d2i_cloud_cli.py queues create --template <id> --start-url <url>
 python scripts/d2i_cloud_cli.py queues start <queue_id>
 python scripts/d2i_cloud_cli.py queues pause <queue_id>
 python scripts/d2i_cloud_cli.py queues show <queue_id>
@@ -50,13 +54,15 @@ python scripts/cloud_api_smoke.py
 
 - Job DB (`jobs.sqlite`)
 - Queues create/list/show/start/pause/resume/retry/cancel/finalize
-- Templates list
+- Template experience loop: list/search/show/validate/import/update/outcome
+- Runtime template overrides persist under `${D2I_CLOUD_DATA_ROOT}/templates`
 - Speed tier mapping (`safe` / `standard` / `turbo`)
 - Web 队列运行中心（TITI 浅色工作台风格：侧栏 + KPI + 队列卡 + 详情）
 - **覆盖图谱 C0–C2：** 树 + ECharts 省/市热力（本地 `vendor/echarts.min.js` + 离线 GeoJSON）+ 列表备援；节点详情；AI 侦察 stub；确认后 enqueue（intent / 队列 / ban 覆盖）
 - Reuses desktop scraper control + `run_public_scraper.py`
 - **模版抽取合同：** [`docs/d2i_cloud_template_extract_contract.md`](../docs/d2i_cloud_template_extract_contract.md)（Cloud finalize 前必须满足的 name/url/unit 形状）
 - Hermes 操作 skill：`cloud/skills/d2i-cloud/SKILL.md`
+- Hermes 模板 skill：`cloud/skills/d2i-lite-template-builder/SKILL.md`（个人项目快速路径）
 - **AI 视觉（Grok 4.5）两阶段：** 下载/finalize → 视觉报告 → 问题名单再抓（默认不自动开跑）
   - `GET /api/v1/ai/vision/status`
   - `POST /api/v1/ai/vision` · `POST /api/v1/queues/{id}/ai/run`（steps=`vision`）→ 写 `reports/vision_report.json` + `meta.last_vision`
